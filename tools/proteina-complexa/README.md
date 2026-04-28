@@ -171,7 +171,7 @@ Response shape:
     "run_name": "target_102L_smoke_api",
     "warm_start": {
       "mode": "warm",
-      "patch_status": "native"
+      "support_status": "native"
     }
   }
 }
@@ -329,9 +329,11 @@ from it. You can alternatively pass `--seed-binder-start-t` or
 Warm start is optional and defensive: if no seed is supplied, or if seed parsing
 cannot be applied safely in the Modal container, the run falls back to the
 existing cold-start path instead of treating the seed as a second fixed target.
-The compatibility layer first checks whether the cloned upstream checkout
-already exposes compatible warm-start hooks (`patch_status: "native"`). If not,
-it applies the local patch idempotently (`"applied"` or `"already-applied"`).
+Warm-start hooks are installed when the Modal image is built from
+`patches/proteina-warm-start.patch`, so GPU jobs only verify that the image
+contains compatible support (`support_status: "native"`). A long-term cleaner
+option is to replace the build-time patch step with a maintained
+Proteina-Complexa fork or upstream branch that already includes these hooks.
 
 ## Batch Usage
 

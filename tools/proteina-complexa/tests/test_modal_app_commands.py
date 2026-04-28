@@ -30,6 +30,9 @@ class _FakeImage:
     def add_local_python_source(self, *args, **kwargs):
         return self
 
+    def add_local_file(self, *args, **kwargs):
+        return self
+
 
 class _FakeVolume:
     @classmethod
@@ -352,7 +355,7 @@ class DesignCommandTests(unittest.TestCase):
             modal_app.SEED_BINDER_DIR / "target_102L_warm_smoke.pdb",
         )
 
-    def test_design_binder_with_seed_installs_patch_and_passes_seed_overrides(self) -> None:
+    def test_design_binder_with_seed_checks_warm_start_support_and_passes_seed_overrides(self) -> None:
         calls = []
 
         def fake_run(command, *, cwd):
@@ -365,7 +368,7 @@ class DesignCommandTests(unittest.TestCase):
             mock.patch.object(modal_app, "RUNS_DIR", Path(tmp) / "runs"),
             mock.patch.object(modal_app, "_run_complexa", fake_run),
             mock.patch.object(modal_app, "_target_overrides_from_preprocessed_config", return_value=[]),
-            mock.patch.object(modal_app, "_ensure_warm_start_patch", return_value="applied") as patch_warm_start,
+            mock.patch.object(modal_app, "_ensure_warm_start_support", return_value="native") as warm_start_support,
             mock.patch.object(modal_app, "_write_seed_binder_pdb", return_value=Path("/data/seed_binders/seed.pdb")),
         ):
             result = modal_app.design_binder(
@@ -378,7 +381,7 @@ class DesignCommandTests(unittest.TestCase):
                 seed_binder_noise_level=0.4,
             )
 
-        patch_warm_start.assert_called_once()
+        warm_start_support.assert_called_once()
         command = calls[0][0]
         self.assertIn(
             "++generation.dataloader.dataset.conditional_features.0.seed_binder_pdb_path=/data/seed_binders/seed.pdb",
@@ -393,8 +396,9 @@ class DesignCommandTests(unittest.TestCase):
             command,
         )
         self.assertEqual(result["warm_start"]["mode"], "warm")
+        self.assertEqual(result["warm_start"]["support_status"], "native")
 
-    def test_design_binder_falls_back_to_cold_when_patch_setup_fails(self) -> None:
+    def test_design_binder_falls_back_to_cold_when_warm_start_support_is_missing(self) -> None:
         calls = []
 
         def fake_run(command, *, cwd):
@@ -407,7 +411,7 @@ class DesignCommandTests(unittest.TestCase):
             mock.patch.object(modal_app, "RUNS_DIR", Path(tmp) / "runs"),
             mock.patch.object(modal_app, "_run_complexa", fake_run),
             mock.patch.object(modal_app, "_target_overrides_from_preprocessed_config", return_value=[]),
-            mock.patch.object(modal_app, "_ensure_warm_start_patch", side_effect=RuntimeError("patch failed")),
+            mock.patch.object(modal_app, "_ensure_warm_start_support", side_effect=RuntimeError("missing")),
         ):
             result = modal_app.design_binder(
                 task_name="02_PDL1",

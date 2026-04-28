@@ -19,7 +19,7 @@ from preprocessing import (
     sanitize_name,
     write_preprocessed_outputs,
 )
-from proteina_warm_start import apply_warm_start_patch
+from proteina_warm_start import warm_start_support_status
 
 try:
     from fastapi import Request as FastAPIRequest
@@ -36,6 +36,7 @@ MODEL_DIR = Path("/models") / MODEL_SUBDIR
 COMPLEXA_ROOT = Path("/workspace/protein-foundation-models")
 COMPLEXA_BIN = Path("/workspace/.venv/bin/complexa")
 PYTHON_BIN = Path("/workspace/.venv/bin/python")
+WARM_START_PATCH_REMOTE_PATH = Path("/tmp/proteina-warm-start.patch")
 PREPROCESS_DIR = Path("/data/preprocessed_targets")
 TARGET_DATA_DIR = Path("/data/target_data/preprocessed_targets")
 SEED_BINDER_DIR = Path("/data/seed_binders")
@@ -97,6 +98,22 @@ image = (
         }
     )
     .workdir(str(COMPLEXA_ROOT))
+    .add_local_file(
+        "patches/proteina-warm-start.patch",
+        remote_path=str(WARM_START_PATCH_REMOTE_PATH),
+        copy=True,
+    )
+    .run_commands(
+        "cd {root} && "
+        "if git apply --reverse --check {patch} >/dev/null 2>&1; then "
+        "echo 'Proteina warm-start patch: already-applied'; "
+        "elif grep -q seed_binder_pdb_path src/proteinfoundation/datasets/gen_dataset.py "
+        "&& grep -q warm_start_initial_state src/proteinfoundation/proteina.py "
+        "&& grep -q warm_start_checkpoints src/proteinfoundation/search/beam_search.py; then "
+        "echo 'Proteina warm-start patch: native'; "
+        "else git apply {patch}; "
+        "fi".format(root=COMPLEXA_ROOT, patch=WARM_START_PATCH_REMOTE_PATH)
+    )
     .add_local_python_source("api_contract")
     .add_local_python_source("preprocessing")
     .add_local_python_source("proteina_warm_start")
@@ -196,9 +213,14 @@ def _assert_authorized(headers: Any) -> None:
     )
 
 
-def _ensure_warm_start_patch() -> str:
-    status = apply_warm_start_patch(COMPLEXA_ROOT)
-    print(f"Proteina warm-start patch: {status}", flush=True)
+def _ensure_warm_start_support() -> str:
+    status = warm_start_support_status(COMPLEXA_ROOT)
+    print(f"Proteina warm-start support: {status}", flush=True)
+    if status == "missing":
+        raise RuntimeError(
+            "Proteina warm-start hooks are not installed in this image. "
+            "Rebuild the Modal image with patches/proteina-warm-start.patch or use a custom Proteina-Complexa image."
+        )
     return status
 
 
@@ -960,7 +982,7 @@ def _design_binder_impl(
     warm_start: dict[str, str] = {"mode": "cold"}
     if seed_binder_pdb_text:
         try:
-            patch_status = _ensure_warm_start_patch()
+            support_status = _ensure_warm_start_support()
             seed_binder_path = _write_seed_binder_pdb(
                 task_name=task_name,
                 run_name=run_name,
@@ -977,7 +999,7 @@ def _design_binder_impl(
             warm_start = {
                 "mode": "warm",
                 "seed_binder_pdb_path": str(seed_binder_path),
-                "patch_status": patch_status,
+                "support_status": support_status,
             }
         except Exception as exc:
             print(f"Warm-start setup failed; falling back to cold start: {exc}", flush=True)
@@ -1201,6 +1223,7 @@ def _request_wants_pdb_file(request: Any, payload: dict[str, Any]) -> bool:
 @modal.asgi_app()
 def fastapi_app():
     from fastapi import FastAPI, HTTPException, Response
+    from starlette.concurrency import run_in_threadpool
 
     _ensure_model_weights()
     web_app = FastAPI(title="Proteina-Complexa Modal Design", version="1.0.0")
@@ -1219,7 +1242,7 @@ def fastapi_app():
         _assert_authorized(request.headers)
         try:
             payload = await _parse_request_payload(request)
-            result = _run_design_request(payload)
+            result = await run_in_threadpool(_run_design_request, payload)
             if _request_wants_pdb_file(request, payload):
                 filename, pdb_text = _pdb_file_payload(result)
                 return Response(
