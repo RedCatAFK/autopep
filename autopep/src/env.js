@@ -12,10 +12,29 @@ export const env = createEnv({
 				? z.string()
 				: z.string().optional(),
 		BETTER_AUTH_URL: z.string().url().optional(),
+		AUTOPEP_AGENT_MODE: z.enum(["direct", "codex"]).default("direct"),
+		AUTOPEP_CODEX_COMMAND: z.string().optional(),
 		DATABASE_URL: z.string().url(),
 		NODE_ENV: z
 			.enum(["development", "test", "production"])
 			.default("development"),
+		R2_ACCESS_KEY_ID:
+			process.env.NODE_ENV === "production"
+				? z.string()
+				: z.string().default("local-access-key"),
+		R2_ACCOUNT_ID:
+			process.env.NODE_ENV === "production"
+				? z.string()
+				: z.string().default("local-account"),
+		R2_BUCKET:
+			process.env.NODE_ENV === "production"
+				? z.string()
+				: z.string().default("autopep-local"),
+		R2_PUBLIC_BASE_URL: z.string().url().optional(),
+		R2_SECRET_ACCESS_KEY:
+			process.env.NODE_ENV === "production"
+				? z.string()
+				: z.string().default("local-secret-key"),
 	},
 
 	/**
@@ -32,10 +51,17 @@ export const env = createEnv({
 	 * middlewares) or client-side so we need to destruct manually.
 	 */
 	runtimeEnv: {
+		AUTOPEP_AGENT_MODE: process.env.AUTOPEP_AGENT_MODE,
+		AUTOPEP_CODEX_COMMAND: process.env.AUTOPEP_CODEX_COMMAND,
 		BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
 		BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
 		DATABASE_URL: process.env.DATABASE_URL,
 		NODE_ENV: process.env.NODE_ENV,
+		R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
+		R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
+		R2_BUCKET: process.env.R2_BUCKET,
+		R2_PUBLIC_BASE_URL: process.env.R2_PUBLIC_BASE_URL,
+		R2_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY,
 	},
 	/**
 	 * Run `build` or `dev` with `SKIP_ENV_VALIDATION` to skip env validation. This is especially
