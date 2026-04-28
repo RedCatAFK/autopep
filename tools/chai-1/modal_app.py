@@ -11,7 +11,6 @@ from uuid import uuid4
 
 import modal
 
-
 APP_NAME = "chai-1-inference"
 SECRET_NAME = "chai-1-api-key"
 API_KEY_ENV = "CHAI_API_KEY"
@@ -37,10 +36,10 @@ image = (
     )
     .apt_install("git", "libgomp1")
     .pip_install(
-        "torch==2.7.1",
+        "torch==2.6.0",
         "chai_lab==0.6.1",
         "fastapi==0.115.12",
-        "gemmi==0.7.3",
+        "gemmi==0.6.3",
     )
     .env(
         {
@@ -67,8 +66,7 @@ CHAI_COMPONENTS = (
 
 def _expected_weight_paths() -> list[Path]:
     return [
-        CHAI_DOWNLOADS_DIR / "models_v2" / component
-        for component in CHAI_COMPONENTS
+        CHAI_DOWNLOADS_DIR / "models_v2" / component for component in CHAI_COMPONENTS
     ] + [
         CHAI_DOWNLOADS_DIR / "conformers_v1.apkl",
         CHAI_DOWNLOADS_DIR / "esm" / "traced_sdpa_esm2_t36_3B_UR50D_fp16.pt",
@@ -89,7 +87,11 @@ def _ensure_model_assets() -> None:
         return
 
     from chai_lab.data.dataset.embeddings.esm import ESM_URL
-    from chai_lab.utils.paths import cached_conformers, chai1_component, download_if_not_exists
+    from chai_lab.utils.paths import (
+        cached_conformers,
+        chai1_component,
+        download_if_not_exists,
+    )
 
     cached_conformers.get_path()
     for component in CHAI_COMPONENTS:
@@ -110,7 +112,9 @@ def _normalise_fasta(fasta: str) -> str:
     if len(fasta.encode("utf-8")) > MAX_FASTA_BYTES:
         raise ValueError(f"FASTA input exceeds {MAX_FASTA_BYTES} bytes")
     if not fasta.startswith(">"):
-        raise ValueError("FASTA input must start with a FASTA header line beginning with '>'")
+        raise ValueError(
+            "FASTA input must start with a FASTA header line beginning with '>'"
+        )
     return fasta + "\n"
 
 
@@ -314,7 +318,9 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
         maximum=2**31 - 1,
         field_name="seed",
     )
-    include_cif = _as_bool(payload.get("include_cif"), default=False, field_name="include_cif")
+    include_cif = _as_bool(
+        payload.get("include_cif"), default=False, field_name="include_cif"
+    )
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"chai-{uuid4().hex}-"))
     try:
