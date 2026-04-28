@@ -94,7 +94,7 @@ export function AuthCard({ userName }: AuthCardProps) {
 				>
 					{isPending ? "Signing out..." : "Sign out"}
 				</button>
-				{error ? <p className="text-sm text-red-200">{error}</p> : null}
+				{error ? <p className="text-red-200 text-sm">{error}</p> : null}
 			</div>
 		);
 	}
@@ -103,7 +103,7 @@ export function AuthCard({ userName }: AuthCardProps) {
 		<div className="w-full max-w-sm rounded-2xl bg-white/10 p-6">
 			<div className="mb-4 flex gap-2">
 				<button
-					className="rounded-full px-4 py-2 text-sm font-semibold transition hover:bg-white/10"
+					className="rounded-full px-4 py-2 font-semibold text-sm transition hover:bg-white/10"
 					onClick={() => {
 						setMode("sign-in");
 						setError(null);
@@ -113,7 +113,7 @@ export function AuthCard({ userName }: AuthCardProps) {
 					Sign in
 				</button>
 				<button
-					className="rounded-full px-4 py-2 text-sm font-semibold transition hover:bg-white/10"
+					className="rounded-full px-4 py-2 font-semibold text-sm transition hover:bg-white/10"
 					onClick={() => {
 						setMode("sign-up");
 						setError(null);
@@ -170,7 +170,7 @@ export function AuthCard({ userName }: AuthCardProps) {
 							: "Sign in"}
 				</button>
 			</form>
-			{error ? <p className="mt-3 text-sm text-red-200">{error}</p> : null}
+			{error ? <p className="mt-3 text-red-200 text-sm">{error}</p> : null}
 		</div>
 	);
 }
