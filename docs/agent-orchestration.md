@@ -6,7 +6,8 @@ Last checked against Modal docs: 2026-04-28.
 
 The first orchestration milestone is a repeatable discovery run that takes a
 plain-language target objective, searches PDB and literature, ranks the top-k
-relevant protein structures, downloads at least one PDB file, and syncs both
+relevant protein structures, downloads canonical mmCIF structure files, derives
+PDB files only when needed for Proteina-Complexa compatibility, and syncs both
 progress and important artifacts into Neon so the T3 frontend can render status
 and Mol* structure views.
 
@@ -23,10 +24,12 @@ Neon is the UI-facing source of truth:
   root, active sandbox, and optional snapshot metadata.
 - `autopep_agent_run`: one Codex discovery run for a project.
 - `autopep_agent_event`: ordered append-only event stream for live progress.
-- `autopep_protein_candidate`: ranked PDB/structure candidates.
+- `autopep_protein_candidate`: ranked structure candidates, usually from RCSB
+  PDB entries.
 - `autopep_literature_hit`: literature evidence used in ranking.
-- `autopep_artifact`: durable artifacts. Important PDB files are stored as
-  `content_text` in Neon and also keep their Modal Volume path for worker reuse.
+- `autopep_artifact`: durable artifacts. Canonical mmCIF files and derived PDB
+  compatibility files are stored as `content_text` in Neon and also keep their
+  Modal Volume path for worker reuse.
 
 The project workspace is a directory in the shared Modal Volume
 `autopep-project-workspaces`. Store paths in Neon as Volume-relative paths so
@@ -41,7 +44,8 @@ workers can resolve them from different mount points:
     ranking_inputs.json
   candidates/
     rank_001_{pdb_id}.json
-  pdb/
+  structures/
+    rank_001_{pdb_id}.cif
     rank_001_{pdb_id}.pdb
   proteina/
     input/{run_id}/target.pdb
@@ -97,21 +101,26 @@ Required harness phases:
 3. `pdb_search`: use the life-science plugin's RCSB PDB and UniProt-oriented
    skills, with shell helpers executed in Modal when needed.
 4. `literature_search`: use biorXiv, PubMed/PMC, and related literature skills.
-5. `ranking`: rank PDB candidates using target match, biological relevance,
+5. `ranking`: rank structure candidates using target match, biological relevance,
    structure quality, chain suitability, known binding or inhibition context,
    and literature support.
-6. `pdb_download`: download top-k PDB files to the project workspace.
-7. `artifact_sync`: hash PDB files, upload important files to Neon
-   `autopep_artifact.content_text`, and retain Modal paths.
-8. `ready_for_complexa`: create or identify the PDB artifact to pass to
-   Proteina-Complexa.
+6. `pdb_download`: download top-k mmCIF files to the project workspace. The
+   phase name is retained for now because the data source is RCSB PDB.
+7. `artifact_sync`: hash mmCIF files, upload important files to Neon
+   `autopep_artifact.content_text`, retain Modal paths, and derive validated PDB
+   artifacts for candidates selected for Proteina-Complexa.
+8. `ready_for_complexa`: create or identify the derived PDB artifact to pass to
+   Proteina-Complexa while keeping the mmCIF artifact canonical.
 
 Ready gate:
 
 - At least one `autopep_protein_candidate` exists for the run.
-- Rank 1 has a matching `autopep_artifact` with `type = 'pdb'`,
+- Rank 1 has a canonical `autopep_artifact` with `type = 'mmcif'`,
   `storage_kind = 'neon'`, `content_text` populated, `content_sha256`
   populated, and `modal_path` pointing at the Volume-relative workspace copy.
+- Rank 1 has a derived `autopep_artifact` with `type = 'pdb'` when
+  Proteina-Complexa still requires PDB input. Its metadata should include
+  `sourceArtifactId` pointing to the canonical mmCIF artifact.
 - A final `autopep_agent_event` has phase `ready_for_complexa`.
 
 ## Event Sync
@@ -130,13 +139,15 @@ short enough to store as a log artifact.
 
 The existing `tools/proteina-complexa` app mounts fixed Modal Volumes. The next
 implementation step should update that app to also mount
-`autopep-project-workspaces` read-only, or copy the selected PDB artifact from
-Neon into `proteina-complexa-data` before invoking `design_binder`.
+`autopep-project-workspaces` read-only, or copy the selected derived PDB
+artifact from Neon into `proteina-complexa-data` before invoking
+`design_binder`.
 
 The handoff should pass a database artifact ID, not a loose file path. The
 worker can resolve that ID to:
 
-- Neon PDB text for display and deterministic retry.
+- Neon mmCIF text for display and deterministic retry.
+- Derived PDB text for Proteina-Complexa compatibility.
 - Modal `modal_path` for GPU-side reads.
 - Ranking metadata and literature rationale for prompt/context provenance.
 
@@ -147,8 +158,10 @@ The harness should be instructed to:
 - Use the `life-science-research` router first, then route to `rcsb-pdb`,
   `uniprot`, `biorxiv`, `ncbi-entrez`, and `ncbi-pmc` skills as needed.
 - Execute shell/Python helpers only through the Modal Sandbox.
-- Never treat a PDB ID as selected until the PDB file has been downloaded,
-  parsed enough to verify it is PDB-format text, hashed, and synced to Neon.
+- Never treat a PDB ID as selected until the mmCIF file has been downloaded,
+  parsed enough to verify it is mmCIF-format text, hashed, and synced to Neon.
+  For Proteina handoff, also verify the derived PDB file before marking the run
+  `ready_for_complexa`.
 - Record concise selection rationales and source URLs for every ranked
   candidate.
 - Stop the initial milestone once the ready gate is satisfied; Proteina

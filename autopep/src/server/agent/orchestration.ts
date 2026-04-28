@@ -213,7 +213,7 @@ export async function finishDiscoveryRun(input: {
 		type: `run.${input.status}`,
 		message:
 			input.status === "succeeded"
-				? "Top protein PDB artifacts are ready for Proteina-Complexa."
+				? "Top protein structures are synced and Proteina-compatible inputs are ready."
 				: (input.errorMessage ?? `Discovery run ${input.status}.`),
 		payload: {
 			modalFilesystemSnapshotImageId: input.modalFilesystemSnapshotImageId,
@@ -316,7 +316,7 @@ export async function recordProteinCandidate(input: {
 	return candidate;
 }
 
-export async function recordPdbArtifact(input: {
+type StructureArtifactInput = {
 	projectId: string;
 	runId: string;
 	proteinCandidateId: string;
@@ -327,17 +327,26 @@ export async function recordPdbArtifact(input: {
 	modalPath: string;
 	sizeBytes: number;
 	metadata?: Record<string, unknown>;
-}) {
+};
+
+async function recordStructureArtifact(
+	input: StructureArtifactInput & {
+		type: "mmcif" | "pdb";
+		mimeType: string;
+		eventType: string;
+		eventMessage: string;
+	},
+) {
 	const [artifact] = await db
 		.insert(autopepArtifacts)
 		.values({
 			projectId: input.projectId,
 			runId: input.runId,
 			proteinCandidateId: input.proteinCandidateId,
-			type: "pdb",
+			type: input.type,
 			storageKind: "neon",
 			displayName: input.displayName,
-			mimeType: "chemical/x-pdb",
+			mimeType: input.mimeType,
 			contentText: input.contentText,
 			contentSha256: input.contentSha256,
 			modalVolumeName: input.modalVolumeName,
@@ -348,22 +357,43 @@ export async function recordPdbArtifact(input: {
 		.returning();
 
 	if (!artifact) {
-		throw new Error("Failed to record PDB artifact.");
+		throw new Error(`Failed to record ${input.type} artifact.`);
 	}
 
 	await appendRunEvent({
 		runId: input.runId,
 		phase: "artifact_sync",
-		type: "artifact.pdb_synced",
-		message: `Synced PDB artifact ${input.displayName}.`,
+		type: input.eventType,
+		message: input.eventMessage,
 		payload: {
 			artifactId: artifact.id,
+			artifactType: input.type,
 			modalPath: input.modalPath,
 			sizeBytes: input.sizeBytes,
 		},
 	});
 
 	return artifact;
+}
+
+export async function recordMmcifArtifact(input: StructureArtifactInput) {
+	return recordStructureArtifact({
+		...input,
+		type: "mmcif",
+		mimeType: "chemical/x-mmcif",
+		eventType: "artifact.mmcif_synced",
+		eventMessage: `Synced canonical mmCIF artifact ${input.displayName}.`,
+	});
+}
+
+export async function recordPdbArtifact(input: StructureArtifactInput) {
+	return recordStructureArtifact({
+		...input,
+		type: "pdb",
+		mimeType: "chemical/x-pdb",
+		eventType: "artifact.pdb_synced",
+		eventMessage: `Synced derived PDB artifact ${input.displayName}.`,
+	});
 }
 
 export async function recordLiteratureHit(input: {

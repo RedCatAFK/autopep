@@ -96,9 +96,10 @@ The app writes outputs to `/runs` and commits the Volume after the CLI exits.
 Use unique `run_name` values for parallel jobs so containers never write to the
 same output directory.
 
-Autopep discovery runs store selected PDB inputs under the Volume-relative path
+Autopep discovery runs keep canonical structures as mmCIF artifacts and store
+derived Proteina-compatible PDB inputs under the Volume-relative path
 `/projects/{project_id}/proteina/input/{run_id}/`. This app mounts that Volume
-read-only at `/autopep`, so the same input resolves to
+read-only at `/autopep`, so the derived input resolves to
 `/autopep/projects/{project_id}/proteina/input/{run_id}/target.pdb` without
 copying files between Modal Volumes.
 
