@@ -53,7 +53,7 @@ yarn-error.log*
 *.swp
 *~
 .cache/
+tools/chai-1/chai_outputs/
 
 .env
 .env.local
-
