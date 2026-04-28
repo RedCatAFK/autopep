@@ -1,7 +1,243 @@
 @import "tailwindcss";
 
 @theme {
-	--font-sans:
-		var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif,
-		"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+	--font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+	--color-autopep-ink: #17211e;
+	--color-autopep-paper: #f8f7f2;
+	--color-autopep-surface: #fffef9;
+	--color-autopep-emerald: #087a66;
+	--color-autopep-lime: #dfe94c;
+}
+
+html {
+	background: #f8f7f2;
+}
+
+body {
+	min-height: 100dvh;
+	background: #f8f7f2;
+	color: #17211e;
+	font-feature-settings:
+		"ss01" 1,
+		"cv11" 1;
+	text-rendering: geometricPrecision;
+}
+
+button,
+input,
+textarea {
+	font: inherit;
+}
+
+::selection {
+	background: #dfe94c;
+	color: #17211e;
+}
+
+.line-clamp-2 {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+}
+
+.autopep-molstar .msp-plugin {
+	position: absolute;
+	inset: 0;
+	background: #fbfaf6;
+	font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.autopep-molstar .msp-plugin .msp-layout-region {
+	border-color: #e2dfd5;
+}
+
+.autopep-molstar .msp-plugin .msp-viewport {
+	background: #fbfaf6;
+}
+
+.molstar-loading-bar {
+	animation: molstar-loading 1.2s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+	transform-origin: left;
+}
+
+.molecule-sketch {
+	position: relative;
+	height: 320px;
+	width: min(68vw, 420px);
+	filter: drop-shadow(0 24px 34px rgb(21 54 45 / 12%));
+}
+
+.molecule-sketch::before {
+	position: absolute;
+	inset: 32px;
+	border: 1px solid rgb(26 104 89 / 12%);
+	border-radius: 45% 55% 48% 52%;
+	background: rgb(221 235 229 / 62%);
+	content: "";
+}
+
+.molecule-sketch-large {
+	margin-top: 4px;
+}
+
+.molecule-loop,
+.molecule-sheet {
+	position: absolute;
+	border-color: #087a66;
+}
+
+.molecule-loop {
+	border: 10px solid #087a66;
+	border-radius: 45% 55% 50% 50%;
+}
+
+.molecule-loop.loop-a {
+	top: 54px;
+	left: 72px;
+	width: 152px;
+	height: 96px;
+	transform: rotate(-22deg);
+}
+
+.molecule-loop.loop-b {
+	right: 62px;
+	bottom: 76px;
+	width: 146px;
+	height: 88px;
+	transform: rotate(24deg);
+}
+
+.molecule-loop.loop-c {
+	top: 116px;
+	right: 92px;
+	width: 136px;
+	height: 78px;
+	border-top-color: transparent;
+	transform: rotate(-9deg);
+}
+
+.molecule-sheet {
+	height: 30px;
+	background: #087a66;
+	clip-path: polygon(0 18%, 74% 18%, 74% 0, 100% 50%, 74% 100%, 74% 82%, 0 82%);
+}
+
+.molecule-sheet.sheet-a {
+	top: 154px;
+	left: 132px;
+	width: 134px;
+	transform: rotate(48deg);
+}
+
+.molecule-sheet.sheet-b {
+	top: 184px;
+	right: 112px;
+	width: 124px;
+	transform: rotate(-28deg);
+}
+
+.molecule-sheet.sheet-c {
+	bottom: 72px;
+	left: 142px;
+	width: 122px;
+	transform: rotate(12deg);
+}
+
+.molecule-orbit {
+	position: absolute;
+	border: 1px dashed rgb(124 131 122 / 38%);
+	border-radius: 999px;
+	pointer-events: none;
+}
+
+.molecule-orbit::before,
+.molecule-orbit::after {
+	position: absolute;
+	width: 12px;
+	height: 12px;
+	border-radius: 999px;
+	background: #dfe94c;
+	content: "";
+}
+
+.molecule-orbit-a {
+	width: min(74vw, 520px);
+	height: 230px;
+	transform: rotate(-18deg);
+}
+
+.molecule-orbit-a::before {
+	top: -6px;
+	left: 54%;
+}
+
+.molecule-orbit-a::after {
+	right: 10%;
+	bottom: 16px;
+}
+
+.molecule-orbit-b {
+	width: min(62vw, 430px);
+	height: 310px;
+	transform: rotate(22deg);
+}
+
+.molecule-orbit-b::before {
+	top: 40px;
+	left: 8%;
+}
+
+.molecule-orbit-b::after {
+	right: 20%;
+	bottom: 6px;
+}
+
+@keyframes molstar-loading {
+	0% {
+		transform: translateX(-100%) scaleX(0.7);
+	}
+	55% {
+		transform: translateX(70%) scaleX(1);
+	}
+	100% {
+		transform: translateX(220%) scaleX(0.7);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms;
+		animation-iteration-count: 1;
+		scroll-behavior: auto;
+		transition-duration: 0.01ms;
+	}
+}
+
+@media (max-width: 640px) {
+	.molecule-sketch {
+		height: 260px;
+		width: min(82vw, 340px);
+	}
+
+	.molecule-loop {
+		border-width: 8px;
+	}
+
+	.molecule-loop.loop-a {
+		left: 44px;
+		width: 126px;
+	}
+
+	.molecule-loop.loop-b {
+		right: 46px;
+		width: 118px;
+	}
+
+	.molecule-loop.loop-c {
+		right: 58px;
+		width: 116px;
+	}
 }
