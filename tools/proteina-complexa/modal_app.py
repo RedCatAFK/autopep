@@ -40,7 +40,6 @@ image = (
         "git clone --depth 1 --branch dev https://github.com/NVIDIA-Digital-Bio/Proteina-Complexa "
         f"{COMPLEXA_ROOT}",
         f"cd {COMPLEXA_ROOT} && bash env/build_uv_env.sh --root /workspace/",
-        f"{PYTHON_BIN} -m pip install --upgrade 'huggingface_hub[hf_transfer]'",
     )
     .env(
         {
@@ -49,7 +48,6 @@ image = (
             "DATA_PATH": "/data",
             "DSSP_EXEC": "/usr/local/bin/dssp",
             "FOLDSEEK_EXEC": "/workspace/.venv/bin/foldseek",
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
             "LOCAL_CODE_PATH": str(COMPLEXA_ROOT),
             "MMSEQS_EXEC": "/workspace/.venv/bin/mmseqs",
             "PYTHONPATH": f"{COMPLEXA_ROOT}/src",
