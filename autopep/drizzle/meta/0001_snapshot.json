@@ -1,5 +1,5 @@
 {
-  "id": "5318cd20-4fd9-4844-9d67-08d317350991",
+  "id": "8f84fd67-d24c-4809-8f7f-f4307bbc974b",
   "prevId": "0d6a71f2-2056-4246-80e9-a21a55d8538c",
   "version": "7",
   "dialect": "postgresql",
@@ -418,14 +418,14 @@
           "primaryKey": false,
           "notNull": true
         },
-        "mime_type": {
-          "name": "mime_type",
+        "content_type": {
+          "name": "content_type",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "size_bytes": {
-          "name": "size_bytes",
+        "byte_size": {
+          "name": "byte_size",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
@@ -436,27 +436,33 @@
           "primaryKey": false,
           "notNull": false
         },
-        "r2_bucket": {
-          "name": "r2_bucket",
+        "bucket": {
+          "name": "bucket",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "r2_key": {
-          "name": "r2_key",
+        "object_key": {
+          "name": "object_key",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "viewer": {
-          "name": "viewer",
+        "source_url": {
+          "name": "source_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "viewer_hint": {
+          "name": "viewer_hint",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
           "default": "'molstar'"
         },
-        "viewer_hints_json": {
-          "name": "viewer_hints_json",
+        "metadata_json": {
+          "name": "metadata_json",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -804,17 +810,17 @@
           "primaryKey": false,
           "notNull": true
         },
-        "score": {
-          "name": "score",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rcsb_entry_id": {
-          "name": "rcsb_entry_id",
+        "rcsb_id": {
+          "name": "rcsb_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "assembly_id": {
+          "name": "assembly_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "title": {
           "name": "title",
@@ -822,60 +828,66 @@
           "primaryKey": false,
           "notNull": true
         },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolution_angstrom": {
+          "name": "resolution_angstrom",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
         "organism": {
           "name": "organism",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "experimental_method": {
-          "name": "experimental_method",
-          "type": "text",
+        "chain_ids_json": {
+          "name": "chain_ids_json",
+          "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "'[]'::jsonb"
         },
-        "resolution": {
-          "name": "resolution",
+        "ligand_ids_json": {
+          "name": "ligand_ids_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "citation_json": {
+          "name": "citation_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "relevance_score": {
+          "name": "relevance_score",
           "type": "real",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "chains_json": {
-          "name": "chains_json",
-          "type": "jsonb",
+        "confidence": {
+          "name": "confidence",
+          "type": "real",
           "primaryKey": false,
           "notNull": true,
-          "default": "'[]'::jsonb"
+          "default": 0
         },
-        "literature_refs_json": {
-          "name": "literature_refs_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "why_selected": {
-          "name": "why_selected",
+        "selection_rationale": {
+          "name": "selection_rationale",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "proteina_ready": {
-          "name": "proteina_ready",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "created_at": {
           "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -923,7 +935,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
         "autopep_protein_candidate_target_entity_run_fk": {
@@ -938,7 +950,7 @@
             "id",
             "run_id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -1065,11 +1077,29 @@
           "primaryKey": false,
           "notNull": true
         },
-        "label": {
-          "name": "label",
+        "name": {
+          "name": "name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "organism": {
+          "name": "organism",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "uniprot_id": {
+          "name": "uniprot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "aliases_json": {
           "name": "aliases_json",
@@ -1078,28 +1108,8 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
-        "organism": {
-          "name": "organism",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_ids_json": {
-          "name": "source_ids_json",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "confidence": {
-          "name": "confidence",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "notes": {
-          "name": "notes",
+        "rationale": {
+          "name": "rationale",
           "type": "text",
           "primaryKey": false,
           "notNull": false

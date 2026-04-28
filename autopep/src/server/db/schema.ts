@@ -205,18 +205,15 @@ export const targetEntities = createAutopepTable(
 		runId: uuid("run_id")
 			.notNull()
 			.references(() => agentRuns.id, { onDelete: "cascade" }),
-		label: text("label").notNull(),
+		name: text("name").notNull(),
+		organism: text("organism"),
+		uniprotId: text("uniprot_id"),
+		role: text("role"),
 		aliasesJson: jsonb("aliases_json")
 			.$type<string[]>()
 			.default(sql`'[]'::jsonb`)
 			.notNull(),
-		organism: text("organism"),
-		sourceIdsJson: jsonb("source_ids_json")
-			.$type<Record<string, string>>()
-			.default(sql`'{}'::jsonb`)
-			.notNull(),
-		confidence: real("confidence").default(0).notNull(),
-		notes: text("notes"),
+		rationale: text("rationale"),
 		createdAt: timestamp("created_at", { withTimezone: true })
 			.defaultNow()
 			.notNull(),
@@ -237,32 +234,33 @@ export const proteinCandidates = createAutopepTable(
 		targetEntityId: uuid("target_entity_id").references(
 			() => targetEntities.id,
 			{
-				onDelete: "set null",
+				onDelete: "cascade",
 			},
 		),
 		rank: integer("rank").notNull(),
-		score: real("score").notNull(),
-		rcsbEntryId: text("rcsb_entry_id").notNull(),
+		rcsbId: text("rcsb_id").notNull(),
+		assemblyId: text("assembly_id"),
 		title: text("title").notNull(),
+		method: text("method"),
+		resolutionAngstrom: real("resolution_angstrom"),
 		organism: text("organism"),
-		experimentalMethod: text("experimental_method"),
-		resolution: real("resolution"),
-		chainsJson: jsonb("chains_json")
-			.$type<Array<{ id: string; label?: string; residues?: number }>>()
+		chainIdsJson: jsonb("chain_ids_json")
+			.$type<string[]>()
 			.default(sql`'[]'::jsonb`)
 			.notNull(),
-		literatureRefsJson: jsonb("literature_refs_json")
-			.$type<Array<{ id: string; title: string; url?: string }>>()
+		ligandIdsJson: jsonb("ligand_ids_json")
+			.$type<string[]>()
 			.default(sql`'[]'::jsonb`)
 			.notNull(),
-		whySelected: text("why_selected").notNull(),
-		proteinaReady: boolean("proteina_ready").default(false).notNull(),
+		citationJson: jsonb("citation_json")
+			.$type<Record<string, unknown>>()
+			.default(sql`'{}'::jsonb`)
+			.notNull(),
+		relevanceScore: real("relevance_score").notNull(),
+		confidence: real("confidence").default(0).notNull(),
+		selectionRationale: text("selection_rationale").notNull(),
 		createdAt: timestamp("created_at", { withTimezone: true })
 			.defaultNow()
-			.notNull(),
-		updatedAt: timestamp("updated_at", { withTimezone: true })
-			.defaultNow()
-			.$onUpdate(() => new Date())
 			.notNull(),
 	},
 	(t) => [
@@ -273,7 +271,7 @@ export const proteinCandidates = createAutopepTable(
 			name: "autopep_protein_candidate_target_entity_run_fk",
 			columns: [t.targetEntityId, t.runId],
 			foreignColumns: [targetEntities.id, targetEntities.runId],
-		}),
+		}).onDelete("cascade"),
 	],
 );
 
@@ -292,13 +290,14 @@ export const artifacts = createAutopepTable(
 		}),
 		type: artifactType("type").notNull(),
 		fileName: text("file_name").notNull(),
-		mimeType: text("mime_type").notNull(),
-		sizeBytes: integer("size_bytes").notNull(),
+		contentType: text("content_type").notNull(),
+		byteSize: integer("byte_size").notNull(),
 		checksum: text("checksum"),
-		r2Bucket: text("r2_bucket").notNull(),
-		r2Key: text("r2_key").notNull(),
-		viewer: text("viewer").default("molstar").notNull(),
-		viewerHintsJson: jsonb("viewer_hints_json")
+		bucket: text("bucket").notNull(),
+		objectKey: text("object_key").notNull(),
+		sourceUrl: text("source_url"),
+		viewerHint: text("viewer_hint").default("molstar").notNull(),
+		metadataJson: jsonb("metadata_json")
 			.$type<Record<string, unknown>>()
 			.default(sql`'{}'::jsonb`)
 			.notNull(),
