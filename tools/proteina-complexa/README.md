@@ -15,6 +15,7 @@ The app uses these resources in the `autopep` workspace's `main` environment:
 - `proteina-complexa-models` mounted at `/models`
 - `proteina-complexa-data` mounted at `/data`
 - `proteina-complexa-runs` mounted at `/runs`
+- `autopep-project-workspaces` mounted read-only at `/autopep`
 - `huggingface-secret` containing `HF_TOKEN`
 
 Create the volumes once:
@@ -23,6 +24,7 @@ Create the volumes once:
 modal volume create proteina-complexa-models --env main
 modal volume create proteina-complexa-data --env main
 modal volume create proteina-complexa-runs --env main
+modal volume create autopep-project-workspaces --version=2 --env main
 ```
 
 Create the Hugging Face secret once:
@@ -146,6 +148,13 @@ modal run modal_app.py \
 The app writes outputs to `/runs` and commits the Volume after the CLI exits.
 Use unique `run_name` values for parallel jobs so containers never write to the
 same output directory.
+
+Autopep discovery runs keep canonical structures as mmCIF artifacts and store
+derived Proteina-compatible PDB inputs under the Volume-relative path
+`/projects/{project_id}/proteina/input/{run_id}/`. This app mounts that Volume
+read-only at `/autopep`, so the derived input resolves to
+`/autopep/projects/{project_id}/proteina/input/{run_id}/target.pdb` without
+copying files between Modal Volumes.
 
 ## Batch Usage
 
