@@ -149,7 +149,7 @@ export function WorkspaceShell({
 				</div>
 			</header>
 
-			<div className="grid min-h-[calc(100dvh-4rem)] grid-cols-1 md:grid-cols-[72px_minmax(0,1fr)] xl:grid-cols-[72px_minmax(330px,390px)_minmax(0,1fr)_minmax(320px,370px)]">
+			<div className="grid min-h-[calc(100dvh-4rem)] grid-cols-1 md:grid-cols-[72px_minmax(0,1fr)] lg:grid-cols-[72px_minmax(300px,360px)_minmax(0,1fr)_minmax(300px,340px)]">
 				<aside className="flex min-h-16 items-center justify-between border-[#e5e2d9] border-b bg-[#fbfaf6] px-3 md:min-h-0 md:flex-col md:border-r md:border-b-0 md:px-0 md:py-5">
 					<nav className="flex items-center gap-2 md:flex-col md:gap-4">
 						<RailButton active label="Home">
@@ -177,7 +177,7 @@ export function WorkspaceShell({
 					</button>
 				</aside>
 
-				<aside className="border-[#e5e2d9] border-b bg-[#fbfaf6] p-5 md:col-start-2 xl:col-start-auto xl:border-r xl:border-b-0">
+				<aside className="border-[#e5e2d9] border-b bg-[#fbfaf6] p-5 md:col-start-2 lg:col-start-auto lg:border-r lg:border-b-0">
 					<section>
 						<p className="font-semibold text-[17px] tracking-[-0.01em]">
 							What would you like to design?
@@ -220,7 +220,7 @@ export function WorkspaceShell({
 							</div>
 						</div>
 
-						<div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
+						<div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1">
 							<ExampleButton
 								disabled={isCreatingRun}
 								label="SARS-CoV-2 spike RBD"
@@ -309,7 +309,7 @@ export function WorkspaceShell({
 					</section>
 				</aside>
 
-				<section className="flex min-w-0 flex-col bg-[#f8f7f2] xl:border-[#e5e2d9] xl:border-r">
+				<section className="flex min-w-0 flex-col bg-[#f8f7f2] lg:border-[#e5e2d9] lg:border-r">
 					<div className="flex flex-wrap items-start justify-between gap-4 p-5 md:p-6">
 						<div className="flex min-w-0 items-start gap-4">
 							<StatusBadge
@@ -371,7 +371,7 @@ export function WorkspaceShell({
 					</div>
 				</section>
 
-				<aside className="border-[#e5e2d9] border-t bg-[#fbfaf6] p-5 md:col-start-2 xl:col-start-auto xl:border-t-0">
+				<aside className="border-[#e5e2d9] border-t bg-[#fbfaf6] p-5 md:col-start-2 lg:col-start-auto lg:border-t-0">
 					<div className="flex items-center justify-between gap-3">
 						<div>
 							<p className="font-semibold text-sm">Your design journey</p>
