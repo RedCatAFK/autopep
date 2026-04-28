@@ -10,6 +10,7 @@ export const agentEventTypeSchema = z.enum([
 	"uploading_artifact",
 	"ready_for_proteina",
 	"source_failed",
+	"run_start_skipped",
 	"run_failed",
 ]);
 

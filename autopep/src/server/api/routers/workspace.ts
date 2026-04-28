@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt } from "drizzle-orm";
 import { z } from "zod";
 
+import { createProjectRunWithLaunch } from "@/server/agent/project-run-creator";
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
 import { r2ArtifactStore } from "@/server/artifacts/r2";
 import type { db as appDb } from "@/server/db";
@@ -108,35 +109,11 @@ export const workspaceRouter = createTRPCRouter({
 		.input(createProjectRunInput)
 		.mutation(async ({ ctx, input }) => {
 			const ownerId = ctx.session.user.id;
-			const [project] = await ctx.db
-				.insert(projects)
-				.values({
-					ownerId,
-					name: input.name ?? input.goal.slice(0, 120),
-					goal: input.goal,
-				})
-				.returning();
-
-			if (!project) {
-				throw new Error("Failed to create project");
-			}
-
-			const [run] = await ctx.db
-				.insert(agentRuns)
-				.values({
-					projectId: project.id,
-					createdById: ownerId,
-					prompt: input.goal,
-					status: "queued",
-					topK: input.topK,
-				})
-				.returning();
-
-			if (!run) {
-				throw new Error("Failed to create agent run");
-			}
-
-			return { project, run };
+			return createProjectRunWithLaunch({
+				db: ctx.db,
+				input,
+				ownerId,
+			});
 		}),
 
 	getLatestWorkspace: protectedProcedure.query(async ({ ctx }) => {

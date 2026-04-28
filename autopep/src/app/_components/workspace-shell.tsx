@@ -99,6 +99,7 @@ const eventTypeLabels: Record<string, string> = {
 	preparing_cif: "Preparing CIF",
 	ranking_candidates: "Ranking matches",
 	ready_for_proteina: "Ready for Proteina",
+	run_start_skipped: "Run already active",
 	searching_literature: "Reading literature",
 	searching_structures: "Finding structures",
 	uploading_artifact: "Saving artifact",

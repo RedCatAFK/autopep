@@ -13,6 +13,7 @@
 		"db:push": "drizzle-kit push",
 		"db:studio": "drizzle-kit studio",
 		"dev": "next dev",
+		"modal:deploy": "modal deploy modal/autopep_worker.py",
 		"preview": "next build && next start",
 		"start": "next start",
 		"test": "vitest run --passWithNoTests",
