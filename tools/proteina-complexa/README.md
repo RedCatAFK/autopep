@@ -83,9 +83,9 @@ modal run modal_app.py \
 ## Preprocess a CIF Target
 
 The preprocessing layer accepts a local `.cif` or `.mmcif`, extracts amino acid
-sequence and C-alpha geometry, writes JSON/FASTA metadata, uploads the CIF into the Modal
-`/data` volume, and optionally runs the Proteina-Complexa autoencoder to produce
-the learned latent tensor bundle used by the model.
+sequence and C-alpha geometry for metadata, uploads the CIF into the Modal
+`/data` volume, converts it to the target PDB layout expected by Complexa, and
+checks the atom37 target tensors through Complexa's own loader.
 
 For a lightweight local parse:
 
@@ -96,8 +96,7 @@ python3 scripts/preprocess_cif.py /path/to/target.cif \
   --output-dir preprocessed
 ```
 
-For the full Modal preprocessing path, including `complexa_ae.ckpt` latent
-encoding:
+For the full Modal preprocessing path:
 
 ```bash
 modal run modal_app.py \
@@ -112,12 +111,34 @@ modal run modal_app.py \
 This writes:
 
 - `/data/preprocessed_targets/my_target.cif`
+- `/data/target_data/preprocessed_targets/my_target.pdb`
 - `/data/preprocessed_targets/my_target.preprocess.json`
 - `/data/preprocessed_targets/my_target.fasta`
-- `/data/preprocessed_targets/my_target.latents.pt`
+
+The returned `target_tensor_info` reports the actual Complexa target tensor
+shapes, including `x_target` as `[num_res, 37, 3]`, `target_mask` as
+`[num_res, 37]`, and `seq_target` as `[num_res]`. Optional
+`/data/preprocessed_targets/my_target.latents.pt` encoding can be requested with
+`--encode-latents`; it is a diagnostic artifact and is not consumed by the
+standard generation config.
+If a structure has insertion codes or a cropped `--target-input`, treat
+`target_residue_count` and `target_tensor_info` as authoritative for what
+Complexa will generate against; the JSON/FASTA files are metadata.
 
 The returned `hydra_overrides` can be passed to Complexa directly. To preprocess
-and then launch the binder design in one command:
+and run a fast generation-only smoke test that does not require AlphaFold2
+community-model weights:
+
+```bash
+modal run modal_app.py \
+  --action smoke-cif \
+  --cif-path /path/to/target.cif \
+  --target-name my_target \
+  --target-input A1-150 \
+  --run-name my_target_smoke
+```
+
+To preprocess and then launch the full binder design pipeline in one command:
 
 ```bash
 modal run modal_app.py \
@@ -128,6 +149,10 @@ modal run modal_app.py \
   --run-name my_target_design \
   --hotspot-residues-json '["A45", "A67"]'
 ```
+
+The full `design-cif` pipeline uses AF2 reward/evaluation stages. Provision the
+upstream community model weights under `/workspace/protein-foundation-models/community_models/ckpts/AF2`
+or use `smoke-cif` for a model-generation check without those artifacts.
 
 If `--target-input` is omitted, the local parser infers a simple contiguous
 range per chain such as `A1-150`. Pass it explicitly for cropped targets,

@@ -21,6 +21,7 @@ COMPLEXA_ROOT = Path("/workspace/protein-foundation-models")
 COMPLEXA_BIN = Path("/workspace/.venv/bin/complexa")
 PYTHON_BIN = Path("/workspace/.venv/bin/python")
 PREPROCESS_DIR = Path("/data/preprocessed_targets")
+TARGET_DATA_DIR = Path("/data/target_data/preprocessed_targets")
 
 DEFAULT_PIPELINE_CONFIG = "configs/search_binder_local_pipeline.yaml"
 DEFAULT_GPU = "A100-80GB"
@@ -104,8 +105,15 @@ def _tail_text(path: Path, *, limit: int = 12000) -> str:
     return text[-limit:]
 
 
-def _collect_run_log_tails(run_dir: Path, *, limit: int = 12000) -> str:
+def _collect_run_log_tails(
+    run_dir: Path,
+    *,
+    exclude: set[Path] | None = None,
+    limit: int = 12000,
+) -> str:
     log_paths = sorted(run_dir.glob("logs/**/*.log"), key=lambda path: path.stat().st_mtime)
+    if exclude:
+        log_paths = [path for path in log_paths if path not in exclude]
     if not log_paths:
         return ""
     sections = []
@@ -121,6 +129,15 @@ def _checkpoint_overrides() -> list[str]:
         "++ckpt_name=complexa.ckpt",
         f"++autoencoder_ckpt_path={MODEL_DIR / 'complexa_ae.ckpt'}",
     ]
+
+
+def _normalize_design_steps(steps: Iterable[str] | None) -> list[str]:
+    allowed = {"generate", "filter", "evaluate", "analyze"}
+    normalized = [step for step in (steps or []) if step]
+    invalid = [step for step in normalized if step not in allowed]
+    if invalid:
+        raise ValueError(f"Invalid design steps: {invalid}. Allowed: {sorted(allowed)}")
+    return normalized
 
 
 def _config_path(pipeline_config: str) -> str:
@@ -141,6 +158,29 @@ def _local_weight_files() -> dict[str, str]:
 
 def _normalize_overrides(overrides: Iterable[str] | None) -> list[str]:
     return [override for override in (overrides or []) if override]
+
+
+def _design_command(
+    *,
+    task_name: str,
+    run_name: str,
+    pipeline_config: str,
+    overrides: Iterable[str] | None,
+    steps: Iterable[str] | None,
+) -> list[str]:
+    design_steps = _normalize_design_steps(steps)
+    command = [
+        str(COMPLEXA_BIN),
+        "design",
+        _config_path(pipeline_config),
+        *_checkpoint_overrides(),
+        f"++run_name={run_name}",
+        f"++generation.task_name={task_name}",
+        *_normalize_overrides(overrides),
+    ]
+    if design_steps:
+        command.extend(["--steps", *design_steps])
+    return command
 
 
 def _parse_json_list(value: str, *, default: list | None = None) -> list:
@@ -182,9 +222,77 @@ def _target_overrides(
     ]
 
 
-def _encode_cif_latents(
+def _write_target_pdb(
     *,
-    cif_path: Path,
+    structure_path: Path,
+    pdb_path: Path,
+) -> dict:
+    script = f"""
+from pathlib import Path
+
+import json
+import numpy as np
+from atomworks.io.utils.io_utils import load_any
+from biotite.structure.io import save_structure
+
+structure_path = Path({str(structure_path)!r})
+pdb_path = Path({str(pdb_path)!r})
+loaded = load_any(str(structure_path), model=1)
+struct = loaded[0] if isinstance(loaded, (list, tuple)) else loaded
+if not hasattr(struct, "occupancy"):
+    struct.set_annotation("occupancy", np.ones(len(struct), dtype=np.float32))
+pdb_path.parent.mkdir(parents=True, exist_ok=True)
+save_structure(str(pdb_path), struct)
+print(json.dumps({{
+    "pdb_path": str(pdb_path),
+    "atom_count": int(len(struct)),
+    "chain_ids": sorted({{str(chain_id) for chain_id in struct.chain_id.tolist()}}),
+}}))
+"""
+    output = _run([str(PYTHON_BIN), "-c", script])
+    return json.loads(output.strip().splitlines()[-1])
+
+
+def _inspect_target_tensors(
+    *,
+    pdb_path: Path,
+    target_input: str,
+    hotspot_residues: list[str],
+) -> dict:
+    script = f"""
+from pathlib import Path
+
+import json
+from proteinfoundation.utils.pdb_utils import load_target_from_pdb
+
+pdb_path = Path({str(pdb_path)!r})
+target_input = {target_input!r}
+hotspot_residues = {hotspot_residues!r}
+target_mask, target_structure, target_residue_type, target_hotspots_mask, target_chain = load_target_from_pdb(
+    target_input,
+    str(pdb_path),
+    hotspot_residues,
+)
+seq_target_mask = target_mask.sum(dim=-1).bool()
+print(json.dumps({{
+    "x_target_shape": list(target_structure.shape),
+    "target_mask_shape": list(target_mask.shape),
+    "seq_target_shape": list(target_residue_type.shape),
+    "seq_target_mask_shape": list(seq_target_mask.shape),
+    "target_hotspot_mask_shape": list(target_hotspots_mask.shape),
+    "target_chain_shape": list(target_chain.shape),
+    "target_residue_count": int(target_structure.shape[0]),
+    "target_atom37_count": int(target_mask.sum().item()),
+    "target_hotspot_count": int(target_hotspots_mask.sum().item()),
+}}))
+"""
+    output = _run([str(PYTHON_BIN), "-c", script])
+    return json.loads(output.strip().splitlines()[-1])
+
+
+def _encode_target_latents(
+    *,
+    structure_path: Path,
     latent_path: Path,
     target_input: str,
 ) -> dict:
@@ -200,11 +308,12 @@ from atomworks.ml.transforms.encoding import atom_array_to_encoding
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.coors_utils import ang_to_nm
 
-cif_path = Path({str(cif_path)!r})
+structure_path = Path({str(structure_path)!r})
 latent_path = Path({str(latent_path)!r})
 target_input = {target_input!r}
 
-struct = load_any(str(cif_path), model=1)
+loaded = load_any(str(structure_path), model=1)
+struct = loaded[0] if isinstance(loaded, (list, tuple)) else loaded
 selection = AtomSelectionStack.from_contig(target_input)
 struct = struct[selection.get_mask(struct)]
 print(json.dumps({{"selected_atoms": int(len(struct)), "target_input": target_input}}), flush=True)
@@ -259,7 +368,7 @@ payload = {{
     "residue_mask": residue_mask.detach().cpu(),
     "residue_type": residue_type.detach().cpu(),
     "target_input": target_input,
-    "cif_path": str(cif_path),
+    "structure_path": str(structure_path),
 }}
 latent_path.parent.mkdir(parents=True, exist_ok=True)
 torch.save(payload, latent_path)
@@ -292,11 +401,12 @@ def preprocess_cif(
     chains: str | None = None,
     hotspot_residues: list[str] | None = None,
     binder_length: list[int] | None = None,
-    encode_latents: bool = True,
+    encode_latents: bool = False,
 ) -> dict:
-    """Convert a CIF into sequence/features and optional Complexa autoencoder latents."""
+    """Convert a CIF into a Complexa target PDB plus optional diagnostics."""
     model_volume.reload()
     safe_target_name = sanitize_name(target_name or Path(cif_filename).stem)
+    effective_hotspots = hotspot_residues or []
     result = preprocess_cif_text(
         cif_text,
         structure_id=safe_target_name,
@@ -307,12 +417,19 @@ def preprocess_cif(
     cif_path = PREPROCESS_DIR / f"{safe_target_name}.cif"
     cif_path.write_text(cif_text)
     outputs = write_preprocessed_outputs(result, PREPROCESS_DIR)
+    pdb_path = TARGET_DATA_DIR / f"{safe_target_name}.pdb"
+    pdb_info = _write_target_pdb(structure_path=cif_path, pdb_path=pdb_path)
+    target_tensor_info = _inspect_target_tensors(
+        pdb_path=pdb_path,
+        target_input=result.target_input,
+        hotspot_residues=effective_hotspots,
+    )
 
     latent_info = None
     if encode_latents:
         latent_path = PREPROCESS_DIR / f"{safe_target_name}.latents.pt"
-        latent_info = _encode_cif_latents(
-            cif_path=cif_path,
+        latent_info = _encode_target_latents(
+            structure_path=pdb_path,
             latent_path=latent_path,
             target_input=result.target_input,
         )
@@ -323,9 +440,9 @@ def preprocess_cif(
 
     overrides = _target_overrides(
         target_name=safe_target_name,
-        target_path=cif_path,
+        target_path=pdb_path,
         target_input=result.target_input,
-        hotspot_residues=hotspot_residues or [],
+        hotspot_residues=effective_hotspots,
         binder_length=[int(length_range[0]), int(length_range[1])],
         pdb_id=safe_target_name,
     )
@@ -333,12 +450,17 @@ def preprocess_cif(
     return {
         "target_name": safe_target_name,
         "length": result.length,
+        "parsed_length": result.length,
+        "target_residue_count": target_tensor_info["target_residue_count"],
         "sequence": result.sequence,
         "chain_sequences": result.chain_sequences,
         "target_input": result.target_input,
         "cif_path": str(cif_path),
+        "pdb_path": str(pdb_path),
         "feature_json_path": outputs["json"],
         "fasta_path": outputs["fasta"],
+        "pdb_info": pdb_info,
+        "target_tensor_info": target_tensor_info,
         "latent_info": latent_info,
         "hydra_overrides": overrides,
     }
@@ -432,24 +554,24 @@ def design_binder(
     run_name: str,
     pipeline_config: str = DEFAULT_PIPELINE_CONFIG,
     overrides: list[str] | None = None,
+    steps: list[str] | None = None,
 ) -> dict[str, str]:
     """Run a single protein-target binder design job on one Modal GPU."""
     model_volume.reload()
     run_dir = Path("/runs") / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
-    command = [
-        str(COMPLEXA_BIN),
-        "design",
-        _config_path(pipeline_config),
-        *_checkpoint_overrides(),
-        f"++run_name={run_name}",
-        f"++generation.task_name={task_name}",
-        *_normalize_overrides(overrides),
-    ]
+    existing_logs = set(run_dir.glob("logs/**/*.log"))
+    command = _design_command(
+        task_name=task_name,
+        run_name=run_name,
+        pipeline_config=pipeline_config,
+        overrides=overrides,
+        steps=steps,
+    )
     try:
         output = _run_complexa(command, cwd=run_dir)
     except Exception as exc:
-        log_tails = _collect_run_log_tails(run_dir)
+        log_tails = _collect_run_log_tails(run_dir, exclude=existing_logs)
         runs_volume.commit()
         if log_tails:
             raise RuntimeError(f"{exc}\n--- run log tails ---\n{log_tails}") from exc
@@ -480,6 +602,7 @@ def main(
     task_name: str = "02_PDL1",
     run_name: str = "pdl1_modal_smoke",
     overrides_json: str = "[]",
+    design_steps_json: str = "[]",
     jobs_json: str = "",
     cif_path: str = "",
     target_name: str = "",
@@ -487,9 +610,10 @@ def main(
     chains: str = "",
     hotspot_residues_json: str = "[]",
     binder_length_json: str = "[60, 120]",
-    encode_latents: bool = True,
+    encode_latents: bool = False,
 ):
     overrides = json.loads(overrides_json)
+    design_steps = _normalize_design_steps(_parse_json_list(design_steps_json))
     if action == "download-weights":
         print(download_weights.remote())
     elif action == "list-weights":
@@ -497,7 +621,7 @@ def main(
     elif action == "validate":
         print(validate.remote(overrides=overrides))
     elif action == "design":
-        print(design_binder.remote(task_name=task_name, run_name=run_name, overrides=overrides))
+        print(design_binder.remote(task_name=task_name, run_name=run_name, overrides=overrides, steps=design_steps))
     elif action == "preprocess-cif":
         if not cif_path:
             raise ValueError("--cif-path is required for --action preprocess-cif")
@@ -513,9 +637,9 @@ def main(
             encode_latents,
         )
         print(json.dumps(result, indent=2))
-    elif action == "design-cif":
+    elif action in {"design-cif", "smoke-cif"}:
         if not cif_path:
-            raise ValueError("--cif-path is required for --action design-cif")
+            raise ValueError(f"--cif-path is required for --action {action}")
         path = Path(cif_path)
         preprocessed = preprocess_cif.remote(
             _read_structure_text(path),
@@ -532,12 +656,24 @@ def main(
             for override in preprocessed["hydra_overrides"]
             if not override.startswith("++generation.task_name=")
         ]
-        design_overrides = [*target_overrides, *_normalize_overrides(overrides)]
+        smoke_overrides = []
+        effective_steps = design_steps
+        if action == "smoke-cif":
+            effective_steps = ["generate"]
+            smoke_overrides = [
+                "++generation.search.algorithm=single-pass",
+                "++generation.reward_model=null",
+                "++generation.dataloader.batch_size=1",
+                "++generation.dataloader.dataset.nres.nsamples=1",
+                "++generation.args.nsteps=20",
+            ]
+        design_overrides = [*target_overrides, *smoke_overrides, *_normalize_overrides(overrides)]
         print(
             design_binder.remote(
                 task_name=preprocessed["target_name"],
                 run_name=run_name,
                 overrides=design_overrides,
+                steps=effective_steps,
             )
         )
     elif action == "batch":
