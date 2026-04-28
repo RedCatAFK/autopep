@@ -1899,6 +1899,16 @@ git commit -m "feat: add cif retrieval worker"
 - Modify: `autopep/src/app/layout.tsx`
 - Modify: `autopep/src/styles/globals.css`
 
+**Visual reference:** Use the Autopep platform mockup image attached in the April 28, 2026 user message as the design reference for this task. The implementation should follow its structure and feel: narrow icon rail on the far left, prompt/assistant/status panel next to it, full-height central molecular stage with the selected structure, and a right-side "Your design journey" timeline. The visual language is bright, tactile, scientific, and approachable: off-white canvas, subtle borders, emerald/teal molecular accents, lime action/status highlights, rounded but controlled panels, compact icon controls, and clear non-expert copy.
+
+**Reference-driven UI requirements:**
+- First screen is the actual workspace, not a landing page.
+- The central stage should be dominated by Mol* when a CIF URL exists; when empty, use a polished target-structure-ready placeholder that visually matches the reference rather than a plain empty box.
+- The left panel should include the natural-language design prompt, start controls for the spike RBD and 3CL-protease examples, assistant progress, selected/best-match structure summary, and "what's ready" chips for structure/evidence/design input.
+- The right panel should show a four-step journey: understand target, find structures, prepare target, design binder. Steps 1-3 represent this implemented vertical slice; step 4 is shown as the downstream handoff for teammates' binder generation/scoring work.
+- Use the corrected schema/API field names in code: `rcsbId`, `relevanceScore`, `selectionRationale`, `objectKey`, and `signedUrl`. Do not reintroduce stale plan-snippet names such as `rcsbEntryId`, `score`, `whySelected`, or `r2Key`.
+- The snippets below are a functional baseline, not a visual ceiling. Adapt them to match the reference image and verify the UI in-browser at desktop and mobile widths.
+
 - [ ] **Step 1: Update app metadata in `autopep/src/app/layout.tsx`**
 
 Add this import after the existing globals import:
