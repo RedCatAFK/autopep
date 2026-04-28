@@ -1,0 +1,12 @@
+[
+  {
+    "task_name": "02_PDL1",
+    "run_name": "pdl1_seed_001",
+    "overrides": ["++gen_njobs=1", "++eval_njobs=1"]
+  },
+  {
+    "task_name": "02_PDL1",
+    "run_name": "pdl1_seed_002",
+    "overrides": ["++gen_njobs=1", "++eval_njobs=1"]
+  }
+]

@@ -1,0 +1,118 @@
+# Proteina-Complexa on Modal
+
+This directory contains a thin Modal orchestration layer for running NVIDIA's
+Proteina-Complexa protein-target binder model on Modal GPUs with open weights.
+
+The Modal app builds the official Proteina-Complexa environment from NVIDIA's
+public repository, downloads the Hugging Face checkpoint pair into a persistent
+Modal Volume, and runs the upstream `complexa` CLI for validation, design, and
+status.
+
+## Modal Resources
+
+The app uses these resources in the `autopep` workspace's `main` environment:
+
+- `proteina-complexa-models` mounted at `/models`
+- `proteina-complexa-data` mounted at `/data`
+- `proteina-complexa-runs` mounted at `/runs`
+- `huggingface-secret` containing `HF_TOKEN`
+
+Create the volumes once:
+
+```bash
+modal volume create proteina-complexa-models --env main
+modal volume create proteina-complexa-data --env main
+modal volume create proteina-complexa-runs --env main
+```
+
+Create the Hugging Face secret once:
+
+```bash
+modal secret create huggingface-secret HF_TOKEN=hf_... --env main
+```
+
+If the Hugging Face model is public for your account, the token can still be a
+normal read token. Keeping it as a secret avoids hard-coding auth assumptions.
+
+## Local Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+modal setup
+modal config set-environment main
+```
+
+## Build and Download Weights
+
+The first run builds a large CUDA/PyTorch image and can take a while.
+
+```bash
+modal run modal_app.py --action download-weights
+```
+
+Check the persisted checkpoint pair:
+
+```bash
+modal run modal_app.py --action list-weights
+```
+
+Expected files:
+
+- `/models/protein-target-160m/complexa.ckpt`
+- `/models/protein-target-160m/complexa_ae.ckpt`
+
+## Validate
+
+Validate the default protein-target binder pipeline before launching a long GPU
+job:
+
+```bash
+modal run modal_app.py --action validate
+```
+
+Pass Hydra overrides as JSON when needed:
+
+```bash
+modal run modal_app.py \
+  --action validate \
+  --overrides-json '["++gen_njobs=1", "++eval_njobs=1"]'
+```
+
+## Run a Binder Design
+
+```bash
+modal run modal_app.py \
+  --action design \
+  --task-name 02_PDL1 \
+  --run-name pdl1_modal_smoke \
+  --overrides-json '["++gen_njobs=1", "++eval_njobs=1"]'
+```
+
+The app writes outputs to `/runs` and commits the Volume after the CLI exits.
+Use unique `run_name` values for parallel jobs so containers never write to the
+same output directory.
+
+## Batch Usage
+
+For fanout, put jobs in a JSON file like [examples/jobs.json](examples/jobs.json):
+
+```bash
+modal run modal_app.py --action batch --jobs-json examples/jobs.json
+```
+
+The current default is one `A100-80GB` per Modal container. After a smoke test,
+benchmark cheaper GPUs or multi-GPU containers with overrides such as
+`++gen_njobs=4` and `++eval_njobs=4`.
+
+## Notes
+
+- NVIDIA's upstream pipeline is Hydra-based; this app injects checkpoint paths
+  with CLI overrides instead of editing their config files.
+- Modal Volumes require explicit `commit()` after writes and `reload()` before
+  reading fresh state from another container.
+- Some evaluation/reward paths depend on optional community model checkpoints
+  such as AF2/RF3. The image sets the paths expected by NVIDIA's Docker setup,
+  but those artifacts may need separate provisioning depending on the pipeline
+  configuration you choose.
