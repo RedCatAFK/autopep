@@ -6,6 +6,9 @@ HTTP inference endpoint for Chai-1 on Modal. It accepts FASTA input, runs Chai-1
 
 - `modal_app.py`: Modal app, GPU image, auth, model-volume warmup, inference endpoint, CIF output, optional PDB conversion, optional 3Dmol.js viewer HTML.
 - `request_chai.py`: Local client script for sending FASTA/sequence requests, saving CIFs, and optionally writing HTML visualizations.
+- `INTEGRATION_GUIDE.md`: HTTP API contract and integration guide for web/backend teams.
+
+For product or web integration, start with `INTEGRATION_GUIDE.md`. The `request_chai.py` script is only a local testing helper.
 
 ## Modal Setup
 
