@@ -3,4 +3,4 @@ Tools List:
 2. Structure prediction with Chai-1 (MSA free)
 3. Classifiers with ESM2 + prediction heads
   a. idk
-4. Enegery solvers
+4. Energy solvers
