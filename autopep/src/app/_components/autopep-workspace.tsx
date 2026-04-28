@@ -33,15 +33,6 @@ export function AutopepWorkspace() {
 		},
 	});
 
-	const selectedArtifact = useMemo(() => {
-		const artifacts = workspace.data?.artifacts ?? [];
-		return (
-			artifacts.find((artifact) => artifact.type === "prepared_cif") ??
-			artifacts.find((artifact) => artifact.type === "source_cif") ??
-			null
-		);
-	}, [workspace.data?.artifacts]);
-
 	const candidates = useMemo<WorkspaceCandidate[]>(
 		() =>
 			(workspace.data?.candidates ?? []).map((candidate) => ({
@@ -75,6 +66,23 @@ export function AutopepWorkspace() {
 		candidates.find((candidate) => candidate.proteinaReady) ??
 		candidates[0] ??
 		null;
+	const selectedArtifact = useMemo(() => {
+		const artifacts = workspace.data?.artifacts ?? [];
+		const findCif = (candidateId?: string) =>
+			artifacts.find(
+				(artifact) =>
+					(!candidateId || artifact.candidateId === candidateId) &&
+					artifact.type === "prepared_cif",
+			) ??
+			artifacts.find(
+				(artifact) =>
+					(!candidateId || artifact.candidateId === candidateId) &&
+					artifact.type === "source_cif",
+			) ??
+			null;
+
+		return findCif(selectedCandidate?.id) ?? findCif();
+	}, [workspace.data?.artifacts, selectedCandidate?.id]);
 	const targetName =
 		workspace.data?.targetEntities[0]?.name ??
 		inferTargetName(workspace.data?.activeRun?.prompt) ??

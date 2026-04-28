@@ -208,9 +208,11 @@ export function WorkspaceShell({
 									</button>
 								</div>
 								<button
+									aria-label="Start target retrieval"
 									className="flex size-11 items-center justify-center rounded-lg bg-[#dfe94c] text-[#1d342e] transition hover:bg-[#d4e337] active:translate-y-[1px] disabled:cursor-not-allowed disabled:opacity-60"
 									disabled={isCreatingRun}
 									onClick={() => onStartExample(spikeGoal)}
+									title="Start target retrieval"
 									type="button"
 								>
 									<PaperPlaneTilt size={22} weight="fill" />

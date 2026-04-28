@@ -12,6 +12,7 @@ type MolstarViewerProps = {
 export function MolstarViewer({ label, url }: MolstarViewerProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const pluginRef = useRef<PluginUIContext | null>(null);
+	const loadIdRef = useRef(0);
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(false);
 
@@ -24,6 +25,9 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 
 	useEffect(() => {
 		let cancelled = false;
+		const loadId = loadIdRef.current + 1;
+		loadIdRef.current = loadId;
+		const isCurrentLoad = () => !cancelled && loadIdRef.current === loadId;
 
 		const loadStructure = async () => {
 			if (!url) {
@@ -46,7 +50,7 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 					pluginRef,
 				);
 
-				if (cancelled) {
+				if (!isCurrentLoad()) {
 					if (created) {
 						plugin.dispose();
 						if (pluginRef.current === plugin) {
@@ -57,14 +61,20 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 				}
 
 				await plugin.clear();
+				if (!isCurrentLoad()) return;
+
 				const data = await plugin.builders.data.download(
 					{ isBinary: false, label, url },
 					{ state: { isGhost: true } },
 				);
+				if (!isCurrentLoad()) return;
+
 				const trajectory = await plugin.builders.structure.parseTrajectory(
 					data,
 					"mmcif",
 				);
+				if (!isCurrentLoad()) return;
+
 				await plugin.builders.structure.hierarchy.applyPreset(
 					trajectory,
 					"default",
@@ -73,11 +83,11 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 					},
 				);
 			} catch (cause) {
-				if (!cancelled) {
+				if (isCurrentLoad()) {
 					setError(cause instanceof Error ? cause.message : String(cause));
 				}
 			} finally {
-				if (!cancelled) {
+				if (isCurrentLoad()) {
 					setIsLoading(false);
 				}
 			}
