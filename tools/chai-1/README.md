@@ -24,6 +24,19 @@ cd tools/chai-1
 modal deploy modal_app.py
 ```
 
+Deployment registers the endpoint and builds the image, but it does not have to run an inference container immediately. To populate the model Volume before the first HTTP request, run:
+
+```bash
+cd tools/chai-1
+modal run modal_app.py::populate_weights
+```
+
+After that, inspect the Volume under the mounted path contents:
+
+```bash
+modal volume ls chai-1-models /downloads
+```
+
 Run locally on Modal during development:
 
 ```bash

@@ -107,6 +107,24 @@ def _ensure_model_assets() -> None:
     weights_volume.commit()
 
 
+@app.function(
+    volumes={str(MODEL_DIR): weights_volume},
+    timeout=TIMEOUT_SECONDS,
+)
+def populate_weights() -> dict[str, Any]:
+    _ensure_model_assets()
+    weights_volume.reload()
+    return {
+        "volume": MODEL_VOLUME_NAME,
+        "download_dir": str(CHAI_DOWNLOADS_DIR),
+        "files": [
+            str(path.relative_to(MODEL_DIR))
+            for path in _expected_weight_paths()
+            if path.exists()
+        ],
+    }
+
+
 def _normalise_fasta(fasta: str) -> str:
     fasta = fasta.strip()
     if not fasta:
