@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import html
 import hmac
+import json
 import os
 import shutil
 import tempfile
@@ -237,21 +239,55 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _ranked_pdb_payload(
+def _viewer_html(cif_text: str, *, title: str) -> str:
+    title_json = json.dumps(title)
+    cif_json = json.dumps(cif_text)
+    escaped_title = html.escape(title)
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{escaped_title}</title>
+  <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+  <style>
+    html, body, #viewer {{
+      height: 100%;
+      width: 100%;
+      margin: 0;
+    }}
+  </style>
+</head>
+<body>
+  <div id="viewer"></div>
+  <script>
+    const viewer = $3Dmol.createViewer("viewer", {{ backgroundColor: "white" }});
+    viewer.addModel({cif_json}, "cif");
+    viewer.setStyle({{}}, {{ cartoon: {{ color: "spectrum" }} }});
+    viewer.zoomTo();
+    viewer.render();
+    document.title = {title_json};
+  </script>
+</body>
+</html>
+"""
+
+
+def _ranked_structure_payload(
     *,
     candidates: Any,
     output_dir: Path,
-    include_cif: bool,
+    include_pdb: bool,
+    include_viewer_html: bool,
 ) -> list[dict[str, Any]]:
     pdb_dir = output_dir / "pdb"
-    pdb_dir.mkdir(parents=True, exist_ok=True)
+    if include_pdb:
+        pdb_dir.mkdir(parents=True, exist_ok=True)
 
     structures: list[dict[str, Any]] = []
     for rank, cif_path in enumerate(candidates.cif_paths, start=1):
         cif_path = Path(cif_path)
-        pdb_name = f"rank_{rank}_{cif_path.stem}.pdb"
-        pdb_path = pdb_dir / pdb_name
-        _convert_cif_to_pdb(cif_path, pdb_path)
+        cif_name = f"rank_{rank}_{cif_path.name}"
+        cif_text = cif_path.read_text()
 
         score = None
         if hasattr(candidates, "ranking_data"):
@@ -273,14 +309,20 @@ def _ranked_pdb_payload(
 
         item: dict[str, Any] = {
             "rank": rank,
-            "filename": pdb_name,
-            "pdb": pdb_path.read_text(),
+            "filename": cif_name,
+            "cif": cif_text,
             "aggregate_score": score,
             "mean_plddt": mean_plddt,
         }
-        if include_cif:
-            item["cif_filename"] = cif_path.name
-            item["cif"] = cif_path.read_text()
+        if include_pdb:
+            pdb_name = f"rank_{rank}_{cif_path.stem}.pdb"
+            pdb_path = pdb_dir / pdb_name
+            _convert_cif_to_pdb(cif_path, pdb_path)
+            item["pdb_filename"] = pdb_name
+            item["pdb"] = pdb_path.read_text()
+        if include_viewer_html:
+            item["viewer_filename"] = f"rank_{rank}_{cif_path.stem}.html"
+            item["viewer_html"] = _viewer_html(cif_text, title=cif_name)
         structures.append(item)
 
     return structures
@@ -318,8 +360,13 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
         maximum=2**31 - 1,
         field_name="seed",
     )
-    include_cif = _as_bool(
-        payload.get("include_cif"), default=False, field_name="include_cif"
+    include_pdb = _as_bool(
+        payload.get("include_pdb"), default=False, field_name="include_pdb"
+    )
+    include_viewer_html = _as_bool(
+        payload.get("include_viewer_html"),
+        default=False,
+        field_name="include_viewer_html",
     )
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"chai-{uuid4().hex}-"))
@@ -346,16 +393,17 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
         candidates = candidates.sorted()
-        pdbs = _ranked_pdb_payload(
+        structures = _ranked_structure_payload(
             candidates=candidates,
             output_dir=output_dir,
-            include_cif=include_cif,
+            include_pdb=include_pdb,
+            include_viewer_html=include_viewer_html,
         )
 
         return {
-            "format": "pdb",
-            "count": len(pdbs),
-            "pdbs": pdbs,
+            "format": "cif",
+            "count": len(structures),
+            "cifs": structures,
             "parameters": {
                 "num_trunk_recycles": num_trunk_recycles,
                 "num_diffn_timesteps": num_diffn_timesteps,
@@ -364,6 +412,8 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
                 "use_msa": False,
                 "use_templates": False,
                 "use_esm_embeddings": True,
+                "include_pdb": include_pdb,
+                "include_viewer_html": include_viewer_html,
             },
         }
     finally:
