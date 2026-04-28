@@ -8,7 +8,8 @@ CREATE TABLE "autopep_agent_event" (
 	"title" text NOT NULL,
 	"detail" text,
 	"payload_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "autopep_agent_event_run_id_sequence_unique" UNIQUE("run_id","sequence")
 );
 --> statement-breakpoint
 CREATE TABLE "autopep_agent_run" (
@@ -24,7 +25,8 @@ CREATE TABLE "autopep_agent_run" (
 	"finished_at" timestamp with time zone,
 	"error_summary" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "autopep_agent_run_id_project_id_unique" UNIQUE("id","project_id")
 );
 --> statement-breakpoint
 CREATE TABLE "autopep_artifact" (
@@ -69,7 +71,9 @@ CREATE TABLE "autopep_protein_candidate" (
 	"why_selected" text NOT NULL,
 	"proteina_ready" boolean DEFAULT false NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "autopep_protein_candidate_run_id_rank_unique" UNIQUE("run_id","rank"),
+	CONSTRAINT "autopep_protein_candidate_id_run_id_unique" UNIQUE("id","run_id")
 );
 --> statement-breakpoint
 CREATE TABLE "autopep_target_entity" (
@@ -81,7 +85,8 @@ CREATE TABLE "autopep_target_entity" (
 	"source_ids_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"confidence" real DEFAULT 0 NOT NULL,
 	"notes" text,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "autopep_target_entity_id_run_id_unique" UNIQUE("id","run_id")
 );
 --> statement-breakpoint
 ALTER TABLE "autopep_agent_event" ADD CONSTRAINT "autopep_agent_event_run_id_autopep_agent_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."autopep_agent_run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -90,12 +95,14 @@ ALTER TABLE "autopep_agent_run" ADD CONSTRAINT "autopep_agent_run_created_by_id_
 ALTER TABLE "autopep_artifact" ADD CONSTRAINT "autopep_artifact_project_id_autopep_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."autopep_project"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopep_artifact" ADD CONSTRAINT "autopep_artifact_run_id_autopep_agent_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."autopep_agent_run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopep_artifact" ADD CONSTRAINT "autopep_artifact_candidate_id_autopep_protein_candidate_id_fk" FOREIGN KEY ("candidate_id") REFERENCES "public"."autopep_protein_candidate"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "autopep_artifact" ADD CONSTRAINT "autopep_artifact_run_project_fk" FOREIGN KEY ("run_id","project_id") REFERENCES "public"."autopep_agent_run"("id","project_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "autopep_artifact" ADD CONSTRAINT "autopep_artifact_candidate_run_fk" FOREIGN KEY ("candidate_id","run_id") REFERENCES "public"."autopep_protein_candidate"("id","run_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopep_project" ADD CONSTRAINT "autopep_project_owner_id_user_id_fk" FOREIGN KEY ("owner_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopep_protein_candidate" ADD CONSTRAINT "autopep_protein_candidate_run_id_autopep_agent_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."autopep_agent_run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopep_protein_candidate" ADD CONSTRAINT "autopep_protein_candidate_target_entity_id_autopep_target_entity_id_fk" FOREIGN KEY ("target_entity_id") REFERENCES "public"."autopep_target_entity"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "autopep_protein_candidate" ADD CONSTRAINT "autopep_protein_candidate_target_entity_run_fk" FOREIGN KEY ("target_entity_id","run_id") REFERENCES "public"."autopep_target_entity"("id","run_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "autopep_target_entity" ADD CONSTRAINT "autopep_target_entity_run_id_autopep_agent_run_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."autopep_agent_run"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "autopep_agent_event_run_id_idx" ON "autopep_agent_event" USING btree ("run_id");--> statement-breakpoint
-CREATE INDEX "autopep_agent_event_run_id_sequence_idx" ON "autopep_agent_event" USING btree ("run_id","sequence");--> statement-breakpoint
 CREATE INDEX "autopep_agent_run_project_id_idx" ON "autopep_agent_run" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "autopep_agent_run_status_idx" ON "autopep_agent_run" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "autopep_artifact_project_id_idx" ON "autopep_artifact" USING btree ("project_id");--> statement-breakpoint
@@ -103,5 +110,4 @@ CREATE INDEX "autopep_artifact_run_id_idx" ON "autopep_artifact" USING btree ("r
 CREATE INDEX "autopep_artifact_candidate_id_idx" ON "autopep_artifact" USING btree ("candidate_id");--> statement-breakpoint
 CREATE INDEX "autopep_project_owner_idx" ON "autopep_project" USING btree ("owner_id");--> statement-breakpoint
 CREATE INDEX "autopep_protein_candidate_run_id_idx" ON "autopep_protein_candidate" USING btree ("run_id");--> statement-breakpoint
-CREATE INDEX "autopep_protein_candidate_run_id_rank_idx" ON "autopep_protein_candidate" USING btree ("run_id","rank");--> statement-breakpoint
 CREATE INDEX "autopep_target_entity_run_id_idx" ON "autopep_target_entity" USING btree ("run_id");

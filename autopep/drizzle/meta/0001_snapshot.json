@@ -1,5 +1,5 @@
 {
-  "id": "d281a44b-dec0-4509-bafa-a671a67ed32e",
+  "id": "5318cd20-4fd9-4844-9d67-08d317350991",
   "prevId": "0d6a71f2-2056-4246-80e9-a21a55d8538c",
   "version": "7",
   "dialect": "postgresql",
@@ -180,27 +180,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "autopep_agent_event_run_id_sequence_idx": {
-          "name": "autopep_agent_event_run_id_sequence_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sequence",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -219,7 +198,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "autopep_agent_event_run_id_sequence_unique": {
+          "name": "autopep_agent_event_run_id_sequence_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id",
+            "sequence"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -374,7 +362,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "autopep_agent_run_id_project_id_unique": {
+          "name": "autopep_agent_run_id_project_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -558,6 +555,36 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "autopep_artifact_run_project_fk": {
+          "name": "autopep_artifact_run_project_fk",
+          "tableFrom": "autopep_artifact",
+          "tableTo": "autopep_agent_run",
+          "columnsFrom": [
+            "run_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "autopep_artifact_candidate_run_fk": {
+          "name": "autopep_artifact_candidate_run_fk",
+          "tableFrom": "autopep_artifact",
+          "tableTo": "autopep_protein_candidate",
+          "columnsFrom": [
+            "candidate_id",
+            "run_id"
+          ],
+          "columnsTo": [
+            "id",
+            "run_id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -870,27 +897,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "autopep_protein_candidate_run_id_rank_idx": {
-          "name": "autopep_protein_candidate_run_id_rank_idx",
-          "columns": [
-            {
-              "expression": "run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "rank",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -919,10 +925,42 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "autopep_protein_candidate_target_entity_run_fk": {
+          "name": "autopep_protein_candidate_target_entity_run_fk",
+          "tableFrom": "autopep_protein_candidate",
+          "tableTo": "autopep_target_entity",
+          "columnsFrom": [
+            "target_entity_id",
+            "run_id"
+          ],
+          "columnsTo": [
+            "id",
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "autopep_protein_candidate_run_id_rank_unique": {
+          "name": "autopep_protein_candidate_run_id_rank_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id",
+            "rank"
+          ]
+        },
+        "autopep_protein_candidate_id_run_id_unique": {
+          "name": "autopep_protein_candidate_id_run_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "run_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1107,7 +1145,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "autopep_target_entity_id_run_id_unique": {
+          "name": "autopep_target_entity_id_run_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "run_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

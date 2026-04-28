@@ -1,6 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
 	boolean,
+	foreignKey,
 	index,
 	integer,
 	jsonb,
@@ -10,6 +11,7 @@ import {
 	real,
 	text,
 	timestamp,
+	unique,
 	uuid,
 } from "drizzle-orm/pg-core";
 
@@ -164,6 +166,7 @@ export const agentRuns = createAutopepTable(
 	(t) => [
 		index("autopep_agent_run_project_id_idx").on(t.projectId),
 		index("autopep_agent_run_status_idx").on(t.status),
+		unique("autopep_agent_run_id_project_id_unique").on(t.id, t.projectId),
 	],
 );
 
@@ -188,7 +191,10 @@ export const agentEvents = createAutopepTable(
 	},
 	(t) => [
 		index("autopep_agent_event_run_id_idx").on(t.runId),
-		index("autopep_agent_event_run_id_sequence_idx").on(t.runId, t.sequence),
+		unique("autopep_agent_event_run_id_sequence_unique").on(
+			t.runId,
+			t.sequence,
+		),
 	],
 );
 
@@ -215,7 +221,10 @@ export const targetEntities = createAutopepTable(
 			.defaultNow()
 			.notNull(),
 	},
-	(t) => [index("autopep_target_entity_run_id_idx").on(t.runId)],
+	(t) => [
+		index("autopep_target_entity_run_id_idx").on(t.runId),
+		unique("autopep_target_entity_id_run_id_unique").on(t.id, t.runId),
+	],
 );
 
 export const proteinCandidates = createAutopepTable(
@@ -258,7 +267,13 @@ export const proteinCandidates = createAutopepTable(
 	},
 	(t) => [
 		index("autopep_protein_candidate_run_id_idx").on(t.runId),
-		index("autopep_protein_candidate_run_id_rank_idx").on(t.runId, t.rank),
+		unique("autopep_protein_candidate_run_id_rank_unique").on(t.runId, t.rank),
+		unique("autopep_protein_candidate_id_run_id_unique").on(t.id, t.runId),
+		foreignKey({
+			name: "autopep_protein_candidate_target_entity_run_fk",
+			columns: [t.targetEntityId, t.runId],
+			foreignColumns: [targetEntities.id, targetEntities.runId],
+		}),
 	],
 );
 
@@ -295,6 +310,16 @@ export const artifacts = createAutopepTable(
 		index("autopep_artifact_project_id_idx").on(t.projectId),
 		index("autopep_artifact_run_id_idx").on(t.runId),
 		index("autopep_artifact_candidate_id_idx").on(t.candidateId),
+		foreignKey({
+			name: "autopep_artifact_run_project_fk",
+			columns: [t.runId, t.projectId],
+			foreignColumns: [agentRuns.id, agentRuns.projectId],
+		}),
+		foreignKey({
+			name: "autopep_artifact_candidate_run_fk",
+			columns: [t.candidateId, t.runId],
+			foreignColumns: [proteinCandidates.id, proteinCandidates.runId],
+		}),
 	],
 );
 
