@@ -510,8 +510,33 @@ def _run_git_apply(args: list[str], *, cwd: Path, patch_path: Path) -> subproces
     )
 
 
+def _file_contains(path: Path, markers: list[str]) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(errors="replace")
+    return all(marker in text for marker in markers)
+
+
+def has_native_warm_start_support(complexa_root: Path) -> bool:
+    """Return True when the upstream checkout already exposes compatible hooks."""
+    return (
+        _file_contains(
+            complexa_root / "src/proteinfoundation/datasets/gen_dataset.py",
+            ["seed_binder_pdb_path", "warm_start_coords_nm"],
+        )
+        and _file_contains(
+            complexa_root / "src/proteinfoundation/proteina.py",
+            ["warm_start_initial_state", "partial_simulation"],
+        )
+        and _file_contains(
+            complexa_root / "src/proteinfoundation/search/beam_search.py",
+            ["warm_start_initial_state", "warm_start_checkpoints"],
+        )
+    )
+
+
 def apply_warm_start_patch(complexa_root: Path) -> str:
-    """Apply the optional Proteina warm-start patch, idempotently."""
+    """Apply optional warm-start support, skipping the patch when upstream has it."""
     complexa_root = complexa_root.resolve()
     if not (complexa_root / "src/proteinfoundation").exists():
         raise FileNotFoundError(f"Proteina-Complexa source tree not found: {complexa_root}")
@@ -521,16 +546,19 @@ def apply_warm_start_patch(complexa_root: Path) -> str:
         patch_path = Path(handle.name)
 
     try:
+        reverse_check = _run_git_apply(["--reverse", "--check"], cwd=complexa_root, patch_path=patch_path)
+        if reverse_check.returncode == 0:
+            return "already-applied"
+
+        if has_native_warm_start_support(complexa_root):
+            return "native"
+
         check = _run_git_apply(["--check"], cwd=complexa_root, patch_path=patch_path)
         if check.returncode == 0:
             apply = _run_git_apply([], cwd=complexa_root, patch_path=patch_path)
             if apply.returncode != 0:
                 raise RuntimeError(apply.stdout)
             return "applied"
-
-        reverse_check = _run_git_apply(["--reverse", "--check"], cwd=complexa_root, patch_path=patch_path)
-        if reverse_check.returncode == 0:
-            return "already-applied"
 
         raise RuntimeError(check.stdout)
     finally:

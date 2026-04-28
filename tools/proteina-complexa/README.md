@@ -1,12 +1,13 @@
 # Proteina-Complexa on Modal
 
-This directory contains a thin Modal orchestration layer for running NVIDIA's
+This directory contains a Modal deployment for running NVIDIA's
 Proteina-Complexa protein-target binder model on Modal GPUs with open weights.
 
-The Modal app builds the official Proteina-Complexa environment from NVIDIA's
-public repository, downloads the Hugging Face checkpoint pair into a persistent
-Modal Volume, and runs the upstream `complexa` CLI for validation, design, and
-status.
+The deployed FastAPI endpoint accepts a target structure on every request,
+optionally accepts a seed binder for warm-start generation, and runs the
+upstream `complexa` CLI inside the persistent Modal container. The local
+`modal run --action ...` commands remain available for development and volume
+maintenance.
 
 ## Modal Resources
 
@@ -16,6 +17,7 @@ The app uses these resources in the `autopep` workspace's `main` environment:
 - `proteina-complexa-data` mounted at `/data`
 - `proteina-complexa-runs` mounted at `/runs`
 - `huggingface-secret` containing `HF_TOKEN`
+- `proteina-complexa-api-key` containing `PROTEINA_COMPLEXA_API_KEY`
 
 Create the volumes once:
 
@@ -31,6 +33,12 @@ Create the Hugging Face secret once:
 modal secret create huggingface-secret HF_TOKEN=hf_... --env main
 ```
 
+Create the HTTP API key secret once:
+
+```bash
+modal secret create proteina-complexa-api-key PROTEINA_COMPLEXA_API_KEY='replace-with-your-api-key' --env main
+```
+
 If the Hugging Face model is public for your account, the token can still be a
 normal read token. Keeping it as a secret avoids hard-coding auth assumptions.
 
@@ -44,9 +52,33 @@ modal setup
 modal config set-environment main
 ```
 
+## Deploy
+
+Deploy the persistent HTTP endpoint:
+
+```bash
+cd tools/proteina-complexa
+modal deploy modal_app.py
+```
+
+The first deployed container checks the model Volume and downloads the checkpoint
+pair if needed. You can still pre-populate the Volume explicitly:
+
+```bash
+cd tools/proteina-complexa
+modal run modal_app.py --action download-weights
+```
+
+Run the app locally on Modal during development:
+
+```bash
+cd tools/proteina-complexa
+modal serve modal_app.py
+```
+
 ## Build and Download Weights
 
-The first run builds a large CUDA/PyTorch image and can take a while.
+The first build creates a large CUDA/PyTorch image and can take a while.
 
 ```bash
 modal run modal_app.py --action download-weights
@@ -62,6 +94,108 @@ Expected files:
 
 - `/models/protein-target-160m/complexa.ckpt`
 - `/models/protein-target-160m/complexa_ae.ckpt`
+
+## HTTP API
+
+Authentication accepts any of:
+
+- `X-API-Key: <PROTEINA_COMPLEXA_API_KEY>`
+- `Authorization: Bearer <PROTEINA_COMPLEXA_API_KEY>`
+- `Authorization: Basic <base64(username:PROTEINA_COMPLEXA_API_KEY)>`
+
+`POST /design` and `POST /predict` accept the same JSON contract. The target
+structure contents are required on every request; the warm-start seed binder is
+optional.
+
+```bash
+curl -X POST "$PROTEINA_COMPLEXA_MODAL_URL/design" \
+  -H "X-API-Key: $PROTEINA_COMPLEXA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @- <<'JSON'
+{
+  "action": "smoke-cif",
+  "run_name": "target_102L_smoke_api",
+  "target": {
+    "structure": "data_...\n#\n",
+    "filename": "102L.cif",
+    "name": "target_102L",
+    "target_input": "A1-162",
+    "hotspot_residues": [],
+    "binder_length": [60, 120]
+  },
+  "warm_start": {
+    "structure": "ATOM ...\n",
+    "filename": "seed_binder.pdb",
+    "chain": "B",
+    "noise_level": 0.4
+  },
+  "overrides": [
+    "++generation.dataloader.batch_size=1"
+  ]
+}
+JSON
+```
+
+Use `"action": "design-cif"` or omit `action` for the full design pipeline.
+Use `"action": "smoke-cif"` for the generation-only smoke path. The API also
+accepts flat aliases such as `target_cif`, `target_name`,
+`hotspot_residues`, `binder_length`, `seed_binder_pdb`,
+`seed_binder_chain`, `seed_binder_noise_level`, `steps`, and `overrides` for
+parity with the local flags.
+
+Response shape:
+
+```json
+{
+  "run_name": "target_102L_smoke_api",
+  "task_name": "target_102L",
+  "mode": "smoke-cif",
+  "format": "pdb",
+  "count": 1,
+  "pdb_filename": "job_0_n_261_id_0_single_orig0.pdb",
+  "pdb": "ATOM ...\n",
+  "pdbs": [
+    {
+      "rank": 1,
+      "filename": "job_0_n_261_id_0_single_orig0.pdb",
+      "relative_path": "job_0_n_261_id_0_single_orig0/job_0_n_261_id_0_single_orig0.pdb",
+      "pdb": "ATOM ...\n"
+    }
+  ],
+  "preprocessed_target": {
+    "target_name": "target_102L",
+    "target_input": "A1-162",
+    "pdb_path": "/data/target_data/preprocessed_targets/target_102L.pdb"
+  },
+  "design": {
+    "run_name": "target_102L_smoke_api",
+    "warm_start": {
+      "mode": "warm",
+      "patch_status": "native"
+    }
+  }
+}
+```
+
+The HTTP response includes generated PDB text directly, Chai-style. For
+development commands such as `modal run modal_app.py --action smoke-cif`, the
+return payload stays lightweight and points at persisted files in the
+`proteina-complexa-runs` Volume.
+
+To get the first generated structure as an actual `.pdb` download instead of
+JSON, post the same JSON body to `/design.pdb`:
+
+```bash
+curl -X POST "$PROTEINA_COMPLEXA_MODAL_URL/design.pdb" \
+  -H "X-API-Key: $PROTEINA_COMPLEXA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -o proteina_complexa_prediction.pdb \
+  -d @request.json
+```
+
+You can also use `/predict.pdb`, or send `"return_format": "pdb"` to
+`/design`. The generated PDB remains persisted in the `proteina-complexa-runs`
+Volume as well.
 
 ## Validate
 
@@ -192,10 +326,12 @@ omitted. Lower values start closer to the seed; higher values explore farther
 from it. You can alternatively pass `--seed-binder-start-t` or
 `--seed-binder-num-steps` for more direct control over where denoising begins.
 
-Warm start is optional and defensive: if no seed is supplied, or if the patch or
-seed parsing cannot be applied safely in the Modal container, the run falls back
-to the existing cold-start path instead of treating the seed as a second fixed
-target.
+Warm start is optional and defensive: if no seed is supplied, or if seed parsing
+cannot be applied safely in the Modal container, the run falls back to the
+existing cold-start path instead of treating the seed as a second fixed target.
+The compatibility layer first checks whether the cloned upstream checkout
+already exposes compatible warm-start hooks (`patch_status: "native"`). If not,
+it applies the local patch idempotently (`"applied"` or `"already-applied"`).
 
 ## Batch Usage
 

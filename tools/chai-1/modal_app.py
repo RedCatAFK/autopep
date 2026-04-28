@@ -179,9 +179,19 @@ def _assert_authorized(headers: Any) -> None:
     expected = os.environ.get(API_KEY_ENV)
     if not expected:
         raise RuntimeError(f"Modal Secret {SECRET_NAME!r} must define {API_KEY_ENV}")
+    try:
+        expected_bytes = expected.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(
+            f"Modal Secret {SECRET_NAME!r} value {API_KEY_ENV} must contain only ASCII characters"
+        ) from exc
 
     for candidate in _candidate_api_keys(headers):
-        if hmac.compare_digest(candidate, expected):
+        try:
+            candidate_bytes = candidate.encode("ascii")
+        except UnicodeEncodeError:
+            continue
+        if hmac.compare_digest(candidate_bytes, expected_bytes):
             return
 
     from fastapi import HTTPException

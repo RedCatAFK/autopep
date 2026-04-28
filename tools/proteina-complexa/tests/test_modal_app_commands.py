@@ -18,6 +18,9 @@ class _FakeImage:
     def run_commands(self, *args, **kwargs):
         return self
 
+    def pip_install(self, *args, **kwargs):
+        return self
+
     def env(self, *args, **kwargs):
         return self
 
@@ -72,6 +75,7 @@ def _install_fake_modal() -> None:
         Image=types.SimpleNamespace(from_registry=lambda *args, **kwargs: _FakeImage()),
         Secret=_FakeSecret,
         Volume=_FakeVolume,
+        asgi_app=lambda *args, **kwargs: (lambda function: function),
     )
     sys.modules["modal"] = fake_modal
 
@@ -415,6 +419,125 @@ class DesignCommandTests(unittest.TestCase):
         command = calls[0][0]
         self.assertFalse(any("seed_binder_pdb_path" in part for part in command))
         self.assertEqual(result["warm_start"]["mode"], "cold")
+
+    def test_http_design_request_runs_target_each_time_and_passes_warm_start(self) -> None:
+        preprocessed = {
+            "target_name": "target_102L",
+            "hydra_overrides": [
+                "++generation.task_name=target_102L",
+                "++generation.target_dict_cfg.target_102L.target_path=/data/target_data/preprocessed_targets/target_102L.pdb",
+            ],
+        }
+
+        with (
+            mock.patch.object(modal_app, "_preprocess_target_structure_impl", return_value=preprocessed) as preprocess,
+            mock.patch.object(modal_app, "_design_binder_impl", return_value={"warm_start": {"mode": "warm"}}) as design,
+        ):
+            result = modal_app._run_design_request(
+                {
+                    "action": "smoke-cif",
+                    "run_name": "api_smoke",
+                    "target": {
+                        "structure": "data_target\n#",
+                        "filename": "102L.cif",
+                        "name": "target_102L",
+                        "target_input": "A1-162",
+                        "hotspot_residues": ["A45"],
+                        "binder_length": [60, 120],
+                    },
+                    "warm_start": {
+                        "structure": "ATOM      1  CA  GLY B   1       0.000   0.000   0.000",
+                        "filename": "seed.pdb",
+                        "chain": "B",
+                        "noise_level": 0.4,
+                    },
+                    "overrides": ["++generation.dataloader.batch_size=2"],
+                }
+            )
+
+        preprocess.assert_called_once()
+        preprocess_kwargs = preprocess.call_args.kwargs
+        self.assertEqual(preprocess_kwargs["structure_filename"], "102L.cif")
+        self.assertEqual(preprocess_kwargs["target_name"], "target_102L")
+        self.assertEqual(preprocess_kwargs["target_input"], "A1-162")
+        self.assertEqual(preprocess_kwargs["hotspot_residues"], ["A45"])
+
+        design.assert_called_once()
+        design_kwargs = design.call_args.kwargs
+        self.assertEqual(design_kwargs["task_name"], "target_102L")
+        self.assertEqual(design_kwargs["run_name"], "api_smoke")
+        self.assertEqual(design_kwargs["steps"], ["generate"])
+        self.assertEqual(design_kwargs["seed_binder_filename"], "seed.pdb")
+        self.assertEqual(design_kwargs["seed_binder_chain"], "B")
+        self.assertEqual(design_kwargs["seed_binder_noise_level"], 0.4)
+        self.assertIs(design_kwargs["include_generated_pdbs"], True)
+        self.assertIn("++generation.args.nsteps=20", design_kwargs["overrides"])
+        self.assertIn("++generation.dataloader.batch_size=2", design_kwargs["overrides"])
+        self.assertEqual(result["mode"], "smoke-cif")
+        self.assertEqual(result["format"], "pdb")
+
+    def test_http_design_request_requires_target_contents_not_path(self) -> None:
+        with self.assertRaisesRegex(ValueError, "file contents"):
+            modal_app._run_design_request({"target": {"structure": "/tmp/target.cif"}})
+
+    def test_collect_generated_pdbs_reads_ranked_pdb_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            inference_dir = Path(tmp) / "inference"
+            first_dir = inference_dir / "job_0"
+            second_dir = inference_dir / "job_1"
+            first_dir.mkdir(parents=True)
+            second_dir.mkdir(parents=True)
+            (second_dir / "job_1.pdb").write_text("ATOM second\n")
+            (first_dir / "job_0.pdb").write_text("ATOM first\n")
+
+            pdbs = modal_app._collect_generated_pdbs(inference_dir=inference_dir)
+
+        self.assertEqual(len(pdbs), 2)
+        self.assertEqual(pdbs[0]["filename"], "job_0.pdb")
+        self.assertEqual(pdbs[0]["relative_path"], "job_0/job_0.pdb")
+        self.assertEqual(pdbs[0]["pdb"], "ATOM first\n")
+
+    def test_design_binder_only_returns_pdbs_when_requested(self) -> None:
+        calls = []
+
+        def fake_run(command, *, cwd):
+            calls.append((command, cwd))
+            return "ok"
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(modal_app, "COMPLEXA_ROOT", Path(tmp) / "complexa"),
+            mock.patch.object(modal_app, "RUNS_DIR", Path(tmp) / "runs"),
+            mock.patch.object(modal_app, "_run_complexa", fake_run),
+            mock.patch.object(modal_app, "_target_overrides_from_preprocessed_config", return_value=[]),
+        ):
+            result = modal_app._design_binder_impl(
+                task_name="target_102L",
+                run_name="local_dev",
+                steps=["generate"],
+            )
+
+        self.assertNotIn("pdbs", result)
+
+    def test_pdb_file_payload_extracts_first_generated_structure(self) -> None:
+        filename, pdb_text = modal_app._pdb_file_payload(
+            {
+                "pdbs": [
+                    {
+                        "filename": "job_0.pdb",
+                        "pdb": "ATOM first\n",
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(filename, "job_0.pdb")
+        self.assertEqual(pdb_text, "ATOM first\n")
+
+    def test_pdb_download_headers_force_attachment_filename(self) -> None:
+        headers = modal_app._pdb_download_headers("../job_0.pdb")
+
+        self.assertEqual(headers["Content-Disposition"], 'attachment; filename="job_0.pdb"')
 
 
 if __name__ == "__main__":
