@@ -53,7 +53,8 @@ yarn-error.log*
 *.swp
 *~
 .cache/
+.superpowers/
+.worktrees/
 
 .env
 .env.local
-
