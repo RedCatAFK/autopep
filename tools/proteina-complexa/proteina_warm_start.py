@@ -1,0 +1,548 @@
+from __future__ import annotations
+
+import argparse
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+WARM_START_PATCH = r'''diff --git a/src/proteinfoundation/datasets/gen_dataset.py b/src/proteinfoundation/datasets/gen_dataset.py
+index 5a2650e..8309bbd 100644
+--- a/src/proteinfoundation/datasets/gen_dataset.py
++++ b/src/proteinfoundation/datasets/gen_dataset.py
+@@ -6,6 +6,9 @@ import atomworks
+ import biotite
+ import numpy as np
+ import torch
++from atomworks.io.utils.io_utils import load_any
++from atomworks.ml.encoding_definitions import AF2_ATOM37_ENCODING
++from atomworks.ml.transforms.encoding import atom_array_to_encoding
+ from atomworks.io.tools.rdkit import atom_array_from_rdkit
+ from loguru import logger
+ from rdkit import Chem
+@@ -14,6 +17,7 @@ from torch.utils.data import Dataset
+ 
+ from proteinfoundation.datasets.atomworks_ligand_transforms import get_af3_raw_molecule_features, get_laplacian_pe
+ from proteinfoundation.nn.feature_factory.feature_utils import BOND_ORDER_MAP
++from proteinfoundation.utils.coors_utils import ang_to_nm
+ from proteinfoundation.utils.motif_utils import parse_motif, save_motif_csv
+ from proteinfoundation.utils.pdb_utils import load_target_from_pdb
+ 
+@@ -413,11 +417,22 @@ class TargetFeatures(ConditionalFeature):
+         target_hotspots: list[int] | None = None,
+         binder_center: list[float] | None = None,
+         pdb_id: str | None = None,
++        seed_binder_pdb_path: str | None = None,
++        seed_binder_chain: str | None = None,
++        seed_binder_noise_level: float | None = None,
++        seed_binder_start_t: float | None = None,
++        seed_binder_num_steps: int | None = None,
+     ):
+         super().__init__()
+         self.task_name = task_name
+         self.binder_gen_only = binder_gen_only
+         self.input_spec = input_spec
++        self.seed_binder_pdb_path = seed_binder_pdb_path
++        self.seed_binder_chain = seed_binder_chain
++        self.seed_binder_noise_level = seed_binder_noise_level
++        self.seed_binder_start_t = seed_binder_start_t
++        self.seed_binder_num_steps = seed_binder_num_steps
++        self.seed_binder_features = None
+ 
+         # Validate pdb_path exists with helpful error message
+         if not os.path.exists(pdb_path):
+@@ -451,6 +466,55 @@ To fix:
+         self.binder_center = torch.tensor(binder_center).reshape(1, 3) if binder_center is not None else None
+         self.pdb_id = pdb_id
+ 
++    def _load_seed_binder_features(self) -> dict[str, torch.Tensor] | None:
++        """Load an optional seed binder as mutable generation-state features."""
++        if not self.seed_binder_pdb_path:
++            return None
++
++        try:
++            if not os.path.exists(self.seed_binder_pdb_path):
++                raise FileNotFoundError(self.seed_binder_pdb_path)
++
++            loaded = load_any(self.seed_binder_pdb_path, model=1)
++            struct = loaded[0] if isinstance(loaded, (list, tuple)) else loaded
++            if self.seed_binder_chain:
++                struct = struct[struct.chain_id == self.seed_binder_chain]
++            if len(struct) == 0:
++                raise ValueError("seed binder selection matched no atoms")
++            if not hasattr(struct, "occupancy"):
++                struct.set_annotation("occupancy", np.ones(len(struct), dtype=np.float32))
++
++            encoded = atom_array_to_encoding(
++                struct,
++                encoding=AF2_ATOM37_ENCODING,
++                default_coord=0.0,
++            )
++            coord_mask = torch.from_numpy(encoded["mask"]).bool()
++            residue_mask = coord_mask[:, 1].bool()
++            if not bool(residue_mask.any()):
++                raise ValueError("seed binder contains no CA-bearing residues")
++
++            coords_nm = ang_to_nm(torch.from_numpy(encoded["xyz"]).float())[residue_mask]
++            coord_mask = coord_mask[residue_mask]
++            residue_type = torch.from_numpy(encoded["seq"]).long()[residue_mask]
++            residue_mask = torch.ones(coords_nm.shape[0], dtype=torch.bool)
++
++            logger.info(
++                f"Loaded warm-start seed binder from {self.seed_binder_pdb_path} "
++                f"with {coords_nm.shape[0]} residues"
++            )
++            return {
++                "coords_nm": coords_nm,
++                "coord_mask": coord_mask,
++                "residue_type": residue_type,
++                "residue_mask": residue_mask,
++            }
++        except Exception as exc:
++            logger.warning(
++                f"Warm-start seed binder could not be loaded; falling back to cold start: {exc}"
++            )
++            return None
++
+     def __repr__(self):
+         return (
+             f"TargetFeatures("
+@@ -464,6 +528,13 @@ To fix:
+         )
+ 
+     def setup(self, nres: list[int]):
++        self.seed_binder_features = self._load_seed_binder_features()
++        if self.seed_binder_features is not None:
++            seed_len = int(self.seed_binder_features["residue_mask"].shape[0])
++            for idx in range(len(nres)):
++                nres[idx] = seed_len
++            logger.info(f"Warm-start mode active; overriding generated binder length to seed length {seed_len}")
++
+         (
+             self.target_structures,
+             self.target_masks,
+@@ -594,6 +665,17 @@ To fix:
+             result["target_hotspot_mask"] = self.target_hotspots_masks[sample_idx].clone()
+         if self.binder_center is not None and self.binder_centers is not None:
+             result["binder_center"] = self.binder_centers[sample_idx].clone()
++        if self.seed_binder_features is not None:
++            result["warm_start_coords_nm"] = self.seed_binder_features["coords_nm"].clone()
++            result["warm_start_coord_mask"] = self.seed_binder_features["coord_mask"].clone()
++            result["warm_start_residue_type"] = self.seed_binder_features["residue_type"].clone()
++            result["warm_start_residue_mask"] = self.seed_binder_features["residue_mask"].clone()
++            if self.seed_binder_noise_level is not None:
++                result["warm_start_noise_level"] = torch.tensor(float(self.seed_binder_noise_level), dtype=torch.float32)
++            if self.seed_binder_start_t is not None:
++                result["warm_start_start_t"] = torch.tensor(float(self.seed_binder_start_t), dtype=torch.float32)
++            if self.seed_binder_num_steps is not None:
++                result["warm_start_num_steps"] = torch.tensor(int(self.seed_binder_num_steps), dtype=torch.long)
+         result["prepend_target"] = self.binder_gen_only  # give atomistic if the target  has this then set to True
+         result["atomistic_target"] = (
+             False  # hasattr(self, "target_laplacian_pes") and self.target_laplacian_pes[index] is not None # whether to prepend target to the generated sequence
+diff --git a/src/proteinfoundation/datasets/transforms.py b/src/proteinfoundation/datasets/transforms.py
+index 00146d9..6ceb1c9 100644
+--- a/src/proteinfoundation/datasets/transforms.py
++++ b/src/proteinfoundation/datasets/transforms.py
+@@ -3364,7 +3364,19 @@ class CoordsTensorCenteringTransform(BaseTransform):
+         center = self._compute_center(coords, mask, self.data_mode)
+         graph[self.tensor_name] = self._apply_shift(graph[self.tensor_name], mask, center)
+ 
+-        for spec in self.additional_tensors:
++        additional_tensors = list(self.additional_tensors)
++        if (
++            "warm_start_coords_nm" in graph
++            and all(spec.get("tensor_name") != "warm_start_coords_nm" for spec in additional_tensors)
++        ):
++            additional_tensors.append(
++                {
++                    "tensor_name": "warm_start_coords_nm",
++                    "mask_name": "warm_start_coord_mask",
++                }
++            )
++
++        for spec in additional_tensors:
+             tname = spec["tensor_name"]
+             mname = spec.get("mask_name")
+             t_coords = graph[tname]
+diff --git a/src/proteinfoundation/proteina.py b/src/proteinfoundation/proteina.py
+index 07e6ffd..f207ee0 100644
+--- a/src/proteinfoundation/proteina.py
++++ b/src/proteinfoundation/proteina.py
+@@ -564,6 +564,130 @@ class Proteina(L.LightningModule):
+         self.inf_cfg = inf_cfg
+         self.nn_ag = nn_ag
+ 
++    def _warm_start_scalar(self, batch: dict, key: str):
++        value = batch.get(key)
++        if value is None:
++            return None
++        if isinstance(value, torch.Tensor):
++            if value.numel() == 0:
++                return None
++            return value.flatten()[0].item()
++        if isinstance(value, list):
++            if not value:
++                return None
++            return value[0]
++        return value
++
++    def _warm_start_clean_state(self, batch: dict) -> tuple[dict, torch.Tensor] | None:
++        required = [
++            "warm_start_coords_nm",
++            "warm_start_coord_mask",
++            "warm_start_residue_type",
++            "warm_start_residue_mask",
++        ]
++        if not all(key in batch for key in required):
++            return None
++
++        seed_batch = dict(batch)
++        seed_batch["coords_nm"] = batch["warm_start_coords_nm"].to(self.device)
++        seed_batch["coords"] = seed_batch["coords_nm"] * 10.0
++        seed_batch["coord_mask"] = batch["warm_start_coord_mask"].to(self.device).bool()
++        seed_batch["residue_type"] = batch["warm_start_residue_type"].to(self.device).long()
++        seed_batch["residue_mask"] = batch["warm_start_residue_mask"].to(self.device).bool()
++        seed_batch["mask_dict"] = {
++            "coords": seed_batch["coord_mask"],
++            "residue_type": seed_batch["residue_mask"],
++        }
++        seed_batch["mask"] = seed_batch["residue_mask"]
++        seed_batch = add_clean_samples(
++            seed_batch,
++            self.cfg_exp.product_flowmatcher,
++            getattr(self, "autoencoder", None),
++        )
++        return seed_batch["x_1"], seed_batch["mask"]
++
++    def _warm_start_step(self, batch: dict, ts: dict, nsteps: int) -> int:
++        num_steps = self._warm_start_scalar(batch, "warm_start_num_steps")
++        if num_steps is not None and int(num_steps) > 0:
++            return max(0, min(nsteps - 1, nsteps - int(num_steps)))
++
++        start_t = self._warm_start_scalar(batch, "warm_start_start_t")
++        if start_t is None:
++            noise_level = self._warm_start_scalar(batch, "warm_start_noise_level")
++            if noise_level is None:
++                noise_level = 0.5
++            start_t = 1.0 - float(noise_level)
++
++        start_t = max(0.0, min(0.999, float(start_t)))
++        primary_mode = next(iter(ts))
++        schedule = ts[primary_mode]
++        start_step = int(torch.argmin(torch.abs(schedule - start_t)).item())
++        return max(0, min(nsteps - 1, start_step))
++
++    def warm_start_checkpoints(self, step_checkpoints, warm_start_step: int, nsteps: int) -> list[int]:
++        step_checkpoints = [int(step) for step in step_checkpoints]
++        if warm_start_step <= 0:
++            return step_checkpoints
++        remaining = [step for step in step_checkpoints if step > warm_start_step]
++        if not remaining or remaining[-1] != nsteps:
++            remaining.append(nsteps)
++        return [warm_start_step, *remaining]
++
++    def warm_start_initial_state(
++        self,
++        batch: dict,
++        mask: torch.Tensor,
++        n: int,
++        ts: dict,
++        nsteps: int,
++    ) -> tuple[dict | None, int]:
++        try:
++            clean = self._warm_start_clean_state(batch)
++            if clean is None:
++                return None, 0
++            seed_x1, seed_mask = clean
++            seed_batch = seed_mask.shape[0]
++            target_batch = mask.shape[0]
++            if seed_mask.shape[1] != n:
++                logger.warning(
++                    f"Warm-start seed length {seed_mask.shape[1]} does not match generation length {n}; "
++                    "falling back to cold start."
++                )
++                return None, 0
++            if target_batch != seed_batch:
++                if target_batch % seed_batch != 0:
++                    logger.warning(
++                        f"Warm-start seed batch {seed_batch} cannot expand to generation batch {target_batch}; "
++                        "falling back to cold start."
++                    )
++                    return None, 0
++                repeat_factor = target_batch // seed_batch
++                seed_x1 = {
++                    data_mode: value.repeat_interleave(repeat_factor, dim=0)
++                    for data_mode, value in seed_x1.items()
++                }
++            seed_x1 = {data_mode: value.to(self.device) for data_mode, value in seed_x1.items()}
++            start_step = self._warm_start_step(batch, ts, nsteps)
++            x0 = self.fm.sample_noise(
++                n,
++                shape=(target_batch,),
++                device=self.device,
++                mask=mask,
++            )
++            t = {
++                data_mode: ts[data_mode][start_step] * torch.ones(target_batch, device=self.device)
++                for data_mode in self.fm.data_modes
++            }
++            x = self.fm.interpolate(x_0=x0, x_1=seed_x1, t=t, mask=mask)
++            logger.info(
++                f"Warm-start mode active at step {start_step}/{nsteps} "
++                f"(t={float(ts[next(iter(ts))][start_step]):.3f})"
++            )
++            return x, start_step
++        except Exception as exc:
++            logger.warning(f"Warm-start initialization failed; falling back to cold start: {exc}")
++            return None, 0
++
+     def generate(self, batch: dict) -> dict:
+         """
+         Runs a single generation pass with the current configuration.
+@@ -584,6 +708,42 @@ class Proteina(L.LightningModule):
+         # Derive nsamples and n from mask shape
+         mask = batch["mask"]
+         nsamples, n = mask.shape
++        ts, gt = self.fm.sample_schedule(
++            nsteps=nsteps,
++            sampling_model_args=self.inf_cfg.model,
++        )
++        warm_x, warm_start_step = self.warm_start_initial_state(
++            batch=batch,
++            mask=mask,
++            n=n,
++            ts=ts,
++            nsteps=nsteps,
++        )
++        if warm_x is not None:
++            simulation_step_params = {
++                data_mode: self.inf_cfg.model[data_mode]["simulation_step_params"]
++                for data_mode in self.fm.data_modes
++            }
++            try:
++                gen_samples, _ = self.fm.partial_simulation(
++                    batch=batch,
++                    x=warm_x,
++                    x_1_pred=None,
++                    mask=mask,
++                    predict_for_sampling=fn_predict_for_sampling,
++                    start_step=warm_start_step,
++                    end_step=nsteps,
++                    ts=ts,
++                    gt=gt,
++                    self_cond=self_cond,
++                    simulation_step_params=simulation_step_params,
++                    device=self.device,
++                    guidance_w=guidance_w,
++                    ag_ratio=ag_ratio,
++                )
++                return gen_samples
++            except Exception as exc:
++                logger.warning(f"Warm-start simulation failed; falling back to cold start: {exc}")
+ 
+         gen_samples = self.fm.full_simulation(
+             batch=batch,
+diff --git a/src/proteinfoundation/search/beam_search.py b/src/proteinfoundation/search/beam_search.py
+index 2c6cd7c..302ef2d 100644
+--- a/src/proteinfoundation/search/beam_search.py
++++ b/src/proteinfoundation/search/beam_search.py
+@@ -123,20 +123,33 @@ class BeamSearch(BaseSearch):
+                 f"nsteps ({search_ctx.nsteps}); otherwise final samples are partially "
+                 f"denoised and rewards are computed on incomplete structures."
+             )
+-        n_steps_total = len(step_checkpoints) - 1
+-
+         # ── initialise noise + tags ─────────────────────────────────────
+         init_mask = batch["mask"]
+         nsamples, n = init_mask.shape
+         mask = init_mask.repeat_interleave(beam_width, dim=0)
+-        xt = self.proteina.fm.sample_noise(
+-            n,
+-            shape=(nsamples * beam_width,),
+-            device=search_ctx.device,
++        xt, warm_start_step = self.proteina.warm_start_initial_state(
++            batch=batch,
+             mask=mask,
++            n=n,
++            ts=search_ctx.ts,
++            nsteps=search_ctx.nsteps,
+         )
++        if xt is not None:
++            step_checkpoints = self.proteina.warm_start_checkpoints(
++                step_checkpoints,
++                warm_start_step,
++                search_ctx.nsteps,
++            )
++        else:
++            xt = self.proteina.fm.sample_noise(
++                n,
++                shape=(nsamples * beam_width,),
++                device=search_ctx.device,
++                mask=mask,
++            )
+         x_1_pred = None
+         metadata_tags = make_initial_search_tags("beam", nsamples, beam_width)
++        n_steps_total = len(step_checkpoints) - 1
+ 
+         logger.info(
+             f"[BeamSearch] Starting | nsamples={nsamples}, seq_len={n}, "
+diff --git a/src/proteinfoundation/search/fk_steering.py b/src/proteinfoundation/search/fk_steering.py
+index 1a91c49..8219763 100644
+--- a/src/proteinfoundation/search/fk_steering.py
++++ b/src/proteinfoundation/search/fk_steering.py
+@@ -92,25 +92,38 @@ class FKSteering(BaseSearch):
+                 f"nsteps ({search_ctx.nsteps}); otherwise final samples are partially "
+                 f"denoised and rewards are computed on incomplete structures."
+             )
+-        n_steps_total = len(step_checkpoints) - 1
+-
+         # ── initialise noise + tags ─────────────────────────────────────
+         init_mask = batch["mask"]
+         nsamples, n = init_mask.shape
+-        logger.info(
+-            f"[FKSteering] Starting | nsamples={nsamples}, "
+-            f"beam_width={beam_width}, n_branch={n_branch}, "
+-            f"temperature={temperature}, checkpoints={step_checkpoints}"
+-        )
+         mask = init_mask.repeat_interleave(beam_width, dim=0)
+-        xt = self.proteina.fm.sample_noise(
+-            n,
+-            shape=(nsamples * beam_width,),
+-            device=search_ctx.device,
++        xt, warm_start_step = self.proteina.warm_start_initial_state(
++            batch=batch,
+             mask=mask,
++            n=n,
++            ts=search_ctx.ts,
++            nsteps=search_ctx.nsteps,
+         )
++        if xt is not None:
++            step_checkpoints = self.proteina.warm_start_checkpoints(
++                step_checkpoints,
++                warm_start_step,
++                search_ctx.nsteps,
++            )
++        else:
++            xt = self.proteina.fm.sample_noise(
++                n,
++                shape=(nsamples * beam_width,),
++                device=search_ctx.device,
++                mask=mask,
++            )
+         x_1_pred = None
+         metadata_tags = make_initial_search_tags("fk", nsamples, beam_width)
++        n_steps_total = len(step_checkpoints) - 1
++        logger.info(
++            f"[FKSteering] Starting | nsamples={nsamples}, "
++            f"beam_width={beam_width}, n_branch={n_branch}, "
++            f"temperature={temperature}, checkpoints={step_checkpoints}"
++        )
+ 
+         # ── main search loop ────────────────────────────────────────────
+         all_sample_prots = []
+diff --git a/src/proteinfoundation/search/mcts_search.py b/src/proteinfoundation/search/mcts_search.py
+index feb272e..4a02519 100644
+--- a/src/proteinfoundation/search/mcts_search.py
++++ b/src/proteinfoundation/search/mcts_search.py
+@@ -72,24 +72,43 @@ class MCTSSearch(BaseSearch):
+ 
+         init_mask = batch["mask"]
+         nsamples, n = init_mask.shape
++        warm_xt, warm_start_step = self.proteina.warm_start_initial_state(
++            batch=batch,
++            mask=init_mask,
++            n=n,
++            ts=search_ctx.ts,
++            nsteps=search_ctx.nsteps,
++        )
++        if warm_xt is not None:
++            step_checkpoints = self.proteina.warm_start_checkpoints(
++                step_checkpoints,
++                warm_start_step,
++                search_ctx.nsteps,
++            )
+ 
+         logger.info(
+-            f"Starting MCTS with {nsamples} samples, {n_simulations} simulations per checkpoint, exploration_prob={exploration_prob}"
++            f"Starting MCTS with {nsamples} samples, {n_simulations} simulations per checkpoint, "
++            f"exploration_prob={exploration_prob}, checkpoints={step_checkpoints}"
+         )
+ 
+         # Initialize root states and lineage tags for each sample
+         cur_states = []
+         metadata_tags = []
+         for sample_idx in range(nsamples):
+-            xt_root = self.proteina.fm.sample_noise(
+-                n,
+-                shape=(1,),
+-                device=search_ctx.device,
+-                mask=init_mask[sample_idx : sample_idx + 1],
+-            )
++            if warm_xt is not None:
++                xt_root = {key: value[sample_idx : sample_idx + 1] for key, value in warm_xt.items()}
++                current_step = warm_start_step
++            else:
++                xt_root = self.proteina.fm.sample_noise(
++                    n,
++                    shape=(1,),
++                    device=search_ctx.device,
++                    mask=init_mask[sample_idx : sample_idx + 1],
++                )
++                current_step = 0
+ 
+             root_state = MCTSState(
+-                current_step=0,
++                current_step=current_step,
+                 x_t=xt_root,
+                 x_1_pred=None,
+                 sample_idx=sample_idx,
+'''
+
+
+def _run_git_apply(args: list[str], *, cwd: Path, patch_path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "apply", *args, str(patch_path)],
+        cwd=str(cwd),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+
+def apply_warm_start_patch(complexa_root: Path) -> str:
+    """Apply the optional Proteina warm-start patch, idempotently."""
+    complexa_root = complexa_root.resolve()
+    if not (complexa_root / "src/proteinfoundation").exists():
+        raise FileNotFoundError(f"Proteina-Complexa source tree not found: {complexa_root}")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as handle:
+        handle.write(WARM_START_PATCH)
+        patch_path = Path(handle.name)
+
+    try:
+        check = _run_git_apply(["--check"], cwd=complexa_root, patch_path=patch_path)
+        if check.returncode == 0:
+            apply = _run_git_apply([], cwd=complexa_root, patch_path=patch_path)
+            if apply.returncode != 0:
+                raise RuntimeError(apply.stdout)
+            return "applied"
+
+        reverse_check = _run_git_apply(["--reverse", "--check"], cwd=complexa_root, patch_path=patch_path)
+        if reverse_check.returncode == 0:
+            return "already-applied"
+
+        raise RuntimeError(check.stdout)
+    finally:
+        patch_path.unlink(missing_ok=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Install Proteina warm-start support into an upstream checkout.")
+    parser.add_argument("complexa_root", type=Path)
+    args = parser.parse_args()
+    print(apply_warm_start_patch(args.complexa_root))
+
+
+if __name__ == "__main__":
+    main()

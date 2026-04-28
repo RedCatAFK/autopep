@@ -11,6 +11,7 @@ from typing import Iterable
 import modal
 
 from preprocessing import preprocess_cif_text, sanitize_name, write_preprocessed_outputs
+from proteina_warm_start import apply_warm_start_patch
 
 
 APP_NAME = "proteina-complexa"
@@ -22,6 +23,7 @@ COMPLEXA_BIN = Path("/workspace/.venv/bin/complexa")
 PYTHON_BIN = Path("/workspace/.venv/bin/python")
 PREPROCESS_DIR = Path("/data/preprocessed_targets")
 TARGET_DATA_DIR = Path("/data/target_data/preprocessed_targets")
+SEED_BINDER_DIR = Path("/data/seed_binders")
 RUNS_DIR = Path("/runs")
 
 DEFAULT_PIPELINE_CONFIG = "configs/search_binder_local_pipeline.yaml"
@@ -75,6 +77,7 @@ image = (
     )
     .workdir(str(COMPLEXA_ROOT))
     .add_local_python_source("preprocessing")
+    .add_local_python_source("proteina_warm_start")
 )
 
 
@@ -107,6 +110,12 @@ def _run(
 
 def _run_complexa(command: list[str], *, cwd: Path = COMPLEXA_ROOT) -> str:
     return _run(command, cwd=cwd, env={"COMPLEXA_INIT": "uv"})
+
+
+def _ensure_warm_start_patch() -> str:
+    status = apply_warm_start_patch(COMPLEXA_ROOT)
+    print(f"Proteina warm-start patch: {status}", flush=True)
+    return status
 
 
 def _tail_text(path: Path, *, limit: int = 12000) -> str:
@@ -169,6 +178,64 @@ def _local_weight_files() -> dict[str, str]:
 
 def _normalize_overrides(overrides: Iterable[str] | None) -> list[str]:
     return [override for override in (overrides or []) if override]
+
+
+def _seed_binder_remote_path(
+    *,
+    task_name: str,
+    run_name: str,
+    seed_binder_filename: str = "seed_binder.pdb",
+) -> Path:
+    safe_task_name = sanitize_name(task_name)
+    safe_run_name = sanitize_name(run_name)
+    seed_name = Path(seed_binder_filename).name
+    seed_path = Path(seed_name)
+    if seed_path.suffix.lower() == ".gz":
+        suffix = seed_path.with_suffix("").suffix
+    else:
+        suffix = seed_path.suffix
+    if suffix.lower() not in {".pdb", ".cif", ".mmcif"}:
+        suffix = ".pdb"
+    return SEED_BINDER_DIR / f"{safe_task_name}_{safe_run_name}{suffix}"
+
+
+def _write_seed_binder_pdb(
+    *,
+    task_name: str,
+    run_name: str,
+    seed_binder_pdb_text: str,
+    seed_binder_filename: str = "seed_binder.pdb",
+) -> Path:
+    SEED_BINDER_DIR.mkdir(parents=True, exist_ok=True)
+    seed_path = _seed_binder_remote_path(
+        task_name=task_name,
+        run_name=run_name,
+        seed_binder_filename=seed_binder_filename,
+    )
+    seed_path.write_text(seed_binder_pdb_text)
+    data_volume.commit()
+    return seed_path
+
+
+def _seed_binder_overrides(
+    *,
+    seed_binder_pdb_path: Path,
+    seed_binder_chain: str | None = None,
+    seed_binder_noise_level: float | None = None,
+    seed_binder_start_t: float | None = None,
+    seed_binder_num_steps: int | None = None,
+) -> list[str]:
+    prefix = "++generation.dataloader.dataset.conditional_features.0."
+    overrides = [f"{prefix}seed_binder_pdb_path={seed_binder_pdb_path}"]
+    if seed_binder_chain:
+        overrides.append(f"{prefix}seed_binder_chain={seed_binder_chain}")
+    if seed_binder_noise_level is not None:
+        overrides.append(f"{prefix}seed_binder_noise_level={float(seed_binder_noise_level)}")
+    if seed_binder_start_t is not None:
+        overrides.append(f"{prefix}seed_binder_start_t={float(seed_binder_start_t)}")
+    if seed_binder_num_steps is not None:
+        overrides.append(f"{prefix}seed_binder_num_steps={int(seed_binder_num_steps)}")
+    return overrides
 
 
 def _target_override_prefix(target_name: str) -> str:
@@ -704,7 +771,7 @@ def validate(
     gpu=DEFAULT_GPU,
     volumes={
         "/models": model_volume.read_only(),
-        "/data": data_volume.read_only(),
+        "/data": data_volume,
         "/runs": runs_volume,
     },
     timeout=12 * 60 * 60,
@@ -715,7 +782,13 @@ def design_binder(
     pipeline_config: str = DEFAULT_PIPELINE_CONFIG,
     overrides: list[str] | None = None,
     steps: list[str] | None = None,
-) -> dict[str, str]:
+    seed_binder_pdb_text: str | None = None,
+    seed_binder_filename: str = "seed_binder.pdb",
+    seed_binder_chain: str | None = None,
+    seed_binder_noise_level: float | None = None,
+    seed_binder_start_t: float | None = None,
+    seed_binder_num_steps: int | None = None,
+) -> dict:
     """Run a single protein-target binder design job on one Modal GPU."""
     model_volume.reload()
     data_volume.reload()
@@ -723,9 +796,35 @@ def design_binder(
     run_dir = RUNS_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     existing_logs = set(run_dir.glob("logs/**/*.log"))
+    seed_overrides: list[str] = []
+    warm_start: dict[str, str] = {"mode": "cold"}
+    if seed_binder_pdb_text:
+        try:
+            patch_status = _ensure_warm_start_patch()
+            seed_binder_path = _write_seed_binder_pdb(
+                task_name=task_name,
+                run_name=run_name,
+                seed_binder_pdb_text=seed_binder_pdb_text,
+                seed_binder_filename=seed_binder_filename,
+            )
+            seed_overrides = _seed_binder_overrides(
+                seed_binder_pdb_path=seed_binder_path,
+                seed_binder_chain=seed_binder_chain,
+                seed_binder_noise_level=seed_binder_noise_level,
+                seed_binder_start_t=seed_binder_start_t,
+                seed_binder_num_steps=seed_binder_num_steps,
+            )
+            warm_start = {
+                "mode": "warm",
+                "seed_binder_pdb_path": str(seed_binder_path),
+                "patch_status": patch_status,
+            }
+        except Exception as exc:
+            print(f"Warm-start setup failed; falling back to cold start: {exc}", flush=True)
     design_overrides = [
         *_run_output_overrides(task_name=task_name, run_name=run_name, pipeline_config=pipeline_config),
         *_resolve_design_overrides(task_name, overrides),
+        *seed_overrides,
     ]
     command = _design_command(
         task_name=task_name,
@@ -743,7 +842,7 @@ def design_binder(
             raise RuntimeError(f"{exc}\n--- run log tails ---\n{log_tails}") from exc
         raise
     runs_volume.commit()
-    return {"run_name": run_name, "task_name": task_name, "log_tail": output[-4000:]}
+    return {"run_name": run_name, "task_name": task_name, "warm_start": warm_start, "log_tail": output[-4000:]}
 
 
 @app.function(
@@ -777,9 +876,26 @@ def main(
     hotspot_residues_json: str = "[]",
     binder_length_json: str = "[60, 120]",
     encode_latents: bool = False,
+    seed_binder_pdb_path: str = "",
+    seed_binder_chain: str = "",
+    seed_binder_noise_level: float = -1.0,
+    seed_binder_start_t: float = -1.0,
+    seed_binder_num_steps: int = 0,
 ):
     overrides = json.loads(overrides_json)
     design_steps = _normalize_design_steps(_parse_json_list(design_steps_json))
+    seed_binder_pdb_text = ""
+    seed_binder_filename = "seed_binder.pdb"
+    if seed_binder_pdb_path:
+        seed_path = Path(seed_binder_pdb_path)
+        if seed_path.exists():
+            seed_binder_pdb_text = _read_structure_text(seed_path)
+            seed_binder_filename = seed_path.name
+        else:
+            print(f"Seed binder PDB not found; falling back to cold start: {seed_path}", flush=True)
+    warm_noise_level = seed_binder_noise_level if seed_binder_noise_level >= 0 else None
+    warm_start_t = seed_binder_start_t if seed_binder_start_t >= 0 else None
+    warm_num_steps = seed_binder_num_steps if seed_binder_num_steps > 0 else None
     if action == "download-weights":
         print(download_weights.remote())
     elif action == "list-weights":
@@ -787,7 +903,20 @@ def main(
     elif action == "validate":
         print(validate.remote(overrides=overrides))
     elif action == "design":
-        print(design_binder.remote(task_name=task_name, run_name=run_name, overrides=overrides, steps=design_steps))
+        print(
+            design_binder.remote(
+                task_name=task_name,
+                run_name=run_name,
+                overrides=overrides,
+                steps=design_steps,
+                seed_binder_pdb_text=seed_binder_pdb_text or None,
+                seed_binder_filename=seed_binder_filename,
+                seed_binder_chain=seed_binder_chain or None,
+                seed_binder_noise_level=warm_noise_level,
+                seed_binder_start_t=warm_start_t,
+                seed_binder_num_steps=warm_num_steps,
+            )
+        )
     elif action == "preprocess-cif":
         if not cif_path:
             raise ValueError("--cif-path is required for --action preprocess-cif")
@@ -840,6 +969,12 @@ def main(
                 run_name=run_name,
                 overrides=design_overrides,
                 steps=effective_steps,
+                seed_binder_pdb_text=seed_binder_pdb_text or None,
+                seed_binder_filename=seed_binder_filename,
+                seed_binder_chain=seed_binder_chain or None,
+                seed_binder_noise_level=warm_noise_level,
+                seed_binder_start_t=warm_start_t,
+                seed_binder_num_steps=warm_num_steps,
             )
         )
     elif action == "batch":

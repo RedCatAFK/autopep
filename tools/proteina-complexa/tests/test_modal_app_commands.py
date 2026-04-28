@@ -300,6 +300,122 @@ class DesignCommandTests(unittest.TestCase):
         )
         self.assertIn("++generation.args.nsteps=20", command)
 
+    def test_seed_binder_overrides_target_feature_warm_start_fields(self) -> None:
+        overrides = modal_app._seed_binder_overrides(
+            seed_binder_pdb_path=Path("/data/seed_binders/seed.pdb"),
+            seed_binder_chain="B",
+            seed_binder_noise_level=0.25,
+            seed_binder_start_t=0.75,
+            seed_binder_num_steps=80,
+        )
+
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_pdb_path=/data/seed_binders/seed.pdb",
+            overrides,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_chain=B",
+            overrides,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_noise_level=0.25",
+            overrides,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_start_t=0.75",
+            overrides,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_num_steps=80",
+            overrides,
+        )
+
+    def test_seed_binder_remote_path_preserves_uncompressed_structure_suffix(self) -> None:
+        self.assertEqual(
+            modal_app._seed_binder_remote_path(
+                task_name="target_102L",
+                run_name="warm_smoke",
+                seed_binder_filename="105M.cif.gz",
+            ),
+            modal_app.SEED_BINDER_DIR / "target_102L_warm_smoke.cif",
+        )
+        self.assertEqual(
+            modal_app._seed_binder_remote_path(
+                task_name="target_102L",
+                run_name="warm_smoke",
+                seed_binder_filename="seed.pdb",
+            ),
+            modal_app.SEED_BINDER_DIR / "target_102L_warm_smoke.pdb",
+        )
+
+    def test_design_binder_with_seed_installs_patch_and_passes_seed_overrides(self) -> None:
+        calls = []
+
+        def fake_run(command, *, cwd):
+            calls.append((command, cwd))
+            return "ok"
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(modal_app, "COMPLEXA_ROOT", Path(tmp) / "complexa"),
+            mock.patch.object(modal_app, "RUNS_DIR", Path(tmp) / "runs"),
+            mock.patch.object(modal_app, "_run_complexa", fake_run),
+            mock.patch.object(modal_app, "_target_overrides_from_preprocessed_config", return_value=[]),
+            mock.patch.object(modal_app, "_ensure_warm_start_patch", return_value="applied") as patch_warm_start,
+            mock.patch.object(modal_app, "_write_seed_binder_pdb", return_value=Path("/data/seed_binders/seed.pdb")),
+        ):
+            result = modal_app.design_binder(
+                task_name="02_PDL1",
+                run_name="pdl1_seeded",
+                overrides=[],
+                steps=["generate"],
+                seed_binder_pdb_text="ATOM\n",
+                seed_binder_chain="B",
+                seed_binder_noise_level=0.4,
+            )
+
+        patch_warm_start.assert_called_once()
+        command = calls[0][0]
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_pdb_path=/data/seed_binders/seed.pdb",
+            command,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_chain=B",
+            command,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_noise_level=0.4",
+            command,
+        )
+        self.assertEqual(result["warm_start"]["mode"], "warm")
+
+    def test_design_binder_falls_back_to_cold_when_patch_setup_fails(self) -> None:
+        calls = []
+
+        def fake_run(command, *, cwd):
+            calls.append((command, cwd))
+            return "ok"
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(modal_app, "COMPLEXA_ROOT", Path(tmp) / "complexa"),
+            mock.patch.object(modal_app, "RUNS_DIR", Path(tmp) / "runs"),
+            mock.patch.object(modal_app, "_run_complexa", fake_run),
+            mock.patch.object(modal_app, "_target_overrides_from_preprocessed_config", return_value=[]),
+            mock.patch.object(modal_app, "_ensure_warm_start_patch", side_effect=RuntimeError("patch failed")),
+        ):
+            result = modal_app.design_binder(
+                task_name="02_PDL1",
+                run_name="pdl1_seeded",
+                overrides=[],
+                seed_binder_pdb_text="ATOM\n",
+            )
+
+        command = calls[0][0]
+        self.assertFalse(any("seed_binder_pdb_path" in part for part in command))
+        self.assertEqual(result["warm_start"]["mode"], "cold")
+
 
 if __name__ == "__main__":
     unittest.main()

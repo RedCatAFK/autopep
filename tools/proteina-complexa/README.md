@@ -172,6 +172,31 @@ The app writes outputs to `/runs` and commits the Volume after the CLI exits.
 Use unique `run_name` values for parallel jobs so containers never write to the
 same output directory.
 
+### Warm-Start From a Seed Binder
+
+Pass `--seed-binder-pdb-path` to initialize binder generation from an existing
+binder structure instead of the usual random prior:
+
+```bash
+modal run modal_app.py \
+  --action design \
+  --task-name 02_PDL1 \
+  --run-name pdl1_warm_seed_001 \
+  --seed-binder-pdb-path /path/to/binder_seed.pdb \
+  --seed-binder-chain B \
+  --seed-binder-noise-level 0.4
+```
+
+`--seed-binder-noise-level` defaults to `0.5` inside the patched sampler when
+omitted. Lower values start closer to the seed; higher values explore farther
+from it. You can alternatively pass `--seed-binder-start-t` or
+`--seed-binder-num-steps` for more direct control over where denoising begins.
+
+Warm start is optional and defensive: if no seed is supplied, or if the patch or
+seed parsing cannot be applied safely in the Modal container, the run falls back
+to the existing cold-start path instead of treating the seed as a second fixed
+target.
+
 ## Batch Usage
 
 For fanout, put jobs in a JSON file like [examples/jobs.json](examples/jobs.json):
