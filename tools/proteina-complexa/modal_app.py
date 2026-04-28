@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shlex
@@ -9,7 +10,7 @@ from typing import Iterable
 
 import modal
 
-from preprocessing import preprocess_pdb_text, sanitize_name, write_preprocessed_outputs
+from preprocessing import preprocess_cif_text, sanitize_name, write_preprocessed_outputs
 
 
 APP_NAME = "proteina-complexa"
@@ -44,6 +45,9 @@ image = (
     .env(
         {
             "AF2_DIR": f"{COMPLEXA_ROOT}/community_models/ckpts/AF2",
+            "CKPT_PATH": str(MODEL_DIR),
+            "COMMUNITY_MODELS_PATH": f"{COMPLEXA_ROOT}/community_models",
+            "COMPLEXA_INIT": "uv",
             "COMPLEXA_ROOT": str(COMPLEXA_ROOT),
             "DATA_PATH": "/data",
             "DSSP_EXEC": "/usr/local/bin/dssp",
@@ -54,9 +58,11 @@ image = (
             "RF3_CKPT_PATH": f"{COMPLEXA_ROOT}/community_models/ckpts/RF3/rf3_foundry_01_24_latest_remapped.ckpt",
             "RF3_EXEC_PATH": "/workspace/.venv/bin/rf3",
             "SC_EXEC": "/usr/local/bin/sc",
+            "TMOL_PATH": "/workspace/.venv/lib/python3.12/site-packages/tmol",
         }
     )
     .workdir(str(COMPLEXA_ROOT))
+    .add_local_python_source("preprocessing")
 )
 
 
@@ -69,15 +75,44 @@ def _run(
     print("+", shlex.join(command), flush=True)
     completed = subprocess.run(
         command,
-        check=True,
+        check=False,
         cwd=str(cwd),
         env={**os.environ, **(env or {})},
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-    print(completed.stdout, flush=True)
+    if completed.stdout:
+        print(completed.stdout, flush=True)
+    if completed.returncode != 0:
+        output_tail = completed.stdout[-4000:] if completed.stdout else "<no output>"
+        raise RuntimeError(
+            f"Command failed with exit code {completed.returncode}\n"
+            f"--- subprocess output tail ---\n{output_tail}"
+        )
     return completed.stdout
+
+
+def _run_complexa(command: list[str], *, cwd: Path = COMPLEXA_ROOT) -> str:
+    return _run(command, cwd=cwd, env={"COMPLEXA_INIT": "uv"})
+
+
+def _tail_text(path: Path, *, limit: int = 12000) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    text = path.read_text(errors="replace")
+    return text[-limit:]
+
+
+def _collect_run_log_tails(run_dir: Path, *, limit: int = 12000) -> str:
+    log_paths = sorted(run_dir.glob("logs/**/*.log"), key=lambda path: path.stat().st_mtime)
+    if not log_paths:
+        return ""
+    sections = []
+    for path in log_paths[-6:]:
+        relative = path.relative_to(run_dir)
+        sections.append(f"--- {relative} ---\n{_tail_text(path, limit=limit)}")
+    return "\n\n".join(sections)
 
 
 def _checkpoint_overrides() -> list[str]:
@@ -117,6 +152,12 @@ def _parse_json_list(value: str, *, default: list | None = None) -> list:
     return parsed
 
 
+def _read_structure_text(path: Path) -> str:
+    if path.suffix.lower() == ".gz":
+        return gzip.open(path, "rt").read()
+    return path.read_text()
+
+
 def _target_overrides(
     *,
     target_name: str,
@@ -131,6 +172,8 @@ def _target_overrides(
     target_input_value = json.dumps(target_input) if "," in target_input else target_input
     return [
         f"++generation.task_name={target_name}",
+        f"++generation.target_dict_cfg.{target_name}.source=preprocessed_targets",
+        f"++generation.target_dict_cfg.{target_name}.target_filename={target_name}",
         f"++generation.target_dict_cfg.{target_name}.target_path={target_path}",
         f"++generation.target_dict_cfg.{target_name}.target_input={target_input_value}",
         f"++generation.target_dict_cfg.{target_name}.hotspot_residues={hotspots}",
@@ -139,9 +182,9 @@ def _target_overrides(
     ]
 
 
-def _encode_pdb_latents(
+def _encode_cif_latents(
     *,
-    pdb_path: Path,
+    cif_path: Path,
     latent_path: Path,
     target_input: str,
 ) -> dict:
@@ -157,13 +200,16 @@ from atomworks.ml.transforms.encoding import atom_array_to_encoding
 from proteinfoundation.partial_autoencoder.autoencoder import AutoEncoder
 from proteinfoundation.utils.coors_utils import ang_to_nm
 
-pdb_path = Path({str(pdb_path)!r})
+cif_path = Path({str(cif_path)!r})
 latent_path = Path({str(latent_path)!r})
 target_input = {target_input!r}
 
-struct = load_any(str(pdb_path), model=1)
+struct = load_any(str(cif_path), model=1)
 selection = AtomSelectionStack.from_contig(target_input)
 struct = struct[selection.get_mask(struct)]
+print(json.dumps({{"selected_atoms": int(len(struct)), "target_input": target_input}}), flush=True)
+if len(struct) == 0:
+    raise ValueError(f"Target selection matched no atoms: {{target_input}}")
 if not hasattr(struct, "occupancy"):
     import numpy as np
     struct.set_annotation("occupancy", np.ones(len(struct), dtype=np.float32))
@@ -175,17 +221,24 @@ encoded = atom_array_to_encoding(
 )
 coords_nm = ang_to_nm(torch.from_numpy(encoded["xyz"]).float()).unsqueeze(0)
 atom_mask = torch.from_numpy(encoded["mask"]).bool().unsqueeze(0)
-coord_mask = atom_mask.unsqueeze(-1).expand(*atom_mask.shape, 3)
 residue_type = torch.from_numpy(encoded["seq"]).long().unsqueeze(0)
 residue_mask = atom_mask[..., 1]
+print(json.dumps({{
+    "encoded_xyz_shape": list(encoded["xyz"].shape),
+    "encoded_mask_shape": list(encoded["mask"].shape),
+    "encoded_seq_shape": list(encoded["seq"].shape),
+    "ca_residue_count": int(residue_mask.sum().item()),
+}}), flush=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 batch = {{
     "coords_nm": coords_nm.to(device),
     "coords": (coords_nm * 10.0).to(device),
+    "coord_mask": atom_mask.to(device),
     "residue_type": residue_type.to(device),
+    "residue_mask": residue_mask.to(device),
     "mask_dict": {{
-        "coords": coord_mask.to(device),
+        "coords": atom_mask.to(device),
         "residue_type": residue_mask.to(device),
     }},
     "mask": residue_mask.to(device),
@@ -206,7 +259,7 @@ payload = {{
     "residue_mask": residue_mask.detach().cpu(),
     "residue_type": residue_type.detach().cpu(),
     "target_input": target_input,
-    "pdb_path": str(pdb_path),
+    "cif_path": str(cif_path),
 }}
 latent_path.parent.mkdir(parents=True, exist_ok=True)
 torch.save(payload, latent_path)
@@ -216,7 +269,9 @@ print(json.dumps({{
     "ca_coords_nm_shape": list(payload["ca_coords_nm"].shape),
 }}))
 """
-    output = _run([str(PYTHON_BIN), "-c", script])
+    script_path = Path("/tmp") / f"{latent_path.stem}.encode_latents.py"
+    script_path.write_text(script)
+    output = _run([str(PYTHON_BIN), str(script_path)])
     return json.loads(output.strip().splitlines()[-1])
 
 
@@ -229,9 +284,9 @@ print(json.dumps({{
     },
     timeout=60 * 60,
 )
-def preprocess_pdb(
-    pdb_text: str,
-    pdb_filename: str,
+def preprocess_cif(
+    cif_text: str,
+    cif_filename: str,
     target_name: str | None = None,
     target_input: str | None = None,
     chains: str | None = None,
@@ -239,25 +294,25 @@ def preprocess_pdb(
     binder_length: list[int] | None = None,
     encode_latents: bool = True,
 ) -> dict:
-    """Convert a PDB into sequence/features and optional Complexa autoencoder latents."""
+    """Convert a CIF into sequence/features and optional Complexa autoencoder latents."""
     model_volume.reload()
-    safe_target_name = sanitize_name(target_name or Path(pdb_filename).stem)
-    result = preprocess_pdb_text(
-        pdb_text,
-        pdb_id=safe_target_name,
+    safe_target_name = sanitize_name(target_name or Path(cif_filename).stem)
+    result = preprocess_cif_text(
+        cif_text,
+        structure_id=safe_target_name,
         chains=chains,
         target_input=target_input,
     )
     PREPROCESS_DIR.mkdir(parents=True, exist_ok=True)
-    pdb_path = PREPROCESS_DIR / f"{safe_target_name}.pdb"
-    pdb_path.write_text(pdb_text)
+    cif_path = PREPROCESS_DIR / f"{safe_target_name}.cif"
+    cif_path.write_text(cif_text)
     outputs = write_preprocessed_outputs(result, PREPROCESS_DIR)
 
     latent_info = None
     if encode_latents:
         latent_path = PREPROCESS_DIR / f"{safe_target_name}.latents.pt"
-        latent_info = _encode_pdb_latents(
-            pdb_path=pdb_path,
+        latent_info = _encode_cif_latents(
+            cif_path=cif_path,
             latent_path=latent_path,
             target_input=result.target_input,
         )
@@ -268,7 +323,7 @@ def preprocess_pdb(
 
     overrides = _target_overrides(
         target_name=safe_target_name,
-        target_path=pdb_path,
+        target_path=cif_path,
         target_input=result.target_input,
         hotspot_residues=hotspot_residues or [],
         binder_length=[int(length_range[0]), int(length_range[1])],
@@ -281,7 +336,7 @@ def preprocess_pdb(
         "sequence": result.sequence,
         "chain_sequences": result.chain_sequences,
         "target_input": result.target_input,
-        "pdb_path": str(pdb_path),
+        "cif_path": str(cif_path),
         "feature_json_path": outputs["json"],
         "fasta_path": outputs["fasta"],
         "latent_info": latent_info,
@@ -359,7 +414,7 @@ def validate(
         *_checkpoint_overrides(),
         *_normalize_overrides(overrides),
     ]
-    return _run(command)
+    return _run_complexa(command)
 
 
 @app.function(
@@ -391,7 +446,14 @@ def design_binder(
         f"++generation.task_name={task_name}",
         *_normalize_overrides(overrides),
     ]
-    output = _run(command, cwd=run_dir)
+    try:
+        output = _run_complexa(command, cwd=run_dir)
+    except Exception as exc:
+        log_tails = _collect_run_log_tails(run_dir)
+        runs_volume.commit()
+        if log_tails:
+            raise RuntimeError(f"{exc}\n--- run log tails ---\n{log_tails}") from exc
+        raise
     runs_volume.commit()
     return {"run_name": run_name, "task_name": task_name, "log_tail": output[-4000:]}
 
@@ -409,7 +471,7 @@ def status(pipeline_config: str = DEFAULT_PIPELINE_CONFIG) -> str:
     """Run Complexa's status command against the mounted run Volume."""
     model_volume.reload()
     runs_volume.reload()
-    return _run([str(COMPLEXA_BIN), "status", _config_path(pipeline_config)], cwd=Path("/runs"))
+    return _run_complexa([str(COMPLEXA_BIN), "status", _config_path(pipeline_config)], cwd=Path("/runs"))
 
 
 @app.local_entrypoint()
@@ -419,7 +481,7 @@ def main(
     run_name: str = "pdl1_modal_smoke",
     overrides_json: str = "[]",
     jobs_json: str = "",
-    pdb_path: str = "",
+    cif_path: str = "",
     target_name: str = "",
     target_input: str = "",
     chains: str = "",
@@ -436,12 +498,12 @@ def main(
         print(validate.remote(overrides=overrides))
     elif action == "design":
         print(design_binder.remote(task_name=task_name, run_name=run_name, overrides=overrides))
-    elif action == "preprocess-pdb":
-        if not pdb_path:
-            raise ValueError("--pdb-path is required for --action preprocess-pdb")
-        path = Path(pdb_path)
-        result = preprocess_pdb.remote(
-            path.read_text(),
+    elif action == "preprocess-cif":
+        if not cif_path:
+            raise ValueError("--cif-path is required for --action preprocess-cif")
+        path = Path(cif_path)
+        result = preprocess_cif.remote(
+            _read_structure_text(path),
             path.name,
             target_name or None,
             target_input or None,
@@ -451,12 +513,12 @@ def main(
             encode_latents,
         )
         print(json.dumps(result, indent=2))
-    elif action == "design-pdb":
-        if not pdb_path:
-            raise ValueError("--pdb-path is required for --action design-pdb")
-        path = Path(pdb_path)
-        preprocessed = preprocess_pdb.remote(
-            path.read_text(),
+    elif action == "design-cif":
+        if not cif_path:
+            raise ValueError("--cif-path is required for --action design-cif")
+        path = Path(cif_path)
+        preprocessed = preprocess_cif.remote(
+            _read_structure_text(path),
             path.name,
             target_name or None,
             target_input or None,

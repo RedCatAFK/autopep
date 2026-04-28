@@ -80,17 +80,17 @@ modal run modal_app.py \
   --overrides-json '["++gen_njobs=1", "++eval_njobs=1"]'
 ```
 
-## Preprocess a PDB Target
+## Preprocess a CIF Target
 
-The preprocessing layer accepts a local `.pdb`, extracts amino acid sequence and
-C-alpha geometry, writes JSON/FASTA metadata, uploads the PDB into the Modal
+The preprocessing layer accepts a local `.cif` or `.mmcif`, extracts amino acid
+sequence and C-alpha geometry, writes JSON/FASTA metadata, uploads the CIF into the Modal
 `/data` volume, and optionally runs the Proteina-Complexa autoencoder to produce
 the learned latent tensor bundle used by the model.
 
 For a lightweight local parse:
 
 ```bash
-python3 scripts/preprocess_pdb.py /path/to/target.pdb \
+python3 scripts/preprocess_cif.py /path/to/target.cif \
   --target-name my_target \
   --target-input A1-150 \
   --output-dir preprocessed
@@ -101,8 +101,8 @@ encoding:
 
 ```bash
 modal run modal_app.py \
-  --action preprocess-pdb \
-  --pdb-path /path/to/target.pdb \
+  --action preprocess-cif \
+  --cif-path /path/to/target.cif \
   --target-name my_target \
   --target-input A1-150 \
   --hotspot-residues-json '["A45", "A67"]' \
@@ -111,7 +111,7 @@ modal run modal_app.py \
 
 This writes:
 
-- `/data/preprocessed_targets/my_target.pdb`
+- `/data/preprocessed_targets/my_target.cif`
 - `/data/preprocessed_targets/my_target.preprocess.json`
 - `/data/preprocessed_targets/my_target.fasta`
 - `/data/preprocessed_targets/my_target.latents.pt`
@@ -121,8 +121,8 @@ and then launch the binder design in one command:
 
 ```bash
 modal run modal_app.py \
-  --action design-pdb \
-  --pdb-path /path/to/target.pdb \
+  --action design-cif \
+  --cif-path /path/to/target.cif \
   --target-name my_target \
   --target-input A1-150 \
   --run-name my_target_design \
