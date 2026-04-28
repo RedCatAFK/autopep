@@ -1,4 +1,4 @@
-# Agent Orchestration And PDB Retrieval Design
+# Agent Orchestration And CIF Retrieval Design
 
 Date: 2026-04-28
 
@@ -7,9 +7,9 @@ Date: 2026-04-28
 Autopep is a protein-design workspace. The long-term pipeline starts from a natural-language biology goal, finds or prepares target structures, runs downstream generation and scoring models, then iterates toward better binder candidates. This design covers only the first couple of steps:
 
 1. accept a natural-language target request, such as "generate a protein to bind to SARS-CoV-2 spike RBD" or "generate a protein to bind to 3CL-protease";
-2. search PDB and literature;
+2. search the Protein Data Bank and literature;
 3. rank the top-k relevant protein structures;
-4. download and prepare at least one PDB artifact for NVIDIA Proteina Complexa or another downstream model.
+4. download and prepare at least one CIF/mmCIF artifact for NVIDIA Proteina Complexa or another downstream model.
 
 Downstream Proteina sequence generation, ProteinMPNN, Chai-1, Boltz scoring, and iterative mutation are integration boundaries, not part of this milestone.
 
@@ -26,7 +26,7 @@ The first screen should be a workspace, not a landing page. It should be organiz
 - a ranked candidate and artifact surface;
 - a readable research trace showing what the agent did and why.
 
-The app should one-up Phylo/Biomni-style biology workspaces by making the structure viewer and ranked evidence feel like one coherent instrument rather than a cramped set of generic panels. The user should see files appearing, candidates ranking, and the final Proteina-ready PDB state without needing to understand PDB, UniProt, FASTA, or shell tooling up front.
+The app should one-up Phylo/Biomni-style biology workspaces by making the structure viewer and ranked evidence feel like one coherent instrument rather than a cramped set of generic panels. The user should see files appearing, candidates ranking, and the final Proteina-ready CIF state without needing to understand RCSB, UniProt, FASTA, mmCIF, or shell tooling up front.
 
 Visual direction:
 
@@ -43,8 +43,8 @@ Visual direction:
 - Normalize target entities enough to drive structure and literature search.
 - Search RCSB PDB and literature sources through plugin skills or Autopep-specific wrappers.
 - Rank top-k candidate structures with an auditable explanation.
-- Download source PDB files and prepare at least one PDB artifact for downstream model input.
-- Enforce PDB as the handoff format for this milestone, converting or rejecting other structure formats before marking an artifact ready.
+- Download source CIF/mmCIF files and prepare at least one CIF artifact for downstream model input.
+- Enforce CIF/mmCIF as the universal structure handoff format, converting or rejecting other structure formats before marking an artifact ready.
 - Upload important artifacts to Cloudflare R2.
 - Store durable state, progress, candidates, and artifact metadata in Neon Postgres.
 - Let the Vercel-hosted T3 frontend poll for near-real-time progress.
@@ -68,11 +68,11 @@ The T3 app on Vercel owns users, projects, chat/job creation, artifact listing, 
 
 Neon Postgres is the durable state store. Every project, run, step, event, target entity, ranked protein candidate, and artifact metadata row should be stored there.
 
-Cloudflare R2 is the durable file store. PDB files, prepared PDB files, FASTA files, raw search JSON worth preserving, and future generated structures should be stored as R2 objects. Neon stores object keys and metadata, not file contents.
+Cloudflare R2 is the durable file store. CIF/mmCIF files, prepared CIF files, FASTA files, raw search JSON worth preserving, and future generated structures should be stored as R2 objects. Neon stores object keys and metadata, not file contents.
 
 The external agent worker owns the Codex harness lifecycle. It claims queued runs, launches the harness with gpt-5.5 and tool access, writes progress into Neon, uploads artifacts to R2, and marks completion only after durable database facts exist.
 
-Modal sandboxes are execution scratch spaces. Use them when a skill requires shell/Python execution, when the agent needs to run retrieval helpers, or when a PDB file must be downloaded and prepared. A sandbox may use local disk or a temporary Modal Volume during one run, but Modal is not the project filesystem. As soon as an artifact matters, upload it to R2 and record it in Neon.
+Modal sandboxes are execution scratch spaces. Use them when a skill requires shell/Python execution, when the agent needs to run retrieval helpers, or when a CIF file must be downloaded and prepared. A sandbox may use local disk or a temporary Modal Volume during one run, but Modal is not the project filesystem. As soon as an artifact matters, upload it to R2 and record it in Neon.
 
 ## Runtime Boundaries
 
@@ -108,7 +108,7 @@ Responsibilities:
 
 - run shell/Python skills that require filesystem or network execution;
 - run RCSB/literature helper scripts when needed;
-- download, clean, validate, and transform PDB/FASTA artifacts;
+- download, clean, validate, and transform CIF/FASTA artifacts;
 - return file paths, stdout/stderr summaries, and structured output to the worker.
 
 The sandbox should use a minimal image with Python, life-science scripts, and lightweight structure utilities. It should not be required after the run completes.
@@ -125,13 +125,13 @@ Neon is for queryable state and provenance. R2 is for file bytes. The frontend a
 4. Worker claims the run and marks it `running`.
 5. Worker emits `normalizing_target`.
 6. Harness normalizes likely target entities, aliases, organism, and source IDs when available.
-7. Worker emits `searching_structures` and runs RCSB/PDB search.
+7. Worker emits `searching_structures` and runs RCSB Protein Data Bank search.
 8. Worker emits `searching_literature` and runs PubMed/PMC/bioRxiv/other literature lookups as needed.
 9. Harness ranks candidate structures using auditable heuristics.
 10. Worker writes `protein_candidates` rows with rank and explanation.
-11. Worker downloads source PDB files for top candidates through Modal or direct retrieval.
-12. Worker prepares the selected PDB artifact, validates it can be parsed, uploads it to R2, and writes an `artifacts` row.
-13. Worker marks the top candidate `proteina_ready` when it has a valid linked PDB artifact and enough metadata to explain why it was selected.
+11. Worker downloads source CIF/mmCIF files for top candidates through Modal or direct retrieval.
+12. Worker prepares the selected CIF artifact, validates it can be parsed, uploads it to R2, and writes an `artifacts` row.
+13. Worker marks the top candidate `proteina_ready` when it has a valid linked CIF artifact and enough metadata to explain why it was selected.
 14. Worker emits final `ready_for_proteina` event and marks the run `succeeded`.
 
 If the worker cannot produce a Proteina-ready artifact, it should mark the run `failed` with an error summary and preserve any partial candidates or artifacts it did produce.
@@ -149,7 +149,7 @@ Prefer candidates with:
 - relevant chain or complex context;
 - ligand, receptor, inhibitor, or interface information when useful for binder design;
 - supporting literature references;
-- clean downloadable PDB format.
+- clean downloadable CIF/mmCIF format.
 
 Recency is secondary. The model should not choose a structure only because it is new.
 
@@ -225,7 +225,7 @@ Suggested fields:
 
 ### `protein_candidates`
 
-Ranked PDB/literature-supported structures.
+Ranked structure/literature-supported candidates.
 
 Suggested fields:
 
@@ -234,7 +234,7 @@ Suggested fields:
 - `target_entity_id`
 - `rank`
 - `score`
-- `pdb_id`
+- `rcsb_entry_id`
 - `title`
 - `organism`
 - `experimental_method`
@@ -256,7 +256,7 @@ Suggested fields:
 - `project_id`
 - `run_id`
 - `candidate_id`
-- `type`: `source_pdb | prepared_pdb | fasta | raw_search_json | report | other`
+- `type`: `source_cif | prepared_cif | fasta | raw_search_json | report | other`
 - `file_name`
 - `mime_type`
 - `size_bytes`
@@ -267,7 +267,7 @@ Suggested fields:
 - `viewer_hints_json`
 - `created_at`
 
-For Mol*, a prepared PDB artifact should include viewer hints such as format, chain of interest, and optional residue annotations.
+For Mol*, a prepared CIF artifact should include viewer hints such as format, chain of interest, and optional residue annotations.
 
 ## Agent Output Contracts
 
@@ -281,7 +281,7 @@ The harness should produce structured outputs that the worker validates before w
 Completion cannot rely on free-form chat text. A run is complete only when:
 
 - at least one `protein_candidates` row exists;
-- at least one linked `prepared_pdb` artifact exists in R2, or a `source_pdb` artifact has been validated as already satisfying the downstream PDB handoff constraints;
+- at least one linked `prepared_cif` artifact exists in R2, or a `source_cif` artifact has been validated as already satisfying the downstream CIF/mmCIF handoff constraints;
 - the top selected candidate is marked `proteina_ready`;
 - a final event references the selected candidate ID and artifact ID.
 
@@ -290,7 +290,7 @@ Completion cannot rely on free-form chat text. A run is complete only when:
 The frontend should present four live surfaces:
 
 - `Project Thread`: human prompt and concise agent narration.
-- `Molecular Stage`: Mol* viewer centered on the selected or active PDB artifact.
+- `Molecular Stage`: Mol* viewer centered on the selected or active CIF artifact.
 - `Evidence/Candidate Rail`: ranked structures with explanations, metadata, and source links.
 - `Artifacts/Trace Rail`: files, preparation status, and expandable tool steps.
 
@@ -298,7 +298,7 @@ Default trace text should be understandable:
 
 - "Found SARS-CoV-2 spike RBD"
 - "Selected 6M0J because it contains chain E RBD bound to ACE2"
-- "Prepared clean RBD PDB"
+- "Prepared clean RBD CIF"
 
 Detailed raw logs, stdout/stderr, JSON, and source payloads should be expandable rather than always visible.
 
@@ -310,7 +310,7 @@ If normalization is uncertain, record multiple `target_entities` and continue wh
 
 If one source fails, emit a failed source step with retry metadata and continue with remaining sources when possible.
 
-If a PDB downloads but cannot be parsed or prepared, keep the candidate visible but do not mark it `proteina_ready`.
+If a CIF downloads but cannot be parsed or prepared, keep the candidate visible but do not mark it `proteina_ready`.
 
 If R2 upload fails, the run should not claim success. Durable artifact storage is part of completion.
 
@@ -338,8 +338,8 @@ Success criteria for the milestone:
 
 - a run can be created from the T3 app;
 - the worker claims it and emits visible progress;
-- target normalization, PDB search, literature lookup, ranking, download, and artifact upload steps are represented in Neon;
-- at least one top candidate has a PDB artifact in R2;
+- target normalization, Protein Data Bank search, literature lookup, ranking, download, and artifact upload steps are represented in Neon;
+- at least one top candidate has a CIF artifact in R2;
 - the frontend can display the structure in Mol* and show why it was selected.
 
 ## Deployment Notes
