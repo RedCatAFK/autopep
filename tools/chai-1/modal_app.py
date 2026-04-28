@@ -2,9 +2,11 @@ import base64
 import html
 import hmac
 import json
+import logging
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,6 +17,12 @@ try:
     from fastapi import Request as FastAPIRequest
 except ImportError:
     FastAPIRequest = Any
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("chai-1-inference")
 
 APP_NAME = "chai-1-inference"
 SECRET_NAME = "chai-1-api-key"
@@ -79,6 +87,8 @@ def _expected_weight_paths() -> list[Path]:
 
 
 def _ensure_model_assets() -> None:
+    started_at = time.perf_counter()
+    logger.info("checking Chai-1 assets in volume %s", MODEL_VOLUME_NAME)
     os.environ.setdefault("CHAI_DOWNLOADS_DIR", str(CHAI_DOWNLOADS_DIR))
     os.environ.setdefault("HF_HOME", str(HF_HOME))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_HOME / "transformers"))
@@ -89,8 +99,17 @@ def _ensure_model_assets() -> None:
     weights_volume.reload()
     missing_paths = [path for path in _expected_weight_paths() if not path.exists()]
     if not missing_paths:
+        logger.info(
+            "Chai-1 assets already present; asset_check_seconds=%.2f",
+            time.perf_counter() - started_at,
+        )
         return
 
+    logger.info(
+        "missing %d Chai-1 asset(s); downloading into %s",
+        len(missing_paths),
+        CHAI_DOWNLOADS_DIR,
+    )
     from chai_lab.data.dataset.embeddings.esm import ESM_URL
     from chai_lab.utils.paths import (
         cached_conformers,
@@ -108,6 +127,11 @@ def _ensure_model_assets() -> None:
     )
 
     weights_volume.commit()
+    logger.info(
+        "Chai-1 assets ready; downloaded_assets=%d asset_setup_seconds=%.2f",
+        len(missing_paths),
+        time.perf_counter() - started_at,
+    )
 
 
 @app.function(
@@ -115,16 +139,24 @@ def _ensure_model_assets() -> None:
     timeout=TIMEOUT_SECONDS,
 )
 def populate_weights() -> dict[str, Any]:
+    started_at = time.perf_counter()
+    logger.info("populate_weights started")
     _ensure_model_assets()
     weights_volume.reload()
+    files = [
+        str(path.relative_to(MODEL_DIR))
+        for path in _expected_weight_paths()
+        if path.exists()
+    ]
+    logger.info(
+        "populate_weights finished; file_count=%d elapsed_seconds=%.2f",
+        len(files),
+        time.perf_counter() - started_at,
+    )
     return {
         "volume": MODEL_VOLUME_NAME,
         "download_dir": str(CHAI_DOWNLOADS_DIR),
-        "files": [
-            str(path.relative_to(MODEL_DIR))
-            for path in _expected_weight_paths()
-            if path.exists()
-        ],
+        "files": files,
     }
 
 
@@ -352,7 +384,11 @@ def _ranked_structure_payload(
 def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
     from chai_lab.chai1 import run_inference
 
+    request_id = uuid4().hex
+    request_started_at = time.perf_counter()
     fasta = _normalise_fasta(str(payload.get("fasta", "")))
+    sequence_count = sum(1 for line in fasta.splitlines() if line.startswith(">"))
+    fasta_bytes = len(fasta.encode("utf-8"))
     num_trunk_recycles = _as_int(
         payload.get("num_trunk_recycles"),
         default=3,
@@ -390,6 +426,21 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
         field_name="include_viewer_html",
     )
 
+    logger.info(
+        "request %s started; fasta_bytes=%d sequences=%d recycles=%d "
+        "diffusion_timesteps=%d diffusion_samples=%d seed=%d include_pdb=%s "
+        "include_viewer_html=%s",
+        request_id,
+        fasta_bytes,
+        sequence_count,
+        num_trunk_recycles,
+        num_diffn_timesteps,
+        num_diffn_samples,
+        seed,
+        include_pdb,
+        include_viewer_html,
+    )
+
     work_dir = Path(tempfile.mkdtemp(prefix=f"chai-{uuid4().hex}-"))
     try:
         fasta_path = work_dir / "input.fasta"
@@ -397,6 +448,7 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
         output_dir.mkdir(parents=True, exist_ok=False)
         fasta_path.write_text(fasta)
 
+        inference_started_at = time.perf_counter()
         candidates = run_inference(
             fasta_file=fasta_path,
             output_dir=output_dir,
@@ -412,7 +464,14 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
             recycle_msa_subsample=0,
             num_diffn_samples=num_diffn_samples,
         )
+        inference_seconds = time.perf_counter() - inference_started_at
+        logger.info(
+            "request %s inference finished; inference_seconds=%.2f",
+            request_id,
+            inference_seconds,
+        )
 
+        packaging_started_at = time.perf_counter()
         candidates = candidates.sorted()
         structures = _ranked_structure_payload(
             candidates=candidates,
@@ -420,10 +479,22 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
             include_pdb=include_pdb,
             include_viewer_html=include_viewer_html,
         )
+        packaging_seconds = time.perf_counter() - packaging_started_at
+        total_seconds = time.perf_counter() - request_started_at
+
+        logger.info(
+            "request %s completed; structures=%d packaging_seconds=%.2f "
+            "total_seconds=%.2f",
+            request_id,
+            len(structures),
+            packaging_seconds,
+            total_seconds,
+        )
 
         return {
             "format": "cif",
             "count": len(structures),
+            "request_id": request_id,
             "cifs": structures,
             "parameters": {
                 "num_trunk_recycles": num_trunk_recycles,
@@ -435,6 +506,11 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
                 "use_esm_embeddings": True,
                 "include_pdb": include_pdb,
                 "include_viewer_html": include_viewer_html,
+            },
+            "timings": {
+                "inference_seconds": inference_seconds,
+                "packaging_seconds": packaging_seconds,
+                "total_seconds": total_seconds,
             },
         }
     finally:
@@ -458,17 +534,28 @@ def fastapi_app():
 
     @web_app.get("/health")
     async def health(request: FastAPIRequest) -> dict[str, str]:
+        logger.info("health check received")
         _assert_authorized(request.headers)
         return {"status": "ok"}
 
     @web_app.post("/")
     @web_app.post("/predict")
     async def predict(request: FastAPIRequest) -> dict[str, Any]:
+        route_started_at = time.perf_counter()
         _assert_authorized(request.headers)
         try:
             payload = await _parse_request_payload(request)
-            return _run_chai_prediction(payload)
+            result = _run_chai_prediction(payload)
+            logger.info(
+                "predict route returned; elapsed_seconds=%.2f",
+                time.perf_counter() - route_started_at,
+            )
+            return result
         except ValueError as exc:
+            logger.warning("predict request rejected: %s", exc)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("predict request failed")
+            raise
 
     return web_app
