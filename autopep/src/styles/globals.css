@@ -61,15 +61,15 @@ textarea {
 	transform-origin: left;
 }
 
-.molecule-orbit {
+.stage-orbit {
 	position: absolute;
 	border: 1px dashed rgb(124 131 122 / 38%);
 	border-radius: 999px;
 	pointer-events: none;
 }
 
-.molecule-orbit::before,
-.molecule-orbit::after {
+.stage-orbit::before,
+.stage-orbit::after {
 	position: absolute;
 	width: 12px;
 	height: 12px;
@@ -78,34 +78,34 @@ textarea {
 	content: "";
 }
 
-.molecule-orbit-a {
+.stage-orbit-a {
 	width: min(74vw, 520px);
 	height: 230px;
 	transform: rotate(-18deg);
 }
 
-.molecule-orbit-a::before {
+.stage-orbit-a::before {
 	top: -6px;
 	left: 54%;
 }
 
-.molecule-orbit-a::after {
+.stage-orbit-a::after {
 	right: 10%;
 	bottom: 16px;
 }
 
-.molecule-orbit-b {
+.stage-orbit-b {
 	width: min(62vw, 430px);
 	height: 310px;
 	transform: rotate(22deg);
 }
 
-.molecule-orbit-b::before {
+.stage-orbit-b::before {
 	top: 40px;
 	left: 8%;
 }
 
-.molecule-orbit-b::after {
+.stage-orbit-b::after {
 	right: 20%;
 	bottom: 6px;
 }

@@ -120,10 +120,10 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 			{!url ? (
 				<div className="absolute inset-0 flex items-center justify-center px-8">
 					<div className="relative grid w-full max-w-[560px] place-items-center">
-						<div className="molecule-orbit molecule-orbit-a" />
-						<div className="molecule-orbit molecule-orbit-b" />
+						<div className="stage-orbit stage-orbit-a" />
+						<div className="stage-orbit stage-orbit-b" />
 						<Image
-							alt=""
+							alt="Generated target protein preview"
 							className="relative z-[1] w-full max-w-[430px] rounded-[32px] object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
 							height={1024}
 							priority
