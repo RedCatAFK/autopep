@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import base64
 import html
 import hmac
@@ -12,6 +10,11 @@ from typing import Any
 from uuid import uuid4
 
 import modal
+
+try:
+    from fastapi import Request as FastAPIRequest
+except ImportError:
+    FastAPIRequest = Any
 
 APP_NAME = "chai-1-inference"
 SECRET_NAME = "chai-1-api-key"
@@ -448,19 +451,19 @@ def _run_chai_prediction(payload: dict[str, Any]) -> dict[str, Any]:
 )
 @modal.asgi_app()
 def fastapi_app():
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException
 
     _ensure_model_assets()
     web_app = FastAPI(title="Chai-1 Modal Inference", version="1.0.0")
 
     @web_app.get("/health")
-    async def health(request: Request) -> dict[str, str]:
+    async def health(request: FastAPIRequest) -> dict[str, str]:
         _assert_authorized(request.headers)
         return {"status": "ok"}
 
     @web_app.post("/")
     @web_app.post("/predict")
-    async def predict(request: Request) -> dict[str, Any]:
+    async def predict(request: FastAPIRequest) -> dict[str, Any]:
         _assert_authorized(request.headers)
         try:
             payload = await _parse_request_payload(request)

@@ -104,7 +104,12 @@ def call_endpoint(
         json=payload,
         timeout=timeout,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(
+            f"Endpoint returned HTTP {response.status_code}: {response.text}"
+        ) from exc
     return response.json()
 
 
