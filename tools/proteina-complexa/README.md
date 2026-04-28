@@ -80,6 +80,59 @@ modal run modal_app.py \
   --overrides-json '["++gen_njobs=1", "++eval_njobs=1"]'
 ```
 
+## Preprocess a PDB Target
+
+The preprocessing layer accepts a local `.pdb`, extracts amino acid sequence and
+C-alpha geometry, writes JSON/FASTA metadata, uploads the PDB into the Modal
+`/data` volume, and optionally runs the Proteina-Complexa autoencoder to produce
+the learned latent tensor bundle used by the model.
+
+For a lightweight local parse:
+
+```bash
+python3 scripts/preprocess_pdb.py /path/to/target.pdb \
+  --target-name my_target \
+  --target-input A1-150 \
+  --output-dir preprocessed
+```
+
+For the full Modal preprocessing path, including `complexa_ae.ckpt` latent
+encoding:
+
+```bash
+modal run modal_app.py \
+  --action preprocess-pdb \
+  --pdb-path /path/to/target.pdb \
+  --target-name my_target \
+  --target-input A1-150 \
+  --hotspot-residues-json '["A45", "A67"]' \
+  --binder-length-json '[60, 120]'
+```
+
+This writes:
+
+- `/data/preprocessed_targets/my_target.pdb`
+- `/data/preprocessed_targets/my_target.preprocess.json`
+- `/data/preprocessed_targets/my_target.fasta`
+- `/data/preprocessed_targets/my_target.latents.pt`
+
+The returned `hydra_overrides` can be passed to Complexa directly. To preprocess
+and then launch the binder design in one command:
+
+```bash
+modal run modal_app.py \
+  --action design-pdb \
+  --pdb-path /path/to/target.pdb \
+  --target-name my_target \
+  --target-input A1-150 \
+  --run-name my_target_design \
+  --hotspot-residues-json '["A45", "A67"]'
+```
+
+If `--target-input` is omitted, the local parser infers a simple contiguous
+range per chain such as `A1-150`. Pass it explicitly for cropped targets,
+insertion codes, or non-contiguous target selections.
+
 ## Run a Binder Design
 
 ```bash
