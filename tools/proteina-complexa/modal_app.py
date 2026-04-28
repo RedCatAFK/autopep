@@ -22,9 +22,20 @@ COMPLEXA_BIN = Path("/workspace/.venv/bin/complexa")
 PYTHON_BIN = Path("/workspace/.venv/bin/python")
 PREPROCESS_DIR = Path("/data/preprocessed_targets")
 TARGET_DATA_DIR = Path("/data/target_data/preprocessed_targets")
+RUNS_DIR = Path("/runs")
 
 DEFAULT_PIPELINE_CONFIG = "configs/search_binder_local_pipeline.yaml"
 DEFAULT_GPU = "A100-80GB"
+DEFAULT_BINDER_LENGTH = [60, 120]
+TARGET_CONFIG_REQUIRED_FIELDS = {
+    "source",
+    "target_filename",
+    "target_path",
+    "target_input",
+    "hotspot_residues",
+    "binder_length",
+    "pdb_id",
+}
 
 model_volume = modal.Volume.from_name("proteina-complexa-models", create_if_missing=True)
 data_volume = modal.Volume.from_name("proteina-complexa-data", create_if_missing=True)
@@ -160,6 +171,22 @@ def _normalize_overrides(overrides: Iterable[str] | None) -> list[str]:
     return [override for override in (overrides or []) if override]
 
 
+def _target_override_prefix(target_name: str) -> str:
+    return f"++generation.target_dict_cfg.{target_name}."
+
+
+def _target_override_fields(target_name: str, overrides: Iterable[str] | None) -> set[str]:
+    prefix = _target_override_prefix(target_name)
+    fields = set()
+    for override in _normalize_overrides(overrides):
+        if not override.startswith(prefix) or "=" not in override:
+            continue
+        field = override[len(prefix) :].split("=", 1)[0]
+        if field:
+            fields.add(field)
+    return fields
+
+
 def _design_command(
     *,
     task_name: str,
@@ -181,6 +208,128 @@ def _design_command(
     if design_steps:
         command.extend(["--steps", *design_steps])
     return command
+
+
+def _preprocessed_target_config_path(target_name: str, preprocess_dir: Path | None = None) -> Path:
+    return (preprocess_dir or PREPROCESS_DIR) / f"{target_name}.target.json"
+
+
+def _preprocessed_target_feature_path(target_name: str, preprocess_dir: Path | None = None) -> Path:
+    return (preprocess_dir or PREPROCESS_DIR) / f"{target_name}.preprocess.json"
+
+
+def _write_preprocessed_target_config(
+    *,
+    target_name: str,
+    target_path: Path,
+    target_input: str,
+    hotspot_residues: list[str],
+    binder_length: list[int],
+    pdb_id: str,
+    overrides: list[str],
+) -> str:
+    path = _preprocessed_target_config_path(target_name)
+    payload = {
+        "target_name": target_name,
+        "source": "preprocessed_targets",
+        "target_filename": target_name,
+        "target_path": str(target_path),
+        "target_input": target_input,
+        "hotspot_residues": hotspot_residues,
+        "binder_length": binder_length,
+        "pdb_id": pdb_id,
+        "hydra_overrides": overrides,
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+    return str(path)
+
+
+def _load_preprocessed_target_config(target_name: str) -> dict | None:
+    config_path = _preprocessed_target_config_path(target_name)
+    if config_path.exists():
+        return json.loads(config_path.read_text())
+
+    feature_path = _preprocessed_target_feature_path(target_name)
+    if not feature_path.exists():
+        return None
+
+    metadata = json.loads(feature_path.read_text())
+    return {
+        "target_name": target_name,
+        "source": "preprocessed_targets",
+        "target_filename": target_name,
+        "target_path": str(TARGET_DATA_DIR / f"{target_name}.pdb"),
+        "target_input": metadata["target_input"],
+        "hotspot_residues": metadata.get("hotspot_residues", []),
+        "binder_length": metadata.get("binder_length", DEFAULT_BINDER_LENGTH),
+        "pdb_id": metadata.get("pdb_id", target_name),
+    }
+
+
+def _target_overrides_from_preprocessed_config(target_name: str) -> list[str]:
+    metadata = _load_preprocessed_target_config(target_name)
+    if metadata is None:
+        return []
+
+    target_path = Path(str(metadata.get("target_path") or TARGET_DATA_DIR / f"{target_name}.pdb"))
+    if not target_path.exists():
+        raise FileNotFoundError(
+            f"Preprocessed target metadata exists for {target_name!r}, but the PDB is missing: {target_path}. "
+            "Run preprocess-cif/design-cif again so the target PDB is present in the Modal data volume."
+        )
+
+    binder_length = list(metadata.get("binder_length") or DEFAULT_BINDER_LENGTH)
+    if len(binder_length) != 2:
+        raise ValueError(f"Preprocessed target {target_name!r} has invalid binder_length: {binder_length!r}")
+
+    overrides = _target_overrides(
+        target_name=target_name,
+        target_path=target_path,
+        target_input=str(metadata["target_input"]),
+        hotspot_residues=[str(value) for value in metadata.get("hotspot_residues", [])],
+        binder_length=[int(binder_length[0]), int(binder_length[1])],
+        pdb_id=str(metadata.get("pdb_id") or target_name),
+    )
+    return [override for override in overrides if not override.startswith("++generation.task_name=")]
+
+
+def _resolve_design_overrides(task_name: str, overrides: Iterable[str] | None) -> list[str]:
+    normalized = _normalize_overrides(overrides)
+    present_fields = _target_override_fields(task_name, normalized)
+    missing_fields = TARGET_CONFIG_REQUIRED_FIELDS - present_fields
+    if not missing_fields:
+        return normalized
+
+    preprocessed_overrides = _target_overrides_from_preprocessed_config(task_name)
+    if preprocessed_overrides:
+        return [*preprocessed_overrides, *normalized]
+
+    if present_fields:
+        raise ValueError(
+            f"Target overrides for {task_name!r} are incomplete. "
+            f"Missing fields: {sorted(missing_fields)}"
+        )
+
+    return normalized
+
+
+def _pipeline_config_name(pipeline_config: str) -> str:
+    return Path(pipeline_config).stem
+
+
+def _run_output_overrides(*, task_name: str, run_name: str, pipeline_config: str) -> list[str]:
+    run_dir = RUNS_DIR / run_name
+    config_name = _pipeline_config_name(pipeline_config)
+    inference_dir = run_dir / "inference" / f"{config_name}_{task_name}_{run_name}"
+    evaluation_dir = run_dir / "evaluation_results" / f"{config_name}_{task_name}_{run_name}"
+    hydra_dir = run_dir / "logs" / "hydra_outputs" / "${now:%Y-%m-%d}" / "${now:%H-%M-%S}"
+    return [
+        f"++root_path={inference_dir}",
+        f"++sample_storage_path={inference_dir}",
+        f"++output_dir={evaluation_dir}",
+        f"++results_dir={evaluation_dir}",
+        f"++hydra.run.dir={hydra_dir}",
+    ]
 
 
 def _parse_json_list(value: str, *, default: list | None = None) -> list:
@@ -434,17 +583,27 @@ def preprocess_cif(
             target_input=result.target_input,
         )
 
-    length_range = binder_length or [60, 120]
+    length_range = binder_length or DEFAULT_BINDER_LENGTH
     if len(length_range) != 2:
         raise ValueError("binder_length must contain [min_length, max_length]")
+    normalized_binder_length = [int(length_range[0]), int(length_range[1])]
 
     overrides = _target_overrides(
         target_name=safe_target_name,
         target_path=pdb_path,
         target_input=result.target_input,
         hotspot_residues=effective_hotspots,
-        binder_length=[int(length_range[0]), int(length_range[1])],
+        binder_length=normalized_binder_length,
         pdb_id=safe_target_name,
+    )
+    target_config_json_path = _write_preprocessed_target_config(
+        target_name=safe_target_name,
+        target_path=pdb_path,
+        target_input=result.target_input,
+        hotspot_residues=effective_hotspots,
+        binder_length=normalized_binder_length,
+        pdb_id=safe_target_name,
+        overrides=overrides,
     )
     data_volume.commit()
     return {
@@ -458,6 +617,7 @@ def preprocess_cif(
         "cif_path": str(cif_path),
         "pdb_path": str(pdb_path),
         "feature_json_path": outputs["json"],
+        "target_config_json_path": target_config_json_path,
         "fasta_path": outputs["fasta"],
         "pdb_info": pdb_info,
         "target_tensor_info": target_tensor_info,
@@ -558,18 +718,24 @@ def design_binder(
 ) -> dict[str, str]:
     """Run a single protein-target binder design job on one Modal GPU."""
     model_volume.reload()
-    run_dir = Path("/runs") / run_name
+    data_volume.reload()
+    runs_volume.reload()
+    run_dir = RUNS_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     existing_logs = set(run_dir.glob("logs/**/*.log"))
+    design_overrides = [
+        *_run_output_overrides(task_name=task_name, run_name=run_name, pipeline_config=pipeline_config),
+        *_resolve_design_overrides(task_name, overrides),
+    ]
     command = _design_command(
         task_name=task_name,
         run_name=run_name,
         pipeline_config=pipeline_config,
-        overrides=overrides,
+        overrides=design_overrides,
         steps=steps,
     )
     try:
-        output = _run_complexa(command, cwd=run_dir)
+        output = _run_complexa(command, cwd=COMPLEXA_ROOT)
     except Exception as exc:
         log_tails = _collect_run_log_tails(run_dir, exclude=existing_logs)
         runs_volume.commit()
