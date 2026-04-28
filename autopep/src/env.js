@@ -14,10 +14,14 @@ export const env = createEnv({
 		BETTER_AUTH_URL: z.string().url().optional(),
 		AUTOPEP_AGENT_MODE: z.enum(["direct", "codex"]).default("direct"),
 		AUTOPEP_CODEX_COMMAND: z.string().optional(),
+		AUTOPEP_WORKER_ID: z.string().optional(),
 		DATABASE_URL: z.string().url(),
+		MODAL_TOKEN_ID: z.string().optional(),
+		MODAL_TOKEN_SECRET: z.string().optional(),
 		NODE_ENV: z
 			.enum(["development", "test", "production"])
 			.default("development"),
+		OPENAI_API_KEY: z.string().optional(),
 		R2_ACCESS_KEY_ID:
 			process.env.NODE_ENV === "production"
 				? z.string()
@@ -53,10 +57,14 @@ export const env = createEnv({
 	runtimeEnv: {
 		AUTOPEP_AGENT_MODE: process.env.AUTOPEP_AGENT_MODE,
 		AUTOPEP_CODEX_COMMAND: process.env.AUTOPEP_CODEX_COMMAND,
+		AUTOPEP_WORKER_ID: process.env.AUTOPEP_WORKER_ID,
 		BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
 		BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
 		DATABASE_URL: process.env.DATABASE_URL,
+		MODAL_TOKEN_ID: process.env.MODAL_TOKEN_ID,
+		MODAL_TOKEN_SECRET: process.env.MODAL_TOKEN_SECRET,
 		NODE_ENV: process.env.NODE_ENV,
+		OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 		R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
 		R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
 		R2_BUCKET: process.env.R2_BUCKET,
