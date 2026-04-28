@@ -259,6 +259,7 @@ export const proteinCandidates = createAutopepTable(
 		relevanceScore: real("relevance_score").notNull(),
 		confidence: real("confidence").default(0).notNull(),
 		selectionRationale: text("selection_rationale").notNull(),
+		proteinaReady: boolean("proteina_ready").default(false).notNull(),
 		createdAt: timestamp("created_at", { withTimezone: true })
 			.defaultNow()
 			.notNull(),

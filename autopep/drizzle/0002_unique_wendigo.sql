@@ -1,0 +1,1 @@
+ALTER TABLE "autopep_protein_candidate" ADD COLUMN "proteina_ready" boolean DEFAULT false NOT NULL;
