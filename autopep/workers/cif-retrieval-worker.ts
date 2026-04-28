@@ -1,10 +1,11 @@
 import { and, asc, eq } from "drizzle-orm";
 
 import { env } from "@/env";
+import { validateRunCompletion } from "@/server/agent/completion";
 import { runCodexHarness } from "@/server/agent/harness-client";
 import { runCifRetrievalPipeline } from "@/server/agent/retrieval-pipeline";
 import { db } from "@/server/db";
-import { agentRuns } from "@/server/db/schema";
+import { agentRuns, artifacts, proteinCandidates } from "@/server/db/schema";
 
 const workerId = process.env.AUTOPEP_WORKER_ID ?? `worker-${process.pid}`;
 const runOnceOnly = process.argv.includes("--once");
@@ -59,6 +60,35 @@ export const runOnce = async () => {
 				runId: run.id,
 				topK: run.topK,
 			});
+
+			const [candidates, artifactRows] = await Promise.all([
+				db
+					.select({
+						id: proteinCandidates.id,
+						proteinaReady: proteinCandidates.proteinaReady,
+						rank: proteinCandidates.rank,
+					})
+					.from(proteinCandidates)
+					.where(eq(proteinCandidates.runId, run.id)),
+				db
+					.select({
+						candidateId: artifacts.candidateId,
+						id: artifacts.id,
+						type: artifacts.type,
+					})
+					.from(artifacts)
+					.where(eq(artifacts.runId, run.id)),
+			]);
+			const completion = validateRunCompletion({
+				artifacts: artifactRows,
+				candidates,
+			});
+
+			if (!completion.ok) {
+				throw new Error(
+					`Codex harness finished without a ready CIF artifact. ${completion.reason}`,
+				);
+			}
 
 			await db
 				.update(agentRuns)

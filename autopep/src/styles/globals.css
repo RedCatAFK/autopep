@@ -61,89 +61,6 @@ textarea {
 	transform-origin: left;
 }
 
-.molecule-sketch {
-	position: relative;
-	height: 320px;
-	width: min(68vw, 420px);
-	filter: drop-shadow(0 24px 34px rgb(21 54 45 / 12%));
-}
-
-.molecule-sketch::before {
-	position: absolute;
-	inset: 32px;
-	border: 1px solid rgb(26 104 89 / 12%);
-	border-radius: 45% 55% 48% 52%;
-	background: rgb(221 235 229 / 62%);
-	content: "";
-}
-
-.molecule-sketch-large {
-	margin-top: 4px;
-}
-
-.molecule-loop,
-.molecule-sheet {
-	position: absolute;
-	border-color: #087a66;
-}
-
-.molecule-loop {
-	border: 10px solid #087a66;
-	border-radius: 45% 55% 50% 50%;
-}
-
-.molecule-loop.loop-a {
-	top: 54px;
-	left: 72px;
-	width: 152px;
-	height: 96px;
-	transform: rotate(-22deg);
-}
-
-.molecule-loop.loop-b {
-	right: 62px;
-	bottom: 76px;
-	width: 146px;
-	height: 88px;
-	transform: rotate(24deg);
-}
-
-.molecule-loop.loop-c {
-	top: 116px;
-	right: 92px;
-	width: 136px;
-	height: 78px;
-	border-top-color: transparent;
-	transform: rotate(-9deg);
-}
-
-.molecule-sheet {
-	height: 30px;
-	background: #087a66;
-	clip-path: polygon(0 18%, 74% 18%, 74% 0, 100% 50%, 74% 100%, 74% 82%, 0 82%);
-}
-
-.molecule-sheet.sheet-a {
-	top: 154px;
-	left: 132px;
-	width: 134px;
-	transform: rotate(48deg);
-}
-
-.molecule-sheet.sheet-b {
-	top: 184px;
-	right: 112px;
-	width: 124px;
-	transform: rotate(-28deg);
-}
-
-.molecule-sheet.sheet-c {
-	bottom: 72px;
-	left: 142px;
-	width: 122px;
-	transform: rotate(12deg);
-}
-
 .molecule-orbit {
 	position: absolute;
 	border: 1px dashed rgb(124 131 122 / 38%);
@@ -213,31 +130,5 @@ textarea {
 		animation-iteration-count: 1;
 		scroll-behavior: auto;
 		transition-duration: 0.01ms;
-	}
-}
-
-@media (max-width: 640px) {
-	.molecule-sketch {
-		height: 260px;
-		width: min(82vw, 340px);
-	}
-
-	.molecule-loop {
-		border-width: 8px;
-	}
-
-	.molecule-loop.loop-a {
-		left: 44px;
-		width: 126px;
-	}
-
-	.molecule-loop.loop-b {
-		right: 46px;
-		width: 118px;
-	}
-
-	.molecule-loop.loop-c {
-		right: 58px;
-		width: 116px;
 	}
 }

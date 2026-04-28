@@ -2,6 +2,7 @@
 
 import { Atom, WarningCircle } from "@phosphor-icons/react";
 import type { PluginUIContext } from "molstar/lib/mol-plugin-ui/context";
+import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 
 type MolstarViewerProps = {
@@ -121,14 +122,15 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 					<div className="relative grid w-full max-w-[560px] place-items-center">
 						<div className="molecule-orbit molecule-orbit-a" />
 						<div className="molecule-orbit molecule-orbit-b" />
-						<div className="molecule-sketch molecule-sketch-large">
-							<span className="molecule-loop loop-a" />
-							<span className="molecule-loop loop-b" />
-							<span className="molecule-loop loop-c" />
-							<span className="molecule-sheet sheet-a" />
-							<span className="molecule-sheet sheet-b" />
-							<span className="molecule-sheet sheet-c" />
-						</div>
+						<Image
+							alt=""
+							className="relative z-[1] w-full max-w-[430px] rounded-[32px] object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
+							height={1024}
+							priority
+							sizes="(max-width: 768px) 82vw, 430px"
+							src="/autopep-assets/protein-target-preview.png"
+							width={1024}
+						/>
 						<div className="mt-8 max-w-xs text-center">
 							<div className="mx-auto flex size-11 items-center justify-center rounded-lg border border-[#d6dec0] bg-[#edf45c] text-[#133f34]">
 								<Atom size={22} weight="duotone" />

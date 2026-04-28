@@ -28,6 +28,7 @@ import {
 	Sparkle,
 	UserCircle,
 } from "@phosphor-icons/react";
+import Image from "next/image";
 import type { ReactNode } from "react";
 
 export type WorkspaceCandidate = {
@@ -623,21 +624,13 @@ function MiniStructure({ muted = false }: { muted?: boolean }) {
 					: "border-[#d7d4c9] bg-[#edf4ed]"
 			}`}
 		>
-			<div className="absolute inset-2 rounded-full bg-[#dfe8e1]" />
-			<div
-				className={`absolute top-5 left-5 h-10 w-16 rounded-[45%] border-4 ${
-					muted ? "border-[#aeb5ad]" : "border-[#087a66]"
-				}`}
-			/>
-			<div
-				className={`absolute right-5 bottom-5 h-9 w-14 rounded-[45%] border-4 ${
-					muted ? "border-[#c2c7c1]" : "border-[#119079]"
-				}`}
-			/>
-			<div
-				className={`absolute top-10 left-8 h-8 w-20 rounded-[55%] border-4 border-t-transparent ${
-					muted ? "border-[#bbc1ba]" : "border-[#087a66]"
-				}`}
+			<Image
+				alt=""
+				className={`h-full w-full object-cover ${muted ? "opacity-55 grayscale" : ""}`}
+				height={180}
+				sizes="104px"
+				src="/autopep-assets/protein-target-preview.png"
+				width={180}
 			/>
 		</div>
 	);
@@ -855,23 +848,19 @@ function MiniCell({
 							: "border-[#e1ded5] bg-[#fffef9]"
 			} ${className}`}
 		>
-			<div
-				className={`absolute top-4 left-3 h-6 w-8 rounded-[45%] border-2 ${
+			<Image
+				alt=""
+				className={`h-full w-full object-cover mix-blend-multiply ${
 					accent
-						? "border-[#9cab22]"
+						? "hue-rotate-[48deg] saturate-[1.18]"
 						: active
-							? "border-[#087a66]"
-							: "border-[#b4bab2]"
+							? ""
+							: "opacity-35 grayscale"
 				}`}
-			/>
-			<div
-				className={`absolute right-3 bottom-3 h-5 w-7 rounded-[45%] border-2 ${
-					accent
-						? "border-[#c0c635]"
-						: active
-							? "border-[#12927b]"
-							: "border-[#c8ccc4]"
-				}`}
+				height={160}
+				sizes={compact ? "56px" : "100px"}
+				src="/autopep-assets/protein-target-preview.png"
+				width={160}
 			/>
 		</div>
 	);

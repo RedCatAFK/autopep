@@ -1,3 +1,5 @@
+import Image from "next/image";
+
 import { AuthCard } from "@/app/_components/auth-card";
 import { AutopepWorkspace } from "@/app/_components/autopep-workspace";
 import { getSession } from "@/server/better-auth/server";
@@ -34,9 +36,15 @@ export default async function Home() {
 								and stage CIF files for downstream binder design.
 							</p>
 						</div>
-						<div className="absolute right-[-60px] bottom-[-70px] size-[330px] rounded-full border border-[#d9ded1]" />
-						<div className="absolute right-12 bottom-16 h-28 w-52 rounded-[45%] border-[#087a66] border-[10px]" />
-						<div className="absolute right-28 bottom-28 h-32 w-44 rounded-[45%] border-[#14947c] border-[10px] border-t-transparent" />
+						<Image
+							alt=""
+							className="absolute right-[-54px] bottom-[-42px] w-[340px] rounded-[34px] object-contain opacity-90 mix-blend-multiply shadow-[0_26px_70px_-48px_rgba(14,64,52,0.75)]"
+							height={1024}
+							priority
+							sizes="340px"
+							src="/autopep-assets/protein-target-preview.png"
+							width={1024}
+						/>
 					</section>
 					<section className="bg-[#17211e] p-6 text-white md:p-8">
 						<p className="mb-5 text-[#dbe3d9] text-sm">
