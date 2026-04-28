@@ -1,14 +1,38 @@
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
 	boolean,
 	index,
+	integer,
+	jsonb,
+	pgEnum,
 	pgTable,
 	pgTableCreator,
+	real,
 	text,
 	timestamp,
+	uuid,
 } from "drizzle-orm/pg-core";
 
 export const createTable = pgTableCreator((name) => `pg-drizzle_${name}`);
+
+export const createAutopepTable = pgTableCreator((name) => `autopep_${name}`);
+
+export const agentRunStatus = pgEnum("agent_run_status", [
+	"queued",
+	"running",
+	"succeeded",
+	"failed",
+	"canceled",
+]);
+
+export const artifactType = pgEnum("artifact_type", [
+	"source_cif",
+	"prepared_cif",
+	"fasta",
+	"raw_search_json",
+	"report",
+	"other",
+]);
 
 export const posts = createTable(
 	"post",
@@ -91,9 +115,194 @@ export const verification = pgTable("verification", {
 	),
 });
 
+export const projects = createAutopepTable(
+	"project",
+	{
+		id: uuid("id").defaultRandom().primaryKey(),
+		ownerId: text("owner_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		goal: text("goal").notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [index("autopep_project_owner_idx").on(t.ownerId)],
+);
+
+export const agentRuns = createAutopepTable(
+	"agent_run",
+	{
+		id: uuid("id").defaultRandom().primaryKey(),
+		projectId: uuid("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		createdById: text("created_by_id")
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		prompt: text("prompt").notNull(),
+		status: agentRunStatus("status").default("queued").notNull(),
+		topK: integer("top_k").default(5).notNull(),
+		claimedBy: text("claimed_by"),
+		claimedAt: timestamp("claimed_at", { withTimezone: true }),
+		startedAt: timestamp("started_at", { withTimezone: true }),
+		finishedAt: timestamp("finished_at", { withTimezone: true }),
+		errorSummary: text("error_summary"),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [
+		index("autopep_agent_run_project_id_idx").on(t.projectId),
+		index("autopep_agent_run_status_idx").on(t.status),
+	],
+);
+
+export const agentEvents = createAutopepTable(
+	"agent_event",
+	{
+		id: uuid("id").defaultRandom().primaryKey(),
+		runId: uuid("run_id")
+			.notNull()
+			.references(() => agentRuns.id, { onDelete: "cascade" }),
+		sequence: integer("sequence").notNull(),
+		type: text("type").notNull(),
+		title: text("title").notNull(),
+		detail: text("detail"),
+		payloadJson: jsonb("payload_json")
+			.$type<Record<string, unknown>>()
+			.default(sql`'{}'::jsonb`)
+			.notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(t) => [
+		index("autopep_agent_event_run_id_idx").on(t.runId),
+		index("autopep_agent_event_run_id_sequence_idx").on(t.runId, t.sequence),
+	],
+);
+
+export const targetEntities = createAutopepTable(
+	"target_entity",
+	{
+		id: uuid("id").defaultRandom().primaryKey(),
+		runId: uuid("run_id")
+			.notNull()
+			.references(() => agentRuns.id, { onDelete: "cascade" }),
+		label: text("label").notNull(),
+		aliasesJson: jsonb("aliases_json")
+			.$type<string[]>()
+			.default(sql`'[]'::jsonb`)
+			.notNull(),
+		organism: text("organism"),
+		sourceIdsJson: jsonb("source_ids_json")
+			.$type<Record<string, string>>()
+			.default(sql`'{}'::jsonb`)
+			.notNull(),
+		confidence: real("confidence").default(0).notNull(),
+		notes: text("notes"),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(t) => [index("autopep_target_entity_run_id_idx").on(t.runId)],
+);
+
+export const proteinCandidates = createAutopepTable(
+	"protein_candidate",
+	{
+		id: uuid("id").defaultRandom().primaryKey(),
+		runId: uuid("run_id")
+			.notNull()
+			.references(() => agentRuns.id, { onDelete: "cascade" }),
+		targetEntityId: uuid("target_entity_id").references(
+			() => targetEntities.id,
+			{
+				onDelete: "set null",
+			},
+		),
+		rank: integer("rank").notNull(),
+		score: real("score").notNull(),
+		rcsbEntryId: text("rcsb_entry_id").notNull(),
+		title: text("title").notNull(),
+		organism: text("organism"),
+		experimentalMethod: text("experimental_method"),
+		resolution: real("resolution"),
+		chainsJson: jsonb("chains_json")
+			.$type<Array<{ id: string; label?: string; residues?: number }>>()
+			.default(sql`'[]'::jsonb`)
+			.notNull(),
+		literatureRefsJson: jsonb("literature_refs_json")
+			.$type<Array<{ id: string; title: string; url?: string }>>()
+			.default(sql`'[]'::jsonb`)
+			.notNull(),
+		whySelected: text("why_selected").notNull(),
+		proteinaReady: boolean("proteina_ready").default(false).notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.$onUpdate(() => new Date())
+			.notNull(),
+	},
+	(t) => [
+		index("autopep_protein_candidate_run_id_idx").on(t.runId),
+		index("autopep_protein_candidate_run_id_rank_idx").on(t.runId, t.rank),
+	],
+);
+
+export const artifacts = createAutopepTable(
+	"artifact",
+	{
+		id: uuid("id").defaultRandom().primaryKey(),
+		projectId: uuid("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		runId: uuid("run_id")
+			.notNull()
+			.references(() => agentRuns.id, { onDelete: "cascade" }),
+		candidateId: uuid("candidate_id").references(() => proteinCandidates.id, {
+			onDelete: "set null",
+		}),
+		type: artifactType("type").notNull(),
+		fileName: text("file_name").notNull(),
+		mimeType: text("mime_type").notNull(),
+		sizeBytes: integer("size_bytes").notNull(),
+		checksum: text("checksum"),
+		r2Bucket: text("r2_bucket").notNull(),
+		r2Key: text("r2_key").notNull(),
+		viewer: text("viewer").default("molstar").notNull(),
+		viewerHintsJson: jsonb("viewer_hints_json")
+			.$type<Record<string, unknown>>()
+			.default(sql`'{}'::jsonb`)
+			.notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(t) => [
+		index("autopep_artifact_project_id_idx").on(t.projectId),
+		index("autopep_artifact_run_id_idx").on(t.runId),
+		index("autopep_artifact_candidate_id_idx").on(t.candidateId),
+	],
+);
+
 export const userRelations = relations(user, ({ many }) => ({
 	account: many(account),
 	session: many(session),
+	projects: many(projects),
+	runs: many(agentRuns),
 }));
 
 export const accountRelations = relations(account, ({ one }) => ({
@@ -102,4 +311,73 @@ export const accountRelations = relations(account, ({ one }) => ({
 
 export const sessionRelations = relations(session, ({ one }) => ({
 	user: one(user, { fields: [session.userId], references: [user.id] }),
+}));
+
+export const projectRelations = relations(projects, ({ one, many }) => ({
+	owner: one(user, { fields: [projects.ownerId], references: [user.id] }),
+	runs: many(agentRuns),
+	artifacts: many(artifacts),
+}));
+
+export const agentRunRelations = relations(agentRuns, ({ one, many }) => ({
+	project: one(projects, {
+		fields: [agentRuns.projectId],
+		references: [projects.id],
+	}),
+	createdBy: one(user, {
+		fields: [agentRuns.createdById],
+		references: [user.id],
+	}),
+	events: many(agentEvents),
+	targetEntities: many(targetEntities),
+	candidates: many(proteinCandidates),
+	artifacts: many(artifacts),
+}));
+
+export const agentEventRelations = relations(agentEvents, ({ one }) => ({
+	run: one(agentRuns, {
+		fields: [agentEvents.runId],
+		references: [agentRuns.id],
+	}),
+}));
+
+export const targetEntityRelations = relations(
+	targetEntities,
+	({ one, many }) => ({
+		run: one(agentRuns, {
+			fields: [targetEntities.runId],
+			references: [agentRuns.id],
+		}),
+		candidates: many(proteinCandidates),
+	}),
+);
+
+export const proteinCandidateRelations = relations(
+	proteinCandidates,
+	({ one, many }) => ({
+		run: one(agentRuns, {
+			fields: [proteinCandidates.runId],
+			references: [agentRuns.id],
+		}),
+		targetEntity: one(targetEntities, {
+			fields: [proteinCandidates.targetEntityId],
+			references: [targetEntities.id],
+		}),
+		artifacts: many(artifacts),
+	}),
+);
+
+export const artifactRelations = relations(artifacts, ({ one }) => ({
+	project: one(projects, {
+		fields: [artifacts.projectId],
+		references: [projects.id],
+	}),
+	run: one(agentRuns, {
+		fields: [artifacts.runId],
+		references: [agentRuns.id],
+	}),
+	candidate: one(proteinCandidates, {
+		fields: [artifacts.candidateId],
+		references: [proteinCandidates.id],
+	}),
 }));
