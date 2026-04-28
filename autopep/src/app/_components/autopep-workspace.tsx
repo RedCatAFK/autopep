@@ -16,7 +16,6 @@ const MolstarViewer = dynamic(
 );
 
 const spikeGoal = "Design a protein binder for SARS-CoV-2 spike RBD";
-const proteaseGoal = "Design a protein binder for 3CL-protease";
 
 export function AutopepWorkspace() {
 	const utils = api.useUtils();
@@ -62,27 +61,28 @@ export function AutopepWorkspace() {
 		[workspace.data?.events],
 	);
 
+	const artifactRows = workspace.data?.artifacts ?? [];
+	const findCifArtifact = (candidateId?: string) =>
+		artifactRows.find(
+			(artifact) =>
+				(!candidateId || artifact.candidateId === candidateId) &&
+				artifact.type === "prepared_cif",
+		) ??
+		artifactRows.find(
+			(artifact) =>
+				(!candidateId || artifact.candidateId === candidateId) &&
+				artifact.type === "source_cif",
+		) ??
+		null;
 	const selectedCandidate =
-		candidates.find((candidate) => candidate.proteinaReady) ??
+		candidates.find(
+			(candidate) =>
+				candidate.proteinaReady && Boolean(findCifArtifact(candidate.id)),
+		) ??
 		candidates[0] ??
 		null;
-	const selectedArtifact = useMemo(() => {
-		const artifacts = workspace.data?.artifacts ?? [];
-		const findCif = (candidateId?: string) =>
-			artifacts.find(
-				(artifact) =>
-					(!candidateId || artifact.candidateId === candidateId) &&
-					artifact.type === "prepared_cif",
-			) ??
-			artifacts.find(
-				(artifact) =>
-					(!candidateId || artifact.candidateId === candidateId) &&
-					artifact.type === "source_cif",
-			) ??
-			null;
-
-		return findCif(selectedCandidate?.id) ?? findCif();
-	}, [workspace.data?.artifacts, selectedCandidate?.id]);
+	const selectedArtifact =
+		findCifArtifact(selectedCandidate?.id) ?? findCifArtifact();
 	const targetName =
 		workspace.data?.targetEntities[0]?.name ??
 		inferTargetName(workspace.data?.activeRun?.prompt) ??
@@ -99,11 +99,10 @@ export function AutopepWorkspace() {
 			onRefresh={() => {
 				void workspace.refetch();
 			}}
-			onStartExample={(goal) => {
+			onStartGoal={(goal) => {
 				createRun.mutate({
 					goal,
-					name:
-						goal === proteaseGoal ? "3CL-protease binder" : "Spike RBD binder",
+					name: inferProjectName(goal),
 					topK: 5,
 				});
 			}}
@@ -134,4 +133,16 @@ function inferTargetName(prompt?: string | null) {
 	}
 
 	return prompt.length > 46 ? `${prompt.slice(0, 43)}...` : prompt;
+}
+
+function inferProjectName(goal: string) {
+	const normalized = goal.toLowerCase();
+	if (normalized.includes("3cl") || normalized.includes("protease")) {
+		return "3CL-protease binder";
+	}
+	if (normalized.includes("spike") || normalized.includes("rbd")) {
+		return "Spike RBD binder";
+	}
+
+	return goal.length > 80 ? `${goal.slice(0, 77)}...` : goal;
 }

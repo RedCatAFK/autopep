@@ -15,6 +15,8 @@ import { type PubMedRef, searchPubMed } from "./pubmed-client";
 import {
 	downloadRcsbCif,
 	getRcsbCifUrl,
+	getRcsbEntryMetadata,
+	type RcsbEntryMetadata,
 	searchRcsbEntries,
 } from "./rcsb-client";
 
@@ -33,6 +35,23 @@ type NormalizedTarget = {
 	uniprotId: string | null;
 	role: string;
 	rationale: string;
+};
+
+export type RankedRcsbCandidate = {
+	assemblyId: string;
+	chainIdsJson: string[];
+	citationJson: { pubmed: PubMedRef[] };
+	confidence: number;
+	ligandIdsJson: string[];
+	method: string | null;
+	organism: string | null;
+	proteinaReady: boolean;
+	rank: number;
+	rcsbId: string;
+	relevanceScore: number;
+	resolutionAngstrom: number | null;
+	selectionRationale: string;
+	title: string;
 };
 
 const defaultTopK = 5;
@@ -83,6 +102,122 @@ const normalizeTarget = (prompt: string): NormalizedTarget => {
 };
 
 const clamp01 = (value: number) => Math.max(0, Math.min(1, value));
+
+const tokenizeForRanking = (value: string) =>
+	value
+		.toLowerCase()
+		.split(/[^a-z0-9]+/u)
+		.filter((token) => token.length >= 3);
+
+const scoreTitleMatch = (targetName: string, title: string | null) => {
+	if (!title) {
+		return 0;
+	}
+
+	const targetTokens = new Set(tokenizeForRanking(targetName));
+	if (targetTokens.size === 0) {
+		return 0;
+	}
+
+	const titleTokens = new Set(tokenizeForRanking(title));
+	const matches = [...targetTokens].filter((token) => titleTokens.has(token));
+	return matches.length / targetTokens.size;
+};
+
+const scoreMethod = (method: string | null) => {
+	if (!method) {
+		return 0;
+	}
+
+	const normalized = method.toLowerCase();
+	if (normalized.includes("x-ray") || normalized.includes("electron")) {
+		return 0.08;
+	}
+	if (normalized.includes("nmr")) {
+		return 0.04;
+	}
+
+	return 0.02;
+};
+
+const scoreResolution = (resolutionAngstrom: number | null) => {
+	if (resolutionAngstrom === null) {
+		return 0;
+	}
+
+	if (resolutionAngstrom <= 2) {
+		return 0.12;
+	}
+	if (resolutionAngstrom <= 3) {
+		return 0.08;
+	}
+	if (resolutionAngstrom <= 4) {
+		return 0.04;
+	}
+
+	return 0.01;
+};
+
+export const rankRcsbCandidates = ({
+	metadataById,
+	pubmedRefs,
+	rcsbIds,
+	target,
+}: {
+	metadataById: Map<string, RcsbEntryMetadata>;
+	pubmedRefs: PubMedRef[];
+	rcsbIds: string[];
+	target: NormalizedTarget;
+}): RankedRcsbCandidate[] => {
+	const ranked = rcsbIds.map((rcsbId, index) => {
+		const normalizedId = rcsbId.trim().toUpperCase();
+		const metadata = metadataById.get(normalizedId);
+		const title =
+			metadata?.title ?? `${normalizedId} structure for ${target.name}`;
+		const searchOrderScore = clamp01(1 - index * 0.08);
+		const titleScore = scoreTitleMatch(target.name, metadata?.title ?? title);
+		const relevanceScore = clamp01(
+			searchOrderScore * 0.62 +
+				titleScore * 0.18 +
+				scoreMethod(metadata?.method ?? null) +
+				scoreResolution(metadata?.resolutionAngstrom ?? null),
+		);
+		const rationaleParts = [
+			`RCSB full-text rank ${index + 1}`,
+			metadata?.method ? `method: ${metadata.method}` : "method unavailable",
+			metadata?.resolutionAngstrom
+				? `resolution: ${metadata.resolutionAngstrom.toFixed(2)} A`
+				: "resolution unavailable",
+			pubmedRefs.length > 0
+				? `${pubmedRefs.length} PubMed reference${pubmedRefs.length === 1 ? "" : "s"} considered`
+				: "literature support unavailable",
+		];
+
+		return {
+			assemblyId: "1",
+			chainIdsJson: [],
+			citationJson: { pubmed: pubmedRefs },
+			confidence: clamp01(relevanceScore - 0.08),
+			ligandIdsJson: [],
+			method: metadata?.method ?? null,
+			organism: target.organism,
+			proteinaReady: false,
+			rank: 0,
+			rcsbId: normalizedId,
+			relevanceScore,
+			resolutionAngstrom: metadata?.resolutionAngstrom ?? null,
+			selectionRationale: rationaleParts.join("; "),
+			title,
+		};
+	});
+
+	return ranked
+		.sort((left, right) => right.relevanceScore - left.relevanceScore)
+		.map((candidate, index) => ({
+			...candidate,
+			rank: index + 1,
+		}));
+};
 
 const markRunFailed = async ({
 	db,
@@ -195,6 +330,47 @@ export const runCifRetrievalPipeline = async ({
 			type: "searching_literature",
 		});
 
+		const metadataResults = await Promise.allSettled(
+			rcsbIds.map((rcsbId) =>
+				getRcsbEntryMetadata({
+					entryId: rcsbId,
+					fetchImpl,
+				}),
+			),
+		);
+		const metadataById = new Map<string, RcsbEntryMetadata>();
+		const metadataFailures: string[] = [];
+
+		for (const [index, result] of metadataResults.entries()) {
+			const rcsbId = rcsbIds[index];
+			if (!rcsbId) {
+				continue;
+			}
+
+			if (result.status === "fulfilled") {
+				metadataById.set(result.value.rcsbId, result.value);
+			} else {
+				metadataFailures.push(
+					`${rcsbId}: ${
+						result.reason instanceof Error
+							? result.reason.message
+							: String(result.reason)
+					}`,
+				);
+			}
+		}
+
+		if (metadataFailures.length > 0) {
+			await appendRunEvent({
+				db,
+				detail: metadataFailures.join("; "),
+				payload: { failures: metadataFailures },
+				runId,
+				title: "RCSB metadata partially unavailable",
+				type: "source_failed",
+			});
+		}
+
 		let pubmedRefs: PubMedRef[] = [];
 		try {
 			pubmedRefs = await searchPubMed({
@@ -219,38 +395,27 @@ export const runCifRetrievalPipeline = async ({
 			type: "ranking_candidates",
 		});
 
+		const rankedCandidates = rankRcsbCandidates({
+			metadataById,
+			pubmedRefs,
+			rcsbIds,
+			target,
+		});
+
 		const insertedCandidates = await db
 			.insert(proteinCandidates)
 			.values(
-				rcsbIds.map((rcsbId, index) => {
-					const relevanceScore = clamp01(1 - index * 0.08);
-
-					return {
-						assemblyId: "1",
-						chainIdsJson: [],
-						citationJson: { pubmed: pubmedRefs },
-						confidence: clamp01(relevanceScore - 0.1),
-						ligandIdsJson: [],
-						method: null,
-						organism: target.organism,
-						proteinaReady: index === 0,
-						rank: index + 1,
-						rcsbId,
-						relevanceScore,
-						resolutionAngstrom: null,
-						runId,
-						selectionRationale:
-							index === 0
-								? "Top RCSB full-text match selected for source CIF retrieval."
-								: "RCSB full-text match retained as an alternate candidate.",
-						targetEntityId: targetEntity.id,
-						title: `${rcsbId} structure for ${target.name}`,
-					};
-				}),
+				rankedCandidates.map((candidate) => ({
+					...candidate,
+					runId,
+					targetEntityId: targetEntity.id,
+				})),
 			)
 			.returning();
 
-		const topCandidate = insertedCandidates[0];
+		const topCandidate =
+			insertedCandidates.find((candidate) => candidate.rank === 1) ??
+			insertedCandidates[0];
 		if (!topCandidate) {
 			throw new Error("Failed to insert protein candidates.");
 		}
@@ -291,28 +456,46 @@ export const runCifRetrievalPipeline = async ({
 			key: objectKey,
 		});
 
-		await db.insert(artifacts).values({
-			bucket: env.R2_BUCKET,
-			byteSize: cifBytes.byteLength,
-			candidateId: topCandidate.id,
-			contentType: cifContentType,
-			fileName,
-			metadataJson: {
-				format: "mmcif",
-				rcsbId: topCandidate.rcsbId,
-			},
-			objectKey,
-			projectId: run.projectId,
-			runId,
-			sourceUrl: getRcsbCifUrl(topCandidate.rcsbId),
-			type: "source_cif",
-			viewerHint: "molstar",
-		});
+		const [artifact] = await db
+			.insert(artifacts)
+			.values({
+				bucket: env.R2_BUCKET,
+				byteSize: cifBytes.byteLength,
+				candidateId: topCandidate.id,
+				contentType: cifContentType,
+				fileName,
+				metadataJson: {
+					format: "mmcif",
+					rcsbId: topCandidate.rcsbId,
+				},
+				objectKey,
+				projectId: run.projectId,
+				runId,
+				sourceUrl: getRcsbCifUrl(topCandidate.rcsbId),
+				type: "source_cif",
+				viewerHint: "molstar",
+			})
+			.returning({ id: artifacts.id });
+
+		if (!artifact) {
+			throw new Error("Failed to persist CIF artifact metadata.");
+		}
+
+		const [readyCandidate] = await db
+			.update(proteinCandidates)
+			.set({ proteinaReady: true })
+			.where(eq(proteinCandidates.id, topCandidate.id))
+			.returning({ id: proteinCandidates.id });
+
+		if (!readyCandidate) {
+			throw new Error("Failed to mark candidate ready for Proteina.");
+		}
 
 		await appendRunEvent({
 			db,
 			detail: `${topCandidate.rcsbId} source CIF is ready.`,
 			payload: {
+				artifactId: artifact.id,
 				candidateId: topCandidate.id,
 				objectKey,
 				rcsbId: topCandidate.rcsbId,

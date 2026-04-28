@@ -29,7 +29,7 @@ import {
 	UserCircle,
 } from "@phosphor-icons/react";
 import Image from "next/image";
-import type { ReactNode } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 
 export type WorkspaceCandidate = {
 	id: string;
@@ -60,7 +60,7 @@ type WorkspaceShellProps = {
 	isCreatingRun: boolean;
 	isLoadingWorkspace: boolean;
 	onRefresh: () => void;
-	onStartExample: (goal: string) => void;
+	onStartGoal: (goal: string) => void;
 	projectGoal: string;
 	runStatus: string | null;
 	selectedCandidate: WorkspaceCandidate | null;
@@ -112,16 +112,18 @@ export function WorkspaceShell({
 	isCreatingRun,
 	isLoadingWorkspace,
 	onRefresh,
-	onStartExample,
+	onStartGoal,
 	projectGoal,
 	runStatus,
 	selectedCandidate,
 	targetName,
 }: WorkspaceShellProps) {
+	const [draftGoal, setDraftGoal] = useState(projectGoal || spikeGoal);
 	const status = runStatus ? statusCopy[runStatus] : null;
 	const hasRun = Boolean(runStatus);
 	const isActive = runStatus === "queued" || runStatus === "running";
 	const hasArtifact = artifactLabel !== "No CIF artifact yet";
+	const canStartRun = draftGoal.trim().length >= 3 && !isCreatingRun;
 	const structureReady = Boolean(selectedCandidate);
 	const evidenceReady =
 		events.some((event) => event.type === "searching_literature") ||
@@ -129,7 +131,26 @@ export function WorkspaceShell({
 	const designInputReady = Boolean(
 		selectedCandidate?.proteinaReady && hasArtifact,
 	);
+	const selectedCandidateReady = Boolean(
+		selectedCandidate?.proteinaReady && hasArtifact,
+	);
 	const latestEvents = events.slice(-4).reverse();
+	const submitGoal = (goal: string) => {
+		const trimmedGoal = goal.trim();
+		if (trimmedGoal.length < 3 || isCreatingRun) {
+			return;
+		}
+
+		onStartGoal(trimmedGoal);
+	};
+	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		submitGoal(draftGoal);
+	};
+
+	useEffect(() => {
+		setDraftGoal(projectGoal || spikeGoal);
+	}, [projectGoal]);
 
 	return (
 		<main className="min-h-[100dvh] bg-[#f8f7f2] text-[#17211e]">
@@ -187,10 +208,21 @@ export function WorkspaceShell({
 							Describe your goal in plain English.
 						</p>
 
-						<div className="mt-5 rounded-lg border border-[#d7d4c9] bg-[#fffef9] p-4 shadow-[0_16px_50px_-42px_rgba(25,39,33,0.7)]">
-							<p className="min-h-[72px] text-[#27322f] text-xl leading-8 tracking-[-0.02em]">
-								{projectGoal || spikeGoal}
-							</p>
+						<form
+							className="mt-5 rounded-lg border border-[#d7d4c9] bg-[#fffef9] p-4 shadow-[0_16px_50px_-42px_rgba(25,39,33,0.7)]"
+							onSubmit={handleSubmit}
+						>
+							<label className="sr-only" htmlFor="autopep-goal">
+								Protein design goal
+							</label>
+							<textarea
+								className="min-h-[96px] w-full resize-none bg-transparent text-[#27322f] text-xl leading-8 tracking-[-0.02em] outline-none placeholder:text-[#a0a69f]"
+								disabled={isCreatingRun}
+								id="autopep-goal"
+								onChange={(event) => setDraftGoal(event.target.value)}
+								placeholder={spikeGoal}
+								value={draftGoal}
+							/>
 							<div className="mt-6 flex items-center justify-between gap-3">
 								<div className="flex items-center gap-3 text-[#44504b]">
 									<button
@@ -211,26 +243,31 @@ export function WorkspaceShell({
 								<button
 									aria-label="Start target retrieval"
 									className="flex size-11 items-center justify-center rounded-lg bg-[#dfe94c] text-[#1d342e] transition hover:bg-[#d4e337] active:translate-y-[1px] disabled:cursor-not-allowed disabled:opacity-60"
-									disabled={isCreatingRun}
-									onClick={() => onStartExample(spikeGoal)}
+									disabled={!canStartRun}
 									title="Start target retrieval"
-									type="button"
+									type="submit"
 								>
 									<PaperPlaneTilt size={22} weight="fill" />
 								</button>
 							</div>
-						</div>
+						</form>
 
 						<div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1">
 							<ExampleButton
 								disabled={isCreatingRun}
 								label="SARS-CoV-2 spike RBD"
-								onClick={() => onStartExample(spikeGoal)}
+								onClick={() => {
+									setDraftGoal(spikeGoal);
+									submitGoal(spikeGoal);
+								}}
 							/>
 							<ExampleButton
 								disabled={isCreatingRun}
 								label="3CL-protease"
-								onClick={() => onStartExample(proteaseGoal)}
+								onClick={() => {
+									setDraftGoal(proteaseGoal);
+									submitGoal(proteaseGoal);
+								}}
 							/>
 						</div>
 					</section>
@@ -268,8 +305,17 @@ export function WorkspaceShell({
 									<p className="mt-1 line-clamp-2 font-medium text-[#202b27] leading-6">
 										{selectedCandidate.title}
 									</p>
-									<div className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-[#eaf4cf] px-2.5 py-1 font-medium text-[#315419] text-xs">
-										Ready for design <Check size={13} weight="bold" />
+									<div
+										className={`mt-3 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-xs ${
+											selectedCandidateReady
+												? "bg-[#eaf4cf] text-[#315419]"
+												: "bg-[#f0efe8] text-[#58625d]"
+										}`}
+									>
+										{selectedCandidateReady ? "Ready for design" : "Candidate"}
+										{selectedCandidateReady ? (
+											<Check size={13} weight="bold" />
+										) : null}
 									</div>
 								</div>
 							</div>

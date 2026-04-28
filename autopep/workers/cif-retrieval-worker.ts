@@ -2,10 +2,16 @@ import { and, asc, eq } from "drizzle-orm";
 
 import { env } from "@/env";
 import { validateRunCompletion } from "@/server/agent/completion";
+import { appendRunEvent } from "@/server/agent/events";
 import { runCodexHarness } from "@/server/agent/harness-client";
 import { runCifRetrievalPipeline } from "@/server/agent/retrieval-pipeline";
 import { db } from "@/server/db";
-import { agentRuns, artifacts, proteinCandidates } from "@/server/db/schema";
+import {
+	agentEvents,
+	agentRuns,
+	artifacts,
+	proteinCandidates,
+} from "@/server/db/schema";
 
 const workerId = process.env.AUTOPEP_WORKER_ID ?? `worker-${process.pid}`;
 const runOnceOnly = process.argv.includes("--once");
@@ -90,6 +96,27 @@ export const runOnce = async () => {
 				);
 			}
 
+			const existingReadyEvent = await db.query.agentEvents.findFirst({
+				where: and(
+					eq(agentEvents.runId, run.id),
+					eq(agentEvents.type, "ready_for_proteina"),
+				),
+			});
+
+			if (!existingReadyEvent) {
+				await appendRunEvent({
+					db,
+					detail: `Ready CIF artifact ${completion.selectedArtifactId} is available.`,
+					payload: {
+						artifactId: completion.selectedArtifactId,
+						candidateId: completion.selectedCandidateId,
+					},
+					runId: run.id,
+					title: "Ready for Proteina",
+					type: "ready_for_proteina",
+				});
+			}
+
 			await db
 				.update(agentRuns)
 				.set({
@@ -105,6 +132,31 @@ export const runOnce = async () => {
 		return true;
 	} catch (error) {
 		const errorSummary = summarizeError(error);
+
+		try {
+			const existingFailureEvent = await db.query.agentEvents.findFirst({
+				where: and(
+					eq(agentEvents.runId, run.id),
+					eq(agentEvents.type, "run_failed"),
+				),
+			});
+
+			if (!existingFailureEvent) {
+				await appendRunEvent({
+					db,
+					detail: errorSummary,
+					runId: run.id,
+					title: "CIF retrieval failed",
+					type: "run_failed",
+				});
+			}
+		} catch (eventError) {
+			console.error(
+				`Failed to persist failure event for run ${run.id}: ${summarizeError(
+					eventError,
+				)}`,
+			);
+		}
 
 		await db
 			.update(agentRuns)

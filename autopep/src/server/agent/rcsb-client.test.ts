@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { downloadRcsbCif, searchRcsbEntries } from "./rcsb-client";
+import {
+	downloadRcsbCif,
+	getRcsbEntryMetadata,
+	searchRcsbEntries,
+} from "./rcsb-client";
 
 describe("searchRcsbEntries", () => {
 	it("posts a full-text terminal query and returns identifiers", async () => {
@@ -70,5 +74,34 @@ describe("downloadRcsbCif", () => {
 		await expect(
 			downloadRcsbCif({ entryId: "6lu7", fetchImpl }),
 		).rejects.toThrow("invalid");
+	});
+});
+
+describe("getRcsbEntryMetadata", () => {
+	it("fetches title, method, and resolution metadata", async () => {
+		const fetchImpl = vi.fn(async () =>
+			Response.json({
+				exptl: [{ method: "X-RAY DIFFRACTION" }],
+				rcsb_entry_info: {
+					resolution_combined: [1.8],
+				},
+				struct: {
+					title: "SARS-CoV-2 main protease in complex with inhibitor",
+				},
+			}),
+		) as unknown as typeof fetch;
+
+		await expect(
+			getRcsbEntryMetadata({ entryId: "6lu7", fetchImpl }),
+		).resolves.toEqual({
+			method: "X-RAY DIFFRACTION",
+			rcsbId: "6LU7",
+			resolutionAngstrom: 1.8,
+			title: "SARS-CoV-2 main protease in complex with inhibitor",
+		});
+
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"https://data.rcsb.org/rest/v1/core/entry/6LU7",
+		);
 	});
 });

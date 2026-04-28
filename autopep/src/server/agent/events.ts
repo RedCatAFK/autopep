@@ -21,28 +21,33 @@ export const appendRunEvent = async ({
 	detail = null,
 	payload = {},
 }: AppendRunEventInput) => {
-	const [latestEvent] = await db
-		.select({ sequence: agentEvents.sequence })
-		.from(agentEvents)
-		.where(eq(agentEvents.runId, runId))
-		.orderBy(desc(agentEvents.sequence))
-		.limit(1);
+	for (let attempt = 0; attempt < 5; attempt += 1) {
+		const [latestEvent] = await db
+			.select({ sequence: agentEvents.sequence })
+			.from(agentEvents)
+			.where(eq(agentEvents.runId, runId))
+			.orderBy(desc(agentEvents.sequence))
+			.limit(1);
 
-	const [event] = await db
-		.insert(agentEvents)
-		.values({
-			detail,
-			payloadJson: payload,
-			runId,
-			sequence: (latestEvent?.sequence ?? 0) + 1,
-			title,
-			type,
-		})
-		.returning();
+		const [event] = await db
+			.insert(agentEvents)
+			.values({
+				detail,
+				payloadJson: payload,
+				runId,
+				sequence: (latestEvent?.sequence ?? 0) + 1,
+				title,
+				type,
+			})
+			.onConflictDoNothing({
+				target: [agentEvents.runId, agentEvents.sequence],
+			})
+			.returning();
 
-	if (!event) {
-		throw new Error("Failed to append run event.");
+		if (event) {
+			return event;
+		}
 	}
 
-	return event;
+	throw new Error("Failed to append run event after sequence retries.");
 };
