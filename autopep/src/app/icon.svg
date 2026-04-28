@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+	<title>Autopep</title>
+	<rect width="64" height="64" rx="14" fill="#fffef9" />
+	<rect x="1.5" y="1.5" width="61" height="61" rx="12.5" fill="none" stroke="#cfd8cc" stroke-width="3" />
+	<path d="M32 11 49.32 21v20L32 51 14.68 41V21L32 11Z" fill="#0b715f" />
+	<path d="M32 18.8 42.56 24.9v12.2L32 43.2l-10.56-6.1V24.9L32 18.8Z" fill="#fffef9" />
+	<circle cx="45.5" cy="45.5" r="7.5" fill="#dfe94c" />
+</svg>

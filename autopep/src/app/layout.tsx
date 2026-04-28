@@ -9,7 +9,10 @@ import { TRPCReactProvider } from "@/trpc/react";
 export const metadata: Metadata = {
 	title: "Autopep",
 	description: "A molecular studio for agentic protein design.",
-	icons: [{ rel: "icon", url: "/favicon.ico" }],
+	icons: {
+		icon: [{ type: "image/svg+xml", url: "/icon.svg" }],
+		shortcut: [{ type: "image/svg+xml", url: "/icon.svg" }],
+	},
 };
 
 const geist = Geist({
