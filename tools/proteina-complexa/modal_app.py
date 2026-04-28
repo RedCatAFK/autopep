@@ -20,10 +20,16 @@ PYTHON_BIN = Path("/workspace/.venv/bin/python")
 
 DEFAULT_PIPELINE_CONFIG = "configs/search_binder_local_pipeline.yaml"
 DEFAULT_GPU = "A100-80GB"
+AUTOPEP_WORKSPACES_VOLUME_NAME = "autopep-project-workspaces"
 
 model_volume = modal.Volume.from_name("proteina-complexa-models", create_if_missing=True)
 data_volume = modal.Volume.from_name("proteina-complexa-data", create_if_missing=True)
 runs_volume = modal.Volume.from_name("proteina-complexa-runs", create_if_missing=True)
+autopep_workspaces_volume = modal.Volume.from_name(
+    AUTOPEP_WORKSPACES_VOLUME_NAME,
+    create_if_missing=True,
+    version=2,
+)
 
 hf_secret = modal.Secret.from_name("huggingface-secret")
 
@@ -160,6 +166,7 @@ def list_weights() -> dict[str, str]:
         "/models": model_volume.read_only(),
         "/data": data_volume.read_only(),
         "/runs": runs_volume,
+        "/autopep": autopep_workspaces_volume.read_only(),
     },
     timeout=30 * 60,
 )
@@ -187,6 +194,7 @@ def validate(
         "/models": model_volume.read_only(),
         "/data": data_volume.read_only(),
         "/runs": runs_volume,
+        "/autopep": autopep_workspaces_volume.read_only(),
     },
     timeout=12 * 60 * 60,
 )
@@ -220,6 +228,7 @@ def design_binder(
         "/models": model_volume.read_only(),
         "/data": data_volume.read_only(),
         "/runs": runs_volume.read_only(),
+        "/autopep": autopep_workspaces_volume.read_only(),
     },
     timeout=10 * 60,
 )
