@@ -13,6 +13,7 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const pluginRef = useRef<PluginUIContext | null>(null);
 	const loadIdRef = useRef(0);
+	const loadQueueRef = useRef<Promise<void>>(Promise.resolve());
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(false);
 
@@ -82,6 +83,7 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 						showUnitcell: false,
 					},
 				);
+				if (!isCurrentLoad()) return;
 			} catch (cause) {
 				if (isCurrentLoad()) {
 					setError(cause instanceof Error ? cause.message : String(cause));
@@ -93,7 +95,11 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 			}
 		};
 
-		void loadStructure();
+		const queuedLoad = loadQueueRef.current
+			.catch(() => undefined)
+			.then(loadStructure);
+		loadQueueRef.current = queuedLoad.catch(() => undefined);
+		void queuedLoad;
 
 		return () => {
 			cancelled = true;
