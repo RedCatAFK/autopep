@@ -4,15 +4,15 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ChatPanel } from "./chat-panel";
+import type { StreamItem } from "./chat-stream-item";
 
 describe("ChatPanel", () => {
-	it("shows example goals when there are no messages", () => {
+	it("shows example goals when there are no stream items", () => {
 		render(
 			<ChatPanel
 				contextReferences={[]}
-				events={[]}
 				isSending={false}
-				messages={[]}
+				items={[]}
 				onSend={vi.fn()}
 				recipes={[]}
 			/>,
@@ -23,6 +23,42 @@ describe("ChatPanel", () => {
 		).toBeInTheDocument();
 	});
 
+	it("renders user, assistant, and tool stream items", () => {
+		const items: StreamItem[] = [
+			{ kind: "user_message", id: "u1", content: "Hello, autopep" },
+			{
+				kind: "assistant_message",
+				id: "a1",
+				content: "Hi! How can I help?",
+				streaming: false,
+			},
+			{
+				kind: "tool_call",
+				id: "t1",
+				tool: "search_pdb",
+				status: "completed",
+				display: {},
+			},
+		];
+
+		render(
+			<ChatPanel
+				contextReferences={[]}
+				isSending={false}
+				items={items}
+				onSend={vi.fn()}
+				recipes={[]}
+			/>,
+		);
+
+		expect(screen.getByText("Hello, autopep")).toBeInTheDocument();
+		expect(screen.getByText("Hi! How can I help?")).toBeInTheDocument();
+		expect(screen.getByText("search_pdb")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Generate a protein that binds to 3CL-protease"),
+		).not.toBeInTheDocument();
+	});
+
 	it("sends the prompt with selected context references", () => {
 		const onSend = vi.fn();
 		render(
@@ -30,9 +66,8 @@ describe("ChatPanel", () => {
 				contextReferences={[
 					{ id: "ctx-1", label: "6M0J chain A residues 333-527" },
 				]}
-				events={[]}
 				isSending={false}
-				messages={[]}
+				items={[]}
 				onSend={onSend}
 				recipes={[{ enabledByDefault: true, id: "recipe-1", name: "3CL prep" }]}
 			/>,
@@ -57,10 +92,9 @@ describe("ChatPanel", () => {
 		render(
 			<ChatPanel
 				contextReferences={[]}
-				events={[]}
 				isDisabled
 				isSending={false}
-				messages={[]}
+				items={[]}
 				onSend={onSend}
 				recipes={[]}
 			/>,
