@@ -2665,23 +2665,22 @@ Run this before starting Task 12. Re-run before Task 15 to catch any regressions
 - Modify: `autopep/.env.example`
 - Modify: `autopep/README.md`
 
-- [ ] **Step 1: Provision an isolated smoke environment**
+- [ ] **Step 1: Apply migration to prod and deploy the worker to prod Modal**
 
-Use a Neon branch and a separate Modal app so smoke runs cannot touch production state.
+There are no users. Do not provision a Neon branch or a separate Modal app — point the smokes directly at the same production Neon database and the same production Modal app the real demo will use. If smoke runs leave junk workspaces or runs around in prod, that is fine; clean them up later or never.
 
 ```bash
-# Neon branch off main, ~3s, free under branching plan
-neon branches create --name autopep-smoke --parent main
-export AUTOPEP_SMOKE_DATABASE_URL="$(neon connection-string autopep-smoke)"
 cd autopep
-DATABASE_URL=$AUTOPEP_SMOKE_DATABASE_URL bun run db:migrate
 
-# Separate Modal app — distinct start-run URL and webhook secret
-modal config set-environment smoke
-APP_NAME=autopep-agent-smoke modal deploy modal/autopep_worker.py
+# Apply the destructive migration directly to production Neon. Old autopep_*
+# tables get dropped and recreated; Better Auth tables survive.
+bun run db:migrate
+
+# Deploy the worker to the autopep production Modal app. There is only one.
+modal deploy modal/autopep_worker.py
 ```
 
-Capture the deployed `start-run` URL into `AUTOPEP_SMOKE_MODAL_START_URL` and the webhook secret into `AUTOPEP_SMOKE_MODAL_WEBHOOK_SECRET`. Do not reuse production secrets.
+Capture the printed `start-run` URL into `AUTOPEP_MODAL_START_URL` in `.env`. Confirm `OPENAI_API_KEY`, `DATABASE_URL`, `R2_*`, and `MODAL_*` are populated against production values. The smoke harness reuses every one of these — that is the whole point.
 
 - [ ] **Step 2: Implement the smoke agent**
 
@@ -2859,17 +2858,18 @@ This step is the first time `ModalSandboxClient` runs against a real Modal sandb
 Add to `autopep/.env.example`:
 
 ```
-# Integration smoke (Task 11.5). Disabled in production.
+# Integration smoke (Task 11.5). Smokes share DATABASE_URL / R2 / Modal with prod.
+# Set AUTOPEP_ALLOW_SMOKE_RUNS=1 only on machines/CI that should be allowed to
+# fire smoke task_kinds; the public frontend never sets it.
 AUTOPEP_ALLOW_SMOKE_RUNS=""
-AUTOPEP_SMOKE_DATABASE_URL=""
-AUTOPEP_SMOKE_MODAL_START_URL=""
-AUTOPEP_SMOKE_MODAL_WEBHOOK_SECRET=""
 AUTOPEP_SMOKE_OWNER_ID=""
 AUTOPEP_SMOKE_WORKSPACE_ID=""
 AUTOPEP_SMOKE_THREAD_ID=""
 ```
 
-Add a short `## Smoke runbook` section to `autopep/README.md` covering: when to run (after Task 11, before Task 15, on every Modal worker change in CI behind `RUN_SMOKE=1`), the three layered smokes, and the cost envelope.
+The smoke owner/workspace/thread IDs are pre-created in the prod DB once and reused. The harness can either expect them in env or auto-create on first run if they are absent — either is fine; the goal is to keep smoke runs out of any "real" workspace the user is actually using.
+
+Add a short `## Smoke runbook` section to `autopep/README.md` covering: when to run (after Task 11, before Task 15, on every Modal worker change in CI behind `RUN_SMOKE=1`), the three layered smokes, that smokes write to prod by design, and the cost envelope (fractions of a cent per run on `gpt-5.x-mini`).
 
 - [ ] **Step 9: Commit**
 
@@ -3609,7 +3609,7 @@ bun run test
 PYTHONPATH=modal python3 -m pytest modal/tests -q
 ```
 
-Re-run the three Task 11.5 smokes against the smoke environment and confirm they still pass:
+Re-run the three Task 11.5 smokes against prod and confirm they still pass:
 
 ```bash
 bun run scripts/smoke-roundtrip.ts smoke_chat
@@ -3617,44 +3617,24 @@ bun run scripts/smoke-roundtrip.ts smoke_tool
 bun run scripts/smoke-roundtrip.ts smoke_sandbox
 ```
 
-Expected: all four checks plus all three smokes pass.
+Expected: all four checks plus all three smokes pass. Smoke runs land in the prod DB by design — that is fine.
 
-- [ ] **Step 2: Apply the destructive migration to production Neon**
+- [ ] **Step 2: Apply the destructive migration to prod (or confirm it is current)**
 
-Use the Neon MCP plugin to inspect and confirm production state at every step. Do not skip the verification reads — the migration is destructive and silently incorrect schemas have caused incidents before.
+The migration was already applied in Task 11.5 Step 1. If you have made schema changes since, re-run it. There are no users, so do not invent ceremonies — no Neon branches, no schema diff snapshots, no rollback plans. The migration is destructive; that is intentional.
 
 ```bash
-# 1. Identify the production project + branch via the Neon MCP plugin.
-#    list_projects, then describe_branch on the production branch.
-
-# 2. Capture the pre-migration table list for the diff record.
-#    get_database_tables(project_id, branch_id) — paste the result into the commit message body.
-
-# 3. Apply migrations against production DATABASE_URL.
-DATABASE_URL=$AUTOPEP_PROD_DATABASE_URL bun run db:migrate
-
-# 4. Verify the post-migration schema with the Neon MCP plugin:
-#    describe_table_schema for autopep_workspace, autopep_thread, autopep_message,
-#    autopep_agent_run, autopep_agent_event, autopep_artifact,
-#    autopep_protein_candidate, autopep_model_inference, autopep_candidate_score,
-#    autopep_context_reference, autopep_recipe, autopep_recipe_version,
-#    autopep_run_recipe.
-#    Also describe_table_schema for "user", "session", "account", "verification"
-#    to confirm Better Auth tables survived.
+cd autopep
+bun run db:migrate
 ```
 
-Expected: 13 autopep tables exist with the columns specified in Task 2; 4 Better Auth tables remain unchanged. If anything is wrong, inspect with the Neon MCP plugin and correct directly — do not write a recovery migration unless schema drift is the only path forward.
+Expected: drizzle reports the migration is up-to-date, or applies any new migrations against prod. The Neon MCP plugin remains available for ad-hoc inspection if something looks wrong, but is not a required step.
 
 - [ ] **Step 3: Verify Cloudflare R2 bucket and credentials**
 
-Use the Cloudflare MCP plugin to confirm the production R2 bucket exists, is in the expected account, and that the `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` pair has read+write+delete on that bucket. Then exercise the path with a real upload:
+Round-trip a tiny artifact through the production storage adapter to prove the Task 5 R2 client works against the real bucket. The Cloudflare MCP plugin is available if you want to peek at the bucket or rotate credentials, but a successful `put` + signed-URL read is the gate.
 
 ```bash
-# Through the Cloudflare MCP plugin: verify the bucket, list objects (should be empty
-# or contain prior dev artifacts), and confirm the worker's IAM token scopes.
-
-# Round-trip a tiny artifact through the production storage adapter to prove the
-# Task 5 R2 client works against the real bucket:
 cd autopep
 bun run --silent -e '
   import { r2ArtifactStore } from "@/server/artifacts/r2";
@@ -3664,29 +3644,23 @@ bun run --silent -e '
 '
 ```
 
-Expected: the `put` succeeds and the signed URL fetches `ok`. Delete the test key afterwards via the Cloudflare MCP plugin.
+Expected: the `put` succeeds and the signed URL fetches `ok`. The leftover health-check key in R2 is fine to leave or delete via the Cloudflare MCP plugin.
 
-- [ ] **Step 4: Deploy the autopep worker to Modal and verify inference endpoint health**
+- [ ] **Step 4: Confirm the Modal worker is current and inference endpoints are healthy**
+
+The worker was already deployed in Task 11.5 Step 1. If you have made worker changes since, redeploy:
 
 ```bash
 cd autopep
+modal token current      # confirm autopep account, not the inference account
+modal deploy modal/autopep_worker.py   # only if there are new changes
+```
 
-# Confirm we are on the autopep Modal account, not the inference account:
-modal token current
+If the redeploy printed a new `start-run` URL, update `AUTOPEP_MODAL_START_URL` in `.env` and on Vercel.
 
-# Deploy the worker.
-modal deploy modal/autopep_worker.py
+Confirm the three inference endpoints in the separate, inaccessible Modal account are reachable:
 
-# Capture the new start-run URL printed by Modal. Update AUTOPEP_MODAL_START_URL
-# everywhere it is set: local .env, Vercel project env, and any Modal Secret that
-# embeds it.
-
-# Confirm the deployed worker boots: hit the /health route exposed by the FastAPI
-# app, or trigger a no-op Modal function call via `modal run` if the deployment
-# does not expose /health.
-
-# Confirm the three inference endpoints (in the OTHER, inaccessible Modal account)
-# are reachable from this network:
+```bash
 curl -fsS -H "X-API-Key: $MODAL_PROTEINA_API_KEY" "$MODAL_PROTEINA_URL/health"
 curl -fsS -H "X-API-Key: $MODAL_CHAI_API_KEY" "$MODAL_CHAI_URL/health"
 curl -fsS -H "X-API-Key: $MODAL_PROTEIN_INTERACTION_SCORING_API_KEY" "$MODAL_PROTEIN_INTERACTION_SCORING_URL/health"
@@ -3714,16 +3688,9 @@ Expected: deployment succeeds, the worker `/health` (or no-op call) returns ok, 
 #   MODAL_PROTEIN_INTERACTION_SCORING_URL / MODAL_PROTEIN_INTERACTION_SCORING_API_KEY
 
 vercel deploy --prod
-
-# After deploy: pull the live env back to confirm the deployed function actually
-# sees what was set. The Vercel UI lies sometimes; the runtime is the truth.
-vercel env pull .env.production.snapshot
-diff <(grep -E '^[A-Z_]+=' .env.production.expected | sort) \
-     <(grep -E '^[A-Z_]+=' .env.production.snapshot | sort) || true
-rm -f .env.production.snapshot
 ```
 
-Expected: a successful production deploy whose preview URL serves the workspace shell. No env variable is missing or mismatched. If the deploy errors during build, fix forward and redeploy. There is no rollback strategy — there is nobody to roll back for.
+Expected: a successful production deploy whose URL serves the workspace shell. No env variable is missing — if the deployed app crashes on first load with a missing-env error, set the missing var and redeploy. Fix forward; there is no rollback strategy and no users to roll back for.
 
 - [ ] **Step 6: Run the headless backend E2E against the deployed stack**
 
@@ -3870,7 +3837,7 @@ git commit -m "docs: document autopep mvp runtime and deployed e2e"
 
 ## Self-Review Checklist
 
-- Spec coverage: Tasks 1-4 cover contracts, schema, workspaces, messages, runs, events, and polling. Tasks 5-11 cover artifacts, Python Agents SDK runtime, Modal sandbox setup, Life Science Research context, Proteina, Chai, scoring, and one-loop persistence. Task 11.5 covers integration smoke roundtrips against a Neon branch and a smoke Modal app to surface integration drift before any frontend work. Tasks 12-14 cover unified chat, larger Mol* stage, context chips, compact journey, candidate tree, workspace navigation, and recipes — and are subject to the Frontend Quality And Verification Policy (design-taste skills + browser-automation drive against the rendered UI before commit). Task 15 covers a deployed production end-to-end pass: destructive migration to production Neon (with Neon MCP verification), Cloudflare R2 verification (with the Cloudflare MCP plugin), Modal worker deploy, Vercel env + production deploy, a headless backend E2E driving the 3CL-protease prompt with `gpt-5.5`, and a required UI E2E driven through the deployed Vercel URL with the codex browser-use plugin. Production breakage is acceptable while there are no users.
+- Spec coverage: Tasks 1-4 cover contracts, schema, workspaces, messages, runs, events, and polling. Tasks 5-11 cover artifacts, Python Agents SDK runtime, Modal sandbox setup, Life Science Research context, Proteina, Chai, scoring, and one-loop persistence. Task 11.5 covers integration smoke roundtrips driven against the same prod Neon DB and prod Modal app the real demo uses — no Neon branches, no separate Modal apps, no isolated environments. Tasks 12-14 cover unified chat, larger Mol* stage, context chips, compact journey, candidate tree, workspace navigation, and recipes — and are subject to the Frontend Quality And Verification Policy (design-taste skills + browser-automation drive against the rendered UI before commit). Task 15 covers Vercel deploy plus a headless backend E2E driving the 3CL-protease prompt with `gpt-5.5`, plus a required UI E2E driven through the deployed Vercel URL with the codex browser-use plugin. Production breakage and prod-DB clutter are acceptable — there are no users.
 - Model selection: Real demo runs use `gpt-5.5`. Smoke and CI runs use a `gpt-5.x-mini` (e.g. `gpt-5.5-mini`). Anthropic Haiku and other non-OpenAI models are not compatible with the worker.
 - Frontend stance: Tasks 12-14 must invoke `frontend-design` / `design-taste-frontend` / `web-design-guidelines` / `design-review` (and refinement skills like `polish`, `arrange`, `typeset`, `clarify`, `critique`) and must drive the rendered UI through real browser automation before committing. Vitest passing alone is not sufficient. Visual target: editorial paper-ish low-contrast feel from the design doc, no AI-slop patterns.
 - MVP boundary: The plan stops after one scored generation/folding batch and only preserves lineage for Phase 2 branching.
