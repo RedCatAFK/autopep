@@ -10,11 +10,36 @@ import psycopg
 class AgentRunContext:
     prompt: str
     model: str | None
+    task_kind: str
     enabled_recipes: list[str]
 
 
 async def connect(database_url: str) -> Any:
     return await psycopg.AsyncConnection.connect(database_url)
+
+
+async def claim_run(database_url: str, *, run_id: str) -> bool:
+    """Atomically transition a run from `queued` to `running`.
+
+    Returns True only if the row was claimed by this caller. If the run is
+    already running, completed, failed, or cancelled, returns False — duplicate
+    Modal invocations of the same `run_id` should bail out without side effects.
+    """
+    async with await psycopg.AsyncConnection.connect(database_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                update autopep_agent_run
+                set status = 'running',
+                    started_at = now()
+                where id = %s
+                  and status = 'queued'
+                returning id
+                """,
+                (run_id,),
+            )
+            claimed = await cur.fetchone()
+    return claimed is not None
 
 
 async def get_run_context(
@@ -28,7 +53,7 @@ async def get_run_context(
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                select prompt, model
+                select prompt, model, task_kind
                 from autopep_agent_run
                 where id = %s
                   and thread_id = %s
@@ -54,6 +79,7 @@ async def get_run_context(
     return AgentRunContext(
         prompt=str(row[0]),
         model=str(row[1]) if row[1] else None,
+        task_kind=str(row[2]) if row[2] else "chat",
         enabled_recipes=[str(recipe_row[0]) for recipe_row in recipe_rows],
     )
 

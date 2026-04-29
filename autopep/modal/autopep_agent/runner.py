@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,7 @@ from autopep_agent.biology_tools import (
 )
 from autopep_agent.config import WorkerConfig
 from autopep_agent.db import (
+    claim_run,
     get_run_context,
     mark_run_completed,
     mark_run_failed,
@@ -246,17 +248,38 @@ async def _mark_failure(database_url: str, *, run_id: str, error_summary: str) -
 
 
 async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
-    config = WorkerConfig.from_env()
-    writer = EventWriter(config.database_url)
+    """Execute one Autopep agent run end-to-end.
+
+    Loads config inside the failure-handling block so that a missing non-DB env
+    var still records a `run_failed` event when DATABASE_URL is reachable.
+    Atomically claims the run from `queued` to `running` before any side
+    effects so duplicate Modal invocations of the same `run_id` cannot execute
+    concurrently or append duplicate events. Uses the persisted `task_kind`
+    from the agent_run row instead of re-deriving from the prompt.
+    """
+    config: WorkerConfig | None = None
+    writer: EventWriter | None = None
+    database_url: str | None = None
 
     try:
+        config = WorkerConfig.from_env()
+        database_url = config.database_url
+        writer = EventWriter(database_url)
+
+        claimed = await claim_run(database_url, run_id=run_id)
+        if not claimed:
+            # Already running, completed, failed, or cancelled. Bail out
+            # silently — this is a duplicate Modal invocation and any earlier
+            # side-effects have already been recorded by the original caller.
+            return
+
         run_context = await get_run_context(
-            config.database_url,
+            database_url,
             run_id=run_id,
             thread_id=thread_id,
             workspace_id=workspace_id,
         )
-        task_kind = choose_task_kind(run_context.prompt)
+        task_kind = run_context.task_kind
         await writer.append_event(
             run_id=run_id,
             event_type="run_started",
@@ -305,17 +328,28 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
             title="Run completed",
             summary="Autopep completed the streamed agent run.",
         )
-        await mark_run_completed(config.database_url, run_id)
+        await mark_run_completed(database_url, run_id)
     except Exception as exc:
         error_summary = _summarize_error(exc)
-        await _append_failure_event(
-            writer,
-            run_id=run_id,
-            error_summary=error_summary,
-        )
-        await _mark_failure(
-            config.database_url,
-            run_id=run_id,
-            error_summary=error_summary,
-        )
+
+        # Best-effort failure recording. If config loading itself failed before
+        # we got `database_url`, fall back to the raw env var so the run still
+        # gets marked failed when DATABASE_URL is set but other vars are not.
+        failure_db_url = database_url or os.environ.get("DATABASE_URL")
+        failure_writer = writer
+        if failure_writer is None and failure_db_url is not None:
+            failure_writer = EventWriter(failure_db_url)
+
+        if failure_writer is not None:
+            await _append_failure_event(
+                failure_writer,
+                run_id=run_id,
+                error_summary=error_summary,
+            )
+        if failure_db_url is not None:
+            await _mark_failure(
+                failure_db_url,
+                run_id=run_id,
+                error_summary=error_summary,
+            )
         raise
