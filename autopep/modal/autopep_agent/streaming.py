@@ -60,45 +60,18 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
     event_type = _get(event, "type")
 
     if event_type == "raw_response_event":
-        data = _get(event, "data")
-        data_type = _get(data, "type")
-        if data_type == "response.created":
-            return {
-                "type": "assistant_message_started",
-                "title": "Assistant message started",
-                "summary": None,
-                "display": {},
-                "raw": _as_jsonable(event),
-            }
-        if data_type == "response.completed":
-            return {
-                "type": "assistant_message_completed",
-                "title": "Assistant message completed",
-                "summary": None,
-                "display": {},
-                "raw": _as_jsonable(event),
-            }
-        if data_type == "response.output_text.delta":
-            delta = _get(data, "delta", "")
-            if delta:
-                return {
-                    "type": "assistant_token_delta",
-                    "title": "Assistant token",
-                    "summary": None,
-                    "display": {"delta": delta},
-                    "raw": _as_jsonable(event),
-                }
+        # response.created / response.completed / response.output_text.delta
+        # are diagnostic-only and were previously persisted to the agent_events
+        # ledger. They are now delivered exclusively via the Modal SSE stream
+        # (Task 2.5) and the messages table (Task 2.9), so we drop them here
+        # to avoid bloating the ledger with high-frequency token deltas and
+        # redundant lifecycle markers.
         return None
 
     if event_type == "agent_updated_stream_event":
-        name = _get(_get(event, "new_agent"), "name", "Agent")
-        return {
-            "type": "agent_changed",
-            "title": "Agent changed",
-            "summary": name,
-            "display": {"agentName": name},
-            "raw": _as_jsonable(event),
-        }
+        # Agent-handoff signals are no longer persisted; surface them via
+        # streaming if needed in a later task.
+        return None
 
     if event_type == "run_item_stream_event":
         name = _get(event, "name", "")

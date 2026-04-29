@@ -408,7 +408,9 @@ async def test_execute_run_happy_path_writes_normalized_events_and_completes(
 
     types = [event["type"] for event in writer.events]
     assert types[0] == "run_started"
-    assert "assistant_token_delta" in types
+    # Token deltas are no longer persisted to the agent_events ledger; they
+    # are streamed directly via Modal SSE in Task 2.5.
+    assert "assistant_token_delta" not in types
     assert "tool_call_completed" in types
     assert types[-1] == "run_completed"
     assert completed == ["r4"]

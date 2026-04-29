@@ -233,10 +233,11 @@ async def test_smoke_chat_routes_to_ping_agent_and_uses_default_mini_model(
     assert "generate_binder_candidates" not in {
         getattr(tool, "name", "") for tool in getattr(agent, "tools", [])
     }
+    # Token deltas and raw response lifecycle events are no longer persisted
+    # to the agent_events ledger — they will be streamed via Modal SSE in
+    # Task 2.5. Only the run lifecycle events should be appended here.
     assert [event["type"] for event in writer.events] == [
         "run_started",
-        "assistant_token_delta",
-        "assistant_message_completed",
         "run_completed",
     ]
     assert completed == ["run-smoke-chat"]

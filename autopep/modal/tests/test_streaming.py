@@ -5,43 +5,31 @@ from types import SimpleNamespace
 from autopep_agent.streaming import normalize_stream_event
 
 
-def test_normalize_text_delta_event() -> None:
+def test_normalize_stream_event_drops_token_deltas() -> None:
     event = SimpleNamespace(
         type="raw_response_event",
         data=SimpleNamespace(type="response.output_text.delta", delta="hello"),
     )
 
-    normalized = normalize_stream_event(event)
-
-    assert normalized is not None
-    assert normalized["type"] == "assistant_token_delta"
-    assert normalized["display"]["delta"] == "hello"
+    assert normalize_stream_event(event) is None
 
 
-def test_normalize_raw_response_created_event() -> None:
+def test_normalize_stream_event_drops_response_created() -> None:
     event = SimpleNamespace(
         type="raw_response_event",
         data=SimpleNamespace(type="response.created"),
     )
 
-    normalized = normalize_stream_event(event)
-
-    assert normalized is not None
-    assert normalized["type"] == "assistant_message_started"
-    assert normalized["title"] == "Assistant message started"
+    assert normalize_stream_event(event) is None
 
 
-def test_normalize_raw_response_completed_event() -> None:
+def test_normalize_stream_event_drops_response_completed() -> None:
     event = SimpleNamespace(
         type="raw_response_event",
         data=SimpleNamespace(type="response.completed"),
     )
 
-    normalized = normalize_stream_event(event)
-
-    assert normalized is not None
-    assert normalized["type"] == "assistant_message_completed"
-    assert normalized["title"] == "Assistant message completed"
+    assert normalize_stream_event(event) is None
 
 
 def test_normalize_message_output_event() -> None:
@@ -76,17 +64,13 @@ def test_normalize_tool_call_event() -> None:
     assert normalized["display"]["name"] == "search_structures"
 
 
-def test_normalize_agent_update() -> None:
+def test_normalize_stream_event_drops_agent_updated() -> None:
     event = SimpleNamespace(
         type="agent_updated_stream_event",
         new_agent=SimpleNamespace(name="Autopep structure agent"),
     )
 
-    normalized = normalize_stream_event(event)
-
-    assert normalized is not None
-    assert normalized["type"] == "agent_changed"
-    assert normalized["summary"] == "Autopep structure agent"
+    assert normalize_stream_event(event) is None
 
 
 def test_normalize_tool_output_event() -> None:
@@ -138,15 +122,20 @@ def test_raw_event_uses_jsonable_model_dump() -> None:
             return "<fallback-value>"
 
     class DumpableEvent:
-        type = "raw_response_event"
-        data = SimpleNamespace(type="response.output_text.delta", delta="hello")
+        type = "run_item_stream_event"
+        name = "tool_called"
+        item = SimpleNamespace(
+            type="tool_call_item",
+            raw_item={"name": "search_structures"},
+        )
 
         def model_dump(self) -> dict[str, object]:
             return {
                 "type": self.type,
-                "data": {
-                    "type": self.data.type,
-                    "delta": self.data.delta,
+                "name": self.name,
+                "item": {
+                    "type": "tool_call_item",
+                    "raw_item": {"name": "search_structures"},
                     "items": ("a", FallbackValue()),
                 },
             }
@@ -155,10 +144,11 @@ def test_raw_event_uses_jsonable_model_dump() -> None:
 
     assert normalized is not None
     assert normalized["raw"] == {
-        "type": "raw_response_event",
-        "data": {
-            "type": "response.output_text.delta",
-            "delta": "hello",
+        "type": "run_item_stream_event",
+        "name": "tool_called",
+        "item": {
+            "type": "tool_call_item",
+            "raw_item": {"name": "search_structures"},
             "items": ["a", "<fallback-value>"],
         },
     }
