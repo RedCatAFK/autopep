@@ -109,7 +109,7 @@ const spikeGoal = "Design a protein binder for SARS-CoV-2 spike RBD";
 const proteaseGoal = "Design a protein binder for 3CL-protease";
 
 const statusCopy: Record<string, { detail: string; label: string }> = {
-	canceled: {
+	cancelled: {
 		detail: "This run was stopped before a CIF could be prepared.",
 		label: "Run canceled",
 	},
@@ -125,7 +125,7 @@ const statusCopy: Record<string, { detail: string; label: string }> = {
 		detail: "Searching structures, checking evidence, and preparing CIF files.",
 		label: "Preparing target",
 	},
-	succeeded: {
+	completed: {
 		detail: "We found a relevant structure and prepared it for design.",
 		label: "Target structure ready",
 	},
@@ -190,7 +190,7 @@ export function WorkspaceShell({
 	const structureReady = Boolean(selectedCandidate);
 	const evidenceReady =
 		events.some((event) => event.type === "searching_literature") ||
-		runStatus === "succeeded";
+		runStatus === "completed";
 	const designInputReady = Boolean(
 		selectedCandidate?.proteinaReady && hasArtifact,
 	);
@@ -472,7 +472,7 @@ export function WorkspaceShell({
 							<div className="flex gap-4">
 								<ProgressGlyph
 									active={isActive || isLoadingWorkspace}
-									done={runStatus === "succeeded"}
+									done={runStatus === "completed"}
 								/>
 								<div>
 									<p className="font-semibold text-[#16705f] text-sm">

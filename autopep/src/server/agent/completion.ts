@@ -8,6 +8,7 @@ type LegacyArtifactType =
 	| "other";
 
 type CompletionCandidate = {
+	artifactId?: string | null;
 	id: string;
 	rank: number;
 	proteinaReady: boolean;
@@ -56,7 +57,8 @@ export const validateRunCompletion = ({
 
 	const selectedArtifact = artifacts.find(
 		(artifact) =>
-			artifact.candidateId === selectedCandidate.id &&
+			(artifact.candidateId === selectedCandidate.id ||
+				artifact.id === selectedCandidate.artifactId) &&
 			cifArtifactTypes.has(artifact.type),
 	);
 

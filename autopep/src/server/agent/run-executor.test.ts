@@ -34,10 +34,10 @@ describe("run executor", () => {
 	it("claims and executes only the requested queued run", async () => {
 		const run = {
 			id: "11111111-1111-4111-8111-111111111111",
-			projectId: "22222222-2222-4222-8222-222222222222",
 			prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
+			sdkStateJson: { requestedTopK: 7 },
 			status: "running",
-			topK: 5,
+			workspaceId: "22222222-2222-4222-8222-222222222222",
 		};
 		const updateChain = makeUpdateChain([run]);
 		const db = {
@@ -66,16 +66,16 @@ describe("run executor", () => {
 		expect(runCifRetrievalPipeline).toHaveBeenCalledWith({
 			db,
 			runId: run.id,
+			topK: 7,
 		});
 	}, 10_000);
 
 	it("does not fall back to another queued run when the requested run is already active", async () => {
 		const requestedRun = {
 			id: "33333333-3333-4333-8333-333333333333",
-			projectId: "44444444-4444-4444-8444-444444444444",
 			prompt: "Design a protein to bind to 3CL-protease",
 			status: "running",
-			topK: 5,
+			workspaceId: "44444444-4444-4444-8444-444444444444",
 		};
 		const updateChain = makeUpdateChain([]);
 		const db = {
@@ -114,10 +114,10 @@ describe("run executor", () => {
 	it("falls back to deterministic retrieval when the Codex harness cannot produce a ready CIF", async () => {
 		const run = {
 			id: "55555555-5555-4555-8555-555555555555",
-			projectId: "66666666-6666-4666-8666-666666666666",
 			prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
+			sdkStateJson: { requestedTopK: 7 },
 			status: "running",
-			topK: 5,
+			workspaceId: "66666666-6666-4666-8666-666666666666",
 		};
 		const where = vi.fn().mockResolvedValue([]);
 		const from = vi.fn(() => ({ where }));
@@ -153,10 +153,10 @@ describe("run executor", () => {
 
 		expect(didWork).toBe(true);
 		expect(runCodexHarness).toHaveBeenCalledWith({
-			projectId: run.projectId,
 			prompt: run.prompt,
 			runId: run.id,
-			topK: run.topK,
+			topK: 7,
+			workspaceId: run.workspaceId,
 		});
 		expect(appendRunEvent).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -168,6 +168,77 @@ describe("run executor", () => {
 		expect(runCifRetrievalPipeline).toHaveBeenCalledWith({
 			db,
 			runId: run.id,
+			topK: 7,
 		});
+	});
+
+	it("accepts Codex completion when a ready candidate links its artifactId to the CIF artifact row", async () => {
+		const run = {
+			id: "77777777-7777-4777-8777-777777777777",
+			prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
+			sdkStateJson: { requestedTopK: 7 },
+			status: "running",
+			workspaceId: "88888888-8888-4888-8888-888888888888",
+		};
+		const candidate = {
+			artifactId: "99999999-9999-4999-8999-999999999999",
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			metadataJson: { proteinaReady: true },
+			rank: 1,
+		};
+		const artifact = {
+			id: candidate.artifactId,
+			kind: "mmcif",
+			metadataJson: {},
+		};
+		const where = vi
+			.fn()
+			.mockResolvedValueOnce([candidate])
+			.mockResolvedValueOnce([artifact]);
+		const from = vi.fn(() => ({ where }));
+		const updateChain = makeUpdateChain([]);
+		const db = {
+			query: {
+				agentEvents: {
+					findFirst: vi.fn().mockResolvedValue(undefined),
+				},
+			},
+			select: vi.fn(() => ({ from })),
+			update: updateChain.update,
+		};
+		const appendRunEvent = vi.fn().mockResolvedValue(undefined);
+		const runCodexHarness = vi.fn().mockResolvedValue({
+			stderr: "",
+			stdout: "created artifact",
+		});
+		const runCifRetrievalPipeline = vi.fn();
+		const logger = {
+			error: vi.fn(),
+			log: vi.fn(),
+		};
+
+		const { executeClaimedRun } = await importRunExecutor();
+		const didWork = await executeClaimedRun(run as never, {
+			appendRunEvent,
+			agentMode: "codex",
+			db: db as never,
+			logger,
+			runCifRetrievalPipeline,
+			runCodexHarness,
+		});
+
+		expect(didWork).toBe(true);
+		expect(runCifRetrievalPipeline).not.toHaveBeenCalled();
+		expect(appendRunEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				payload: {
+					artifactId: artifact.id,
+					candidateId: candidate.id,
+				},
+				runId: run.id,
+				title: "Ready for Proteina",
+				type: "ready_for_proteina",
+			}),
+		);
 	});
 });

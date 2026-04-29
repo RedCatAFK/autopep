@@ -48,10 +48,11 @@ export const appendRunEvent = async ({
 		const [event] = await db
 			.insert(agentEvents)
 			.values({
-				detail,
-				payloadJson: payload,
+				displayJson: payload,
+				rawJson: {},
 				runId,
 				sequence: (latestEvent?.sequence ?? 0) + 1,
+				summary: detail,
 				title,
 				type,
 			})

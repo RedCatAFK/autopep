@@ -5,6 +5,7 @@ import { validateRunCompletion } from "@/server/agent/completion";
 import { appendRunEvent } from "@/server/agent/events";
 import { runCodexHarness } from "@/server/agent/harness-client";
 import { runCifRetrievalPipeline } from "@/server/agent/retrieval-pipeline";
+import { resolveRequestedTopK } from "@/server/agent/top-k";
 import { db as appDb } from "@/server/db";
 import {
 	agentEvents,
@@ -58,6 +59,48 @@ const summarizeHarnessOutput = ({
 	return output.length > 1400 ? `${output.slice(0, 1400)}...` : output;
 };
 
+const getRecord = (value: unknown): Record<string, unknown> =>
+	value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: {};
+
+const getString = (value: unknown): string | null =>
+	typeof value === "string" ? value : null;
+
+const getBoolean = (value: unknown): boolean =>
+	typeof value === "boolean" ? value : false;
+
+const artifactKindToLegacyType = (
+	kind: string,
+	metadataJson: Record<string, unknown>,
+) => {
+	const legacyType = getString(metadataJson.legacyType);
+	if (
+		legacyType === "prepared_cif" ||
+		legacyType === "source_cif" ||
+		legacyType === "fasta" ||
+		legacyType === "raw_search_json" ||
+		legacyType === "report" ||
+		legacyType === "other"
+	) {
+		return legacyType;
+	}
+
+	if (kind === "cif" || kind === "mmcif") {
+		return "source_cif";
+	}
+
+	if (kind === "fasta") {
+		return "fasta";
+	}
+
+	if (kind === "score_report" || kind === "log") {
+		return "report";
+	}
+
+	return "other";
+};
+
 const resolveDeps = (deps: RunExecutorDeps = {}): ResolvedRunExecutorDeps => ({
 	appendRunEvent: deps.appendRunEvent ?? appendRunEvent,
 	agentMode: deps.agentMode ?? env.AUTOPEP_AGENT_MODE,
@@ -74,7 +117,7 @@ const resolveDeps = (deps: RunExecutorDeps = {}): ResolvedRunExecutorDeps => ({
 export const claimNextRun = async (
 	deps: RunExecutorDeps = {},
 ): Promise<AgentRun | null> => {
-	const { db, workerId } = resolveDeps(deps);
+	const { db } = resolveDeps(deps);
 	const queuedRun = await db.query.agentRuns.findFirst({
 		where: eq(agentRuns.status, "queued"),
 		orderBy: [asc(agentRuns.createdAt)],
@@ -87,8 +130,6 @@ export const claimNextRun = async (
 	const [claimedRun] = await db
 		.update(agentRuns)
 		.set({
-			claimedAt: new Date(),
-			claimedBy: workerId,
 			startedAt: new Date(),
 			status: "running",
 		})
@@ -102,12 +143,10 @@ export const claimRunById = async (
 	runId: string,
 	deps: RunExecutorDeps = {},
 ): Promise<ClaimRunResult> => {
-	const { db, workerId } = resolveDeps(deps);
+	const { db } = resolveDeps(deps);
 	const [claimedRun] = await db
 		.update(agentRuns)
 		.set({
-			claimedAt: new Date(),
-			claimedBy: workerId,
 			startedAt: new Date(),
 			status: "running",
 		})
@@ -142,6 +181,7 @@ export const executeClaimedRun = async (
 		runCodexHarness: runHarness,
 		validateRunCompletion: validateCompletion,
 	} = resolveDeps(deps);
+	const topK = resolveRequestedTopK(run.sdkStateJson);
 
 	try {
 		if (agentMode === "codex") {
@@ -155,10 +195,10 @@ export const executeClaimedRun = async (
 
 			try {
 				const harnessResult = await runHarness({
-					projectId: run.projectId,
 					prompt: run.prompt,
 					runId: run.id,
-					topK: run.topK,
+					topK,
+					workspaceId: run.workspaceId,
 				});
 
 				await appendEvent({
@@ -184,24 +224,39 @@ export const executeClaimedRun = async (
 			const [candidates, artifactRows] = await Promise.all([
 				db
 					.select({
+						artifactId: proteinCandidates.artifactId,
 						id: proteinCandidates.id,
-						proteinaReady: proteinCandidates.proteinaReady,
+						metadataJson: proteinCandidates.metadataJson,
 						rank: proteinCandidates.rank,
 					})
 					.from(proteinCandidates)
 					.where(eq(proteinCandidates.runId, run.id)),
 				db
 					.select({
-						candidateId: artifacts.candidateId,
 						id: artifacts.id,
-						type: artifacts.type,
+						kind: artifacts.kind,
+						metadataJson: artifacts.metadataJson,
 					})
 					.from(artifacts)
 					.where(eq(artifacts.runId, run.id)),
 			]);
 			const completion = validateCompletion({
-				artifacts: artifactRows,
-				candidates,
+				artifacts: artifactRows.map((artifact) => {
+					const metadataJson = getRecord(artifact.metadataJson);
+					return {
+						candidateId: getString(metadataJson.candidateId),
+						id: artifact.id,
+						type: artifactKindToLegacyType(artifact.kind, metadataJson),
+					};
+				}),
+				candidates: candidates.map((candidate) => ({
+					artifactId: candidate.artifactId,
+					id: candidate.id,
+					proteinaReady: getBoolean(
+						getRecord(candidate.metadataJson).proteinaReady,
+					),
+					rank: candidate.rank,
+				})),
 			});
 
 			if (!completion.ok) {
@@ -216,7 +271,7 @@ export const executeClaimedRun = async (
 					type: "codex_agent_fallback",
 				});
 
-				await runDirectPipeline({ db, runId: run.id });
+				await runDirectPipeline({ db, runId: run.id, topK });
 				logger.log(`Completed run ${run.id}`);
 				return true;
 			}
@@ -246,11 +301,11 @@ export const executeClaimedRun = async (
 				.update(agentRuns)
 				.set({
 					finishedAt: new Date(),
-					status: "succeeded",
+					status: "completed",
 				})
 				.where(eq(agentRuns.id, run.id));
 		} else {
-			await runDirectPipeline({ db, runId: run.id });
+			await runDirectPipeline({ db, runId: run.id, topK });
 		}
 
 		logger.log(`Completed run ${run.id}`);

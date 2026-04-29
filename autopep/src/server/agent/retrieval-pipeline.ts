@@ -4,12 +4,7 @@ import { env } from "@/env";
 import { buildArtifactKey } from "@/server/artifacts/keys";
 import { r2ArtifactStore } from "@/server/artifacts/r2";
 import type { db as appDb } from "@/server/db";
-import {
-	agentRuns,
-	artifacts,
-	proteinCandidates,
-	targetEntities,
-} from "@/server/db/schema";
+import { agentRuns, artifacts, proteinCandidates } from "@/server/db/schema";
 import { type BioRxivRef, searchBioRxivPreprints } from "./biorxiv-client";
 import { appendRunEvent } from "./events";
 import { type PubMedRef, searchPubMed } from "./pubmed-client";
@@ -20,6 +15,7 @@ import {
 	type RcsbEntryMetadata,
 	searchRcsbEntries,
 } from "./rcsb-client";
+import { resolveRequestedTopK } from "./top-k";
 
 type FetchImpl = typeof fetch;
 
@@ -27,6 +23,7 @@ type RunCifRetrievalPipelineInput = {
 	db: typeof appDb;
 	runId: string;
 	fetchImpl?: FetchImpl;
+	topK?: number;
 };
 
 type NormalizedTarget = {
@@ -55,7 +52,6 @@ export type RankedRcsbCandidate = {
 	title: string;
 };
 
-const defaultTopK = 5;
 const cifContentType = "chemical/x-cif";
 
 const stripPromptPrefix = (prompt: string) =>
@@ -264,6 +260,7 @@ export const runCifRetrievalPipeline = async ({
 	db,
 	runId,
 	fetchImpl = fetch,
+	topK: requestedTopK,
 }: RunCifRetrievalPipelineInput) => {
 	const run = await db.query.agentRuns.findFirst({
 		where: eq(agentRuns.id, runId),
@@ -290,22 +287,6 @@ export const runCifRetrievalPipeline = async ({
 		});
 
 		const target = normalizeTarget(run.prompt);
-		const [targetEntity] = await db
-			.insert(targetEntities)
-			.values({
-				aliasesJson: target.aliases,
-				name: target.name,
-				organism: target.organism,
-				rationale: target.rationale,
-				role: target.role,
-				runId,
-				uniprotId: target.uniprotId,
-			})
-			.returning();
-
-		if (!targetEntity) {
-			throw new Error("Failed to insert target entity.");
-		}
 
 		await appendRunEvent({
 			db,
@@ -316,7 +297,7 @@ export const runCifRetrievalPipeline = async ({
 			type: "searching_structures",
 		});
 
-		const topK = run.topK || defaultTopK;
+		const topK = requestedTopK ?? resolveRequestedTopK(run.sdkStateJson);
 		const rcsbIds = await searchRcsbEntries({
 			fetchImpl,
 			query: target.name,
@@ -448,9 +429,29 @@ export const runCifRetrievalPipeline = async ({
 			.insert(proteinCandidates)
 			.values(
 				rankedCandidates.map((candidate) => ({
-					...candidate,
+					chainIdsJson: candidate.chainIdsJson,
+					metadataJson: {
+						assemblyId: candidate.assemblyId,
+						organism: candidate.organism,
+						proteinaReady: candidate.proteinaReady,
+						rcsbId: candidate.rcsbId,
+						target,
+					},
+					rank: candidate.rank,
 					runId,
-					targetEntityId: targetEntity.id,
+					scoreJson: {
+						citation: candidate.citationJson,
+						confidence: candidate.confidence,
+						ligands: candidate.ligandIdsJson,
+						method: candidate.method,
+						relevance: candidate.relevanceScore,
+						resolution: candidate.resolutionAngstrom,
+					},
+					source: "rcsb_pdb" as const,
+					structureId: candidate.rcsbId,
+					title: candidate.title,
+					whySelected: candidate.selectionRationale,
+					workspaceId: run.workspaceId,
 				})),
 			)
 			.returning();
@@ -458,28 +459,35 @@ export const runCifRetrievalPipeline = async ({
 		const topCandidate =
 			insertedCandidates.find((candidate) => candidate.rank === 1) ??
 			insertedCandidates[0];
+		const topRankedCandidate =
+			rankedCandidates.find(
+				(candidate) => candidate.rank === topCandidate?.rank,
+			) ?? rankedCandidates[0];
 		if (!topCandidate) {
 			throw new Error("Failed to insert protein candidates.");
+		}
+		if (!topRankedCandidate) {
+			throw new Error("Failed to select top ranked candidate.");
 		}
 
 		await appendRunEvent({
 			db,
-			detail: topCandidate.rcsbId,
+			detail: topRankedCandidate.rcsbId,
 			runId,
 			title: "Downloading source CIF",
 			type: "downloading_cif",
 		});
 
 		const cifText = await downloadRcsbCif({
-			entryId: topCandidate.rcsbId,
+			entryId: topRankedCandidate.rcsbId,
 			fetchImpl,
 		});
 		const cifBytes = new TextEncoder().encode(cifText);
-		const fileName = `${topCandidate.rcsbId.toLowerCase()}-source.cif`;
+		const fileName = `${topRankedCandidate.rcsbId.toLowerCase()}-source.cif`;
 		const objectKey = buildArtifactKey({
 			candidateId: topCandidate.id,
 			fileName,
-			projectId: run.projectId,
+			projectId: run.workspaceId,
 			runId,
 			type: "source_cif",
 		});
@@ -501,21 +509,23 @@ export const runCifRetrievalPipeline = async ({
 		const [artifact] = await db
 			.insert(artifacts)
 			.values({
-				bucket: env.R2_BUCKET,
-				byteSize: cifBytes.byteLength,
-				candidateId: topCandidate.id,
 				contentType: cifContentType,
-				fileName,
+				kind: "mmcif",
 				metadataJson: {
+					bucket: env.R2_BUCKET,
+					candidateId: topCandidate.id,
 					format: "mmcif",
-					rcsbId: topCandidate.rcsbId,
+					legacyType: "source_cif",
+					rcsbId: topRankedCandidate.rcsbId,
+					sourceUrl: getRcsbCifUrl(topRankedCandidate.rcsbId),
+					viewerHint: "molstar",
 				},
-				objectKey,
-				projectId: run.projectId,
+				name: fileName,
 				runId,
-				sourceUrl: getRcsbCifUrl(topCandidate.rcsbId),
-				type: "source_cif",
-				viewerHint: "molstar",
+				sizeBytes: cifBytes.byteLength,
+				storageKey: objectKey,
+				storageProvider: "r2",
+				workspaceId: run.workspaceId,
 			})
 			.returning({ id: artifacts.id });
 
@@ -525,7 +535,14 @@ export const runCifRetrievalPipeline = async ({
 
 		const [readyCandidate] = await db
 			.update(proteinCandidates)
-			.set({ proteinaReady: true })
+			.set({
+				artifactId: artifact.id,
+				metadataJson: {
+					...topCandidate.metadataJson,
+					artifactId: artifact.id,
+					proteinaReady: true,
+				},
+			})
 			.where(eq(proteinCandidates.id, topCandidate.id))
 			.returning({ id: proteinCandidates.id });
 
@@ -535,12 +552,12 @@ export const runCifRetrievalPipeline = async ({
 
 		await appendRunEvent({
 			db,
-			detail: `${topCandidate.rcsbId} source CIF is ready.`,
+			detail: `${topRankedCandidate.rcsbId} source CIF is ready.`,
 			payload: {
 				artifactId: artifact.id,
 				candidateId: topCandidate.id,
 				objectKey,
-				rcsbId: topCandidate.rcsbId,
+				rcsbId: topRankedCandidate.rcsbId,
 			},
 			runId,
 			title: "Ready for Proteina",
@@ -551,14 +568,14 @@ export const runCifRetrievalPipeline = async ({
 			.update(agentRuns)
 			.set({
 				finishedAt: new Date(),
-				status: "succeeded",
+				status: "completed",
 			})
 			.where(eq(agentRuns.id, runId));
 
 		return {
 			candidateId: topCandidate.id,
 			objectKey,
-			rcsbId: topCandidate.rcsbId,
+			rcsbId: topRankedCandidate.rcsbId,
 			runId,
 		};
 	} catch (error) {

@@ -4,7 +4,7 @@ import { env } from "@/env";
 
 type RunCodexHarnessInput = {
 	runId: string;
-	projectId: string;
+	workspaceId: string;
 	prompt: string;
 	topK: number;
 };
@@ -16,9 +16,9 @@ type RunCodexHarnessResult = {
 
 export const runCodexHarness = async ({
 	runId,
-	projectId,
 	prompt,
 	topK,
+	workspaceId,
 }: RunCodexHarnessInput): Promise<RunCodexHarnessResult> => {
 	const command = env.AUTOPEP_CODEX_COMMAND;
 
@@ -29,10 +29,11 @@ export const runCodexHarness = async ({
 	}
 
 	const payload = {
-		projectId,
+		projectId: workspaceId,
 		prompt,
 		runId,
 		topK,
+		workspaceId,
 	};
 
 	return new Promise((resolve, reject) => {
@@ -40,10 +41,11 @@ export const runCodexHarness = async ({
 			env: {
 				...process.env,
 				AUTOPEP_HARNESS_INPUT: JSON.stringify(payload),
-				AUTOPEP_PROJECT_ID: projectId,
 				AUTOPEP_PROMPT: prompt,
+				AUTOPEP_PROJECT_ID: workspaceId,
 				AUTOPEP_RUN_ID: runId,
 				AUTOPEP_TOP_K: String(topK),
+				AUTOPEP_WORKSPACE_ID: workspaceId,
 			},
 			shell: true,
 			stdio: ["ignore", "pipe", "pipe"],

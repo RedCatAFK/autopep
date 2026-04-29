@@ -1,8 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { rankRcsbCandidates } from "./retrieval-pipeline";
 
 describe("rankRcsbCandidates", () => {
+	afterEach(() => {
+		vi.doUnmock("@/env");
+		vi.doUnmock("@/server/artifacts/r2");
+		vi.doUnmock("./biorxiv-client");
+		vi.doUnmock("./events");
+		vi.doUnmock("./pubmed-client");
+		vi.doUnmock("./rcsb-client");
+		vi.resetModules();
+	});
+
 	it("uses RCSB metadata to rank candidates and keeps readiness false", () => {
 		const candidates = rankRcsbCandidates({
 			biorxivRefs: [
@@ -72,6 +82,69 @@ describe("rankRcsbCandidates", () => {
 		);
 		expect(candidates[0]?.selectionRationale).toContain(
 			"1 bioRxiv preprint considered",
+		);
+	});
+
+	it("uses requestedTopK from run SDK state for structure search", async () => {
+		vi.resetModules();
+
+		const appendRunEvent = vi.fn().mockResolvedValue(undefined);
+		const searchRcsbEntries = vi.fn().mockResolvedValue([]);
+
+		vi.doMock("@/env", () => ({
+			env: {
+				R2_BUCKET: "test-bucket",
+			},
+		}));
+		vi.doMock("@/server/artifacts/r2", () => ({
+			r2ArtifactStore: {
+				upload: vi.fn(),
+			},
+		}));
+		vi.doMock("./biorxiv-client", () => ({
+			searchBioRxivPreprints: vi.fn(),
+		}));
+		vi.doMock("./events", () => ({
+			appendRunEvent,
+		}));
+		vi.doMock("./pubmed-client", () => ({
+			searchPubMed: vi.fn(),
+		}));
+		vi.doMock("./rcsb-client", () => ({
+			downloadRcsbCif: vi.fn(),
+			getRcsbCifUrl: vi.fn(),
+			getRcsbEntryMetadata: vi.fn(),
+			searchRcsbEntries,
+		}));
+
+		const { runCifRetrievalPipeline } = await import("./retrieval-pipeline");
+		const runId = "11111111-1111-4111-8111-111111111111";
+		const where = vi.fn().mockResolvedValue([]);
+		const set = vi.fn(() => ({ where }));
+		const update = vi.fn(() => ({ set }));
+		const db = {
+			query: {
+				agentRuns: {
+					findFirst: vi.fn().mockResolvedValue({
+						id: runId,
+						prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
+						sdkStateJson: { requestedTopK: 7 },
+						startedAt: null,
+						workspaceId: "22222222-2222-4222-8222-222222222222",
+					}),
+				},
+			},
+			update,
+		};
+
+		await expect(
+			runCifRetrievalPipeline({ db: db as never, runId }),
+		).rejects.toThrow("No RCSB CIF structures found");
+
+		expect(searchRcsbEntries).toHaveBeenCalledWith(
+			expect.objectContaining({
+				rows: 7,
+			}),
 		);
 	});
 });

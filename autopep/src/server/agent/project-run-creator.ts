@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
+
 import { launchCreatedRun } from "@/server/agent/run-launcher";
 import type { db as appDb } from "@/server/db";
-import { agentRuns, projects } from "@/server/db/schema";
+import { agentRuns, messages, threads, workspaces } from "@/server/db/schema";
 
 type CreateProjectRunInput = {
 	goal: string;
@@ -21,27 +23,46 @@ export const createProjectRunWithLaunch = async ({
 	launchRun = launchCreatedRun,
 	ownerId,
 }: CreateProjectRunWithLaunchInput) => {
-	const [project] = await db
-		.insert(projects)
+	const [workspace] = await db
+		.insert(workspaces)
 		.values({
 			ownerId,
 			name: input.name ?? input.goal.slice(0, 120),
-			goal: input.goal,
+			description: input.goal,
 		})
 		.returning();
 
-	if (!project) {
-		throw new Error("Failed to create project");
+	if (!workspace) {
+		throw new Error("Failed to create workspace");
 	}
+
+	const [thread] = await db
+		.insert(threads)
+		.values({
+			title: input.name ?? input.goal.slice(0, 120),
+			workspaceId: workspace.id,
+		})
+		.returning();
+
+	if (!thread) {
+		throw new Error("Failed to create thread");
+	}
+
+	await db
+		.update(workspaces)
+		.set({ activeThreadId: thread.id })
+		.where(eq(workspaces.id, workspace.id));
 
 	const [run] = await db
 		.insert(agentRuns)
 		.values({
-			projectId: project.id,
 			createdById: ownerId,
 			prompt: input.goal,
+			sdkStateJson: { requestedTopK: input.topK },
 			status: "queued",
-			topK: input.topK,
+			taskKind: "structure_search",
+			threadId: thread.id,
+			workspaceId: workspace.id,
 		})
 		.returning();
 
@@ -49,11 +70,31 @@ export const createProjectRunWithLaunch = async ({
 		throw new Error("Failed to create agent run");
 	}
 
+	const [message] = await db
+		.insert(messages)
+		.values({
+			content: input.goal,
+			role: "user",
+			runId: run.id,
+			threadId: thread.id,
+		})
+		.returning();
+
+	if (!message) {
+		throw new Error("Failed to create message");
+	}
+
 	const launch = await launchRun({
 		db,
-		projectId: project.id,
+		projectId: workspace.id,
 		runId: run.id,
 	});
 
-	return { project, run: launch.run ?? run };
+	return {
+		message,
+		project: workspace,
+		run: launch.run ?? run,
+		thread,
+		workspace,
+	};
 };

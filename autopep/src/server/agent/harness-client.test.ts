@@ -23,21 +23,27 @@ describe("runCodexHarness", () => {
 
 	it("passes run metadata through environment variables", async () => {
 		const { runCodexHarness } = await importHarnessClient(
-			`node -e "process.stdout.write(process.env.AUTOPEP_HARNESS_INPUT || '')"`,
+			`node -e "process.stdout.write(JSON.stringify({ harnessInput: JSON.parse(process.env.AUTOPEP_HARNESS_INPUT || '{}'), projectId: process.env.AUTOPEP_PROJECT_ID, workspaceId: process.env.AUTOPEP_WORKSPACE_ID }))"`,
 		);
 
 		const result = await runCodexHarness({
-			projectId: "project-1",
 			prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
 			runId: "run-1",
 			topK: 5,
+			workspaceId: "workspace-1",
 		});
+		const output = JSON.parse(result.stdout);
 
-		expect(JSON.parse(result.stdout)).toMatchObject({
-			projectId: "project-1",
-			prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
-			runId: "run-1",
-			topK: 5,
+		expect(output).toMatchObject({
+			harnessInput: {
+				projectId: "workspace-1",
+				prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
+				runId: "run-1",
+				topK: 5,
+				workspaceId: "workspace-1",
+			},
+			projectId: "workspace-1",
+			workspaceId: "workspace-1",
 		});
 		expect(result.stderr).toBe("");
 	});
@@ -47,10 +53,10 @@ describe("runCodexHarness", () => {
 
 		await expect(
 			runCodexHarness({
-				projectId: "project-1",
 				prompt: "Design a protein binder",
 				runId: "run-1",
 				topK: 5,
+				workspaceId: "workspace-1",
 			}),
 		).rejects.toThrow("AUTOPEP_CODEX_COMMAND is required");
 	});
@@ -62,10 +68,10 @@ describe("runCodexHarness", () => {
 
 		await expect(
 			runCodexHarness({
-				projectId: "project-1",
 				prompt: "Design a protein binder",
 				runId: "run-1",
 				topK: 5,
+				workspaceId: "workspace-1",
 			}),
 		).rejects.toThrow(/code 7[\s\S]*harness failed/u);
 	});
