@@ -22,6 +22,8 @@ export const env = createEnv({
 		DATABASE_URL: z.string().url(),
 		MODAL_CHAI_API_KEY: z.string().optional(),
 		MODAL_CHAI_URL: z.string().url().optional(),
+		MODAL_PROTEIN_INTERACTION_SCORING_API_KEY: z.string().optional(),
+		MODAL_PROTEIN_INTERACTION_SCORING_URL: z.string().url().optional(),
 		MODAL_PROTEINA_API_KEY: z.string().optional(),
 		MODAL_PROTEINA_URL: z.string().url().optional(),
 		MODAL_TOKEN_ID: z.string().optional(),
@@ -75,6 +77,10 @@ export const env = createEnv({
 		DATABASE_URL: process.env.DATABASE_URL,
 		MODAL_CHAI_API_KEY: process.env.MODAL_CHAI_API_KEY,
 		MODAL_CHAI_URL: process.env.MODAL_CHAI_URL,
+		MODAL_PROTEIN_INTERACTION_SCORING_API_KEY:
+			process.env.MODAL_PROTEIN_INTERACTION_SCORING_API_KEY,
+		MODAL_PROTEIN_INTERACTION_SCORING_URL:
+			process.env.MODAL_PROTEIN_INTERACTION_SCORING_URL,
 		MODAL_PROTEINA_API_KEY: process.env.MODAL_PROTEINA_API_KEY,
 		MODAL_PROTEINA_URL: process.env.MODAL_PROTEINA_URL,
 		MODAL_TOKEN_ID: process.env.MODAL_TOKEN_ID,

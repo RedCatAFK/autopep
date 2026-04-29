@@ -19,7 +19,8 @@ This design replaces the Codex harness-in-Modal approach with a Python OpenAI Ag
 - Keep Vercel as a thin frontend/API layer, not the long-running execution host.
 - Always load the Life Science Research plugin into the agent environment.
 - Model core biology actions as structured tools with stable inputs, outputs, artifacts, and events.
-- Treat the Modal-hosted Proteina-Complexa and Chai-1 inference endpoints as first-class agent tools.
+- Treat the Modal-hosted Proteina-Complexa, Chai-1, and protein interaction scoring endpoints as first-class agent tools.
+- Support one full end-to-end MVP loop for the 3CL-protease binder demo: research, structure selection, generation, folding, scoring, and ranked summary.
 - Add first-class workspaces, threads, recipes, context references, artifacts, and run lineage.
 - Make Mol* selection a prompt context source so a user can refer to clicked protein regions.
 - Preserve flexibility for later branching candidate-generation pipelines.
@@ -27,11 +28,10 @@ This design replaces the Codex harness-in-Modal approach with a Python OpenAI Ag
 ## Non-Goals
 
 - Production billing, quotas, or team administration.
-- Sequence generation tools such as ProteinMPNN, Chai, Boltz, Proteina, or custom binder generation in this phase.
 - Wet-lab validation or medical/clinical claims.
-- Perfect multi-agent branching optimization in the first implementation pass.
+- Multi-loop BFS/tree search optimization in the first implementation pass.
 - A direct frontend connection to the OpenAI SDK stream as the only source of truth.
-- Binding-affinity or safety scoring functions. Chai-1 confidence values may rank folds from one request, but they are not binding scores.
+- Additional scoring functions beyond the protein interaction scoring endpoint. Chai-1 confidence values may rank folds from one request, but they are not binding scores.
 
 ## Architecture
 
@@ -49,7 +49,7 @@ Use four explicit runtime boundaries:
    - Acts as the durable realtime ledger. The frontend reads events by cursor.
 
 3. **Cloudflare R2 or compatible object storage**
-- Owns file bytes: CIF/mmCIF, PDB, FASTA, raw search responses worth preserving, generated BioPython scripts, generated or mutated structures, logs, thumbnails, and later scoring reports.
+   - Owns file bytes: CIF/mmCIF, PDB, FASTA, raw search responses worth preserving, generated BioPython scripts, generated or mutated structures, logs, thumbnails, and scoring reports.
    - Neon stores object keys, hashes, MIME type, size, provenance, and semantic metadata.
 
 4. **Modal worker and sandboxes**
@@ -276,7 +276,7 @@ Fields:
 - `run_id`
 - `parent_inference_id`
 - `provider`: `modal`
-- `model_name`: `proteina_complexa | chai_1 | future_scorer`
+- `model_name`: `proteina_complexa | chai_1 | protein_interaction_scoring | future_scorer`
 - `status`: `queued | running | completed | failed | cancelled`
 - `endpoint_url_snapshot`
 - `request_json`
@@ -287,7 +287,30 @@ Fields:
 - `error_summary`
 - `created_at`
 
-This table keeps long-running generation/folding calls auditable without turning the chat trace into the only source of provenance.
+This table keeps long-running generation, folding, and scoring calls auditable without turning the chat trace into the only source of provenance.
+
+### `candidate_scores`
+
+Queryable score records for one candidate or candidate-target pair.
+
+Fields:
+
+- `id`
+- `workspace_id`
+- `run_id`
+- `candidate_id`
+- `model_inference_id`
+- `scorer`: `dscript | prodigy | protein_interaction_aggregate | future_scorer`
+- `status`: `ok | partial | failed | unavailable`
+- `label`
+- `value`
+- `unit`
+- `values_json`
+- `warnings_json`
+- `errors_json`
+- `created_at`
+
+The scoring endpoint also returns an aggregate label. Store that aggregate as its own `candidate_scores` row so the UI can sort/filter without parsing raw response JSON.
 
 ### `context_references`
 
@@ -368,6 +391,7 @@ Autopep-specific tools should wrap the same ideas in stable product contracts:
 - `mutate_structure(artifact_id, mutations, selector, rationale)` - applies controlled mutations in BioPython and produces a new structure artifact.
 - `generate_binder_candidates(target_artifact_id, target_input, hotspot_residues, binder_length, warm_start_candidates, mode)` - calls Proteina-Complexa and stores generated PDB candidates.
 - `fold_sequences_with_chai(fasta, sequence_candidates, sampling)` - calls Chai-1 and stores ranked CIF fold predictions.
+- `score_candidate_interactions(target_candidate_id, binder_candidates, structure_artifacts, options)` - calls protein interaction scoring and stores D-SCRIPT, PRODIGY, and aggregate score rows.
 
 Each tool returns structured JSON plus any artifact IDs. Raw source payloads should be stored only when useful for audit/debugging; the UI should default to compact summaries.
 
@@ -380,19 +404,21 @@ Initial biology scope:
 - BioPython execution for inspection and simple mutation tasks.
 - Proteina-Complexa candidate generation from a prepared target structure.
 - Chai-1 folding of amino-acid sequences into ranked CIF structures.
+- Protein interaction scoring with D-SCRIPT and PRODIGY for one generated candidate batch.
 
 Later scope:
 
 - branch-and-bound candidate trees
 - hierarchical validation
-- model scoring
+- additional scoring models and consensus ranking
 - generated protein lineage
+- multi-loop iterative research/generation
 
 The current schema already leaves room for those later phases through `parent_run_id`, `root_run_id`, and `parent_candidate_id`.
 
 ## Modal Inference Endpoints
 
-Autopep now has two deployed Modal inference APIs that should be called only from server-side code or the Modal worker. The browser must never receive these API keys.
+Autopep now has three deployed Modal inference APIs that should be called only from server-side code or the Modal worker. The browser must never receive these API keys.
 
 Required environment variables:
 
@@ -400,8 +426,10 @@ Required environment variables:
 - `MODAL_CHAI_API_KEY`
 - `MODAL_PROTEINA_URL`
 - `MODAL_PROTEINA_API_KEY`
+- `MODAL_PROTEIN_INTERACTION_SCORING_URL`
+- `MODAL_PROTEIN_INTERACTION_SCORING_API_KEY`
 
-Both APIs accept `X-API-Key`, `Authorization: Bearer`, or HTTP Basic auth. Autopep should use `X-API-Key` for backend calls.
+The inference APIs accept `X-API-Key`, `Authorization: Bearer`, or HTTP Basic auth. Autopep should use `X-API-Key` for backend calls.
 
 ### Chai-1
 
@@ -511,13 +539,65 @@ Autopep handling:
 - Fan out Chai-1 folding calls for generated sequences when the workflow requires independent folding prediction.
 - Keep `smoke-cif` as a health/check mode; use `design-cif` for real candidate generation.
 
-## Big Demo Workflow
+### Protein Interaction Scoring
+
+Purpose: score generated target-binder pairs with available computational interaction indicators.
+
+Endpoint:
+
+- `GET /health`
+- `POST /score_batch`
+- `POST /score_batch_upload`
+
+Request options:
+
+- `items[]`: non-empty batch, default service maximum is 8 items.
+- `items[].id`: stable candidate/pair identifier.
+- `items[].protein_a`: target protein name and optional sequence.
+- `items[].protein_b`: binder protein name and optional sequence.
+- `items[].structure`: optional PDB/CIF/mmCIF complex containing both proteins.
+- `structure.format`: `pdb | cif | mmcif`.
+- `structure.content_base64`: base64-encoded structure content, max 25 MiB decoded by default.
+- `structure.chain_a` and `structure.chain_b`: optional chain identifiers; the server can infer the first two protein chains when omitted.
+- `options.run_dscript`: default `true`.
+- `options.run_prodigy`: default `true`.
+- `options.temperature_celsius`: default `25.0`.
+- `options.fail_fast`: default `false`.
+
+Response:
+
+- `results[]`, preserving request order.
+- per result `status`: `ok | partial | failed`.
+- `scores.dscript.available`, `interaction_probability`, `raw_score`, `model_name`, `warnings`.
+- `scores.prodigy.available`, `delta_g_kcal_per_mol`, `kd_molar`, `temperature_celsius`, `warnings`.
+- `aggregate.available`, `label`, `notes`.
+- item-level `errors` and `warnings`.
+- `batch_summary` with submitted/succeeded/partial/failed counts.
+
+Aggregate labels:
+
+- `likely_binder`: D-SCRIPT probability >= 0.7 and PRODIGY delta G <= -7.0 kcal/mol.
+- `possible_binder`: D-SCRIPT probability >= 0.5 or PRODIGY delta G <= -5.0 kcal/mol.
+- `unlikely_binder`: D-SCRIPT probability < 0.5 and PRODIGY delta G > -5.0 kcal/mol.
+- `insufficient_data`: one or both scorers unavailable.
+
+Autopep handling:
+
+- Prefer `/score_batch` with base64 structure content when artifacts are already in R2.
+- Use `protein_a` for the target chain/sequence and `protein_b` for the generated binder.
+- Include a structure complex when possible so PRODIGY can run; sequence-only pairs only support D-SCRIPT.
+- Store raw response JSON in `model_inferences.response_json`.
+- Store D-SCRIPT, PRODIGY, and aggregate values in `candidate_scores`.
+- Treat the aggregate label as a computational screening indicator, not a wet-lab binding claim.
+- Sort the MVP candidate list by aggregate label, then PRODIGY delta G, then D-SCRIPT probability, while still showing raw values.
+
+## MVP Demo Workflow
 
 The primary demo prompt is:
 
 > Generate a protein that binds to 3CL-protease.
 
-The intended agent path:
+MVP scope is exactly one complete loop:
 
 1. Understand the biological target and normalize entities for 3CL-protease.
 2. Search literature, especially bioRxiv/PubMed/PMC, for target biology, known inhibitors, interfaces, and design-relevant residues.
@@ -526,11 +606,13 @@ The intended agent path:
 5. Call Proteina-Complexa to generate binder candidates against the selected target.
 6. Extract candidate sequences and store generated PDB artifacts.
 7. Call Chai-1 in parallel to fold candidate sequences into ranked CIF predictions.
-8. Display target, Proteina outputs, and Chai folds as selectable structure artifacts.
-9. Mark scoring as pending because no binding/safety scoring functions exist yet.
-10. Later, once scoring tools exist, score candidates in parallel, choose promising branches, mutate or warm-start from them, and iterate as a tree.
+8. Call protein interaction scoring for generated target-binder pairs.
+9. Display target, Proteina outputs, Chai folds, and score results as selectable artifacts and candidate cards.
+10. Produce a ranked summary of the most promising candidates, with caveats.
 
-Until scoring exists, the agent may summarize candidate confidence and provenance but must not claim that a candidate binds strongly. UI copy should say "fold confidence" or "generation result", not "binding score".
+This is enough for the full demo path. The agent must still frame results as computational screening, not confirmed binding. UI copy should say "interaction score", "predicted delta G", "D-SCRIPT probability", or "screening indicator"; it should not imply experimental validation.
+
+Phase 2 is tree-based discovery: score candidates, select promising branches, mutate or warm-start from those branches, generate another batch, and iterate with BFS-like exploration. The schema should preserve lineage now, but MVP implementation should stop after the first scored generation/folding batch.
 
 ## Product Shell
 
@@ -581,9 +663,11 @@ For generation workflows, the right panel should also include a compact candidat
 - child batch: Proteina generation
 - candidate leaves: generated PDBs and extracted sequences
 - fold children: Chai CIF predictions
-- scoring status: `not available` or `pending`, until scoring tools exist
+- score leaves: D-SCRIPT probability, PRODIGY delta G, and aggregate label
+- MVP stop marker after the first scored batch
+- phase-2 affordance for "branch again" disabled or marked future
 
-The tree is a navigation and status surface, not a dense data table. Detailed payloads stay in collapsible chat/tool trace cards.
+The tree is a navigation and status surface, not a dense data table. Candidate cards should show the aggregate label, D-SCRIPT probability, PRODIGY delta G, and fold confidence without hiding warnings or partial scorer failures. Detailed payloads stay in collapsible chat/tool trace cards.
 
 ## Mol* Context References
 
@@ -692,31 +776,32 @@ Implement as one architecture spine with three specs/streams of work:
    - destructive Autopep schema migration
    - Python Agents SDK worker
    - `SandboxAgent` plus `ModalSandboxClient`
-- run/event/artifact persistence
-- model inference persistence
-- cursor polling endpoint
-- Life Science Research plugin loading
-- initial tool wrappers
+   - run/event/artifact persistence
+   - model inference and candidate score persistence
+   - cursor polling endpoint
+   - Life Science Research plugin loading
+   - initial tool wrappers
 
 2. **Biology workflow**
    - PDB search/download
    - PubMed/PMC/bioRxiv search
    - CIF/mmCIF validation
-- prepared target artifact
-- BioPython inspection and simple mutation
-- Proteina-Complexa candidate generation
-- Chai-1 sequence folding
-- ranked candidate events and artifacts
+   - prepared target artifact
+   - BioPython inspection and simple mutation
+   - Proteina-Complexa candidate generation
+   - Chai-1 sequence folding
+   - protein interaction scoring
+   - ranked candidate events and artifacts
 
 3. **Product shell**
    - unified chat panel
    - compact journey panel
    - larger Mol* stage
    - Mol* context references
-- workspace navigation and CRUD
-- recipe management UI
-- generation/folding candidate tree
-- trace cards for tools, commands, artifacts, candidates, and errors
+   - workspace navigation and CRUD
+   - recipe management UI
+   - one-loop generation/folding/scoring candidate tree
+   - trace cards for tools, commands, artifacts, candidates, scores, and errors
 
 The implementation plan should start with track 1, because tracks 2 and 3 should render and consume the same durable contracts rather than inventing separate state paths.
 
@@ -730,6 +815,7 @@ Required coverage:
 - Python tests for biology tool wrappers using mocked RCSB, PubMed/PMC, and bioRxiv fixtures
 - mocked Proteina-Complexa contract tests for target, warm-start, response, and error handling
 - mocked Chai-1 contract tests for FASTA, sampling parameters, ranked CIF response, and error handling
+- mocked protein interaction scoring contract tests for batch scoring, partial scorer availability, aggregate labels, and warnings
 - mocked Modal sandbox tests for command stdout/stderr event streaming
 - artifact persistence tests for R2-compatible storage adapters
 - frontend component tests for chat trace event rendering
@@ -748,3 +834,4 @@ Do not depend on real OpenAI, Modal, RCSB, PubMed, or R2 calls in the default lo
 - Vercel function limits: https://vercel.com/docs/functions/limitations
 - Chai-1 endpoint implementation: `tools/chai-1`
 - Proteina-Complexa endpoint implementation: `tools/proteina-complexa`
+- Protein interaction scoring endpoint implementation: `tools/protein_interaction_scoring`
