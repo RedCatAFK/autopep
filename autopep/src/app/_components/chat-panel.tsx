@@ -8,6 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import { type FormEvent, useMemo, useState } from "react";
 
+import { isMeaningfulTraceEvent } from "./event-filters";
 import { type TraceEvent, TraceEventCard } from "./trace-event-card";
 
 export type ChatMessage = {
@@ -126,9 +127,11 @@ export function ChatPanel({
 				<div className="mt-6">
 					{events.length > 0 ? (
 						<div className="border-[#e5e2d9] border-t">
-							{events.map((event) => (
-								<TraceEventCard event={event} key={event.id} />
-							))}
+							{events
+								.filter((event) => isMeaningfulTraceEvent(event.type))
+								.map((event) => (
+									<TraceEventCard event={event} key={event.id} />
+								))}
 						</div>
 					) : (
 						<div className="rounded-md border border-[#d7d4c9] border-dashed bg-[#fffef9] px-3 py-4 text-[#69716b] text-sm leading-6">
