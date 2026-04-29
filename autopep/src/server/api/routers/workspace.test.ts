@@ -252,6 +252,23 @@ describe("workspace router procedures", () => {
 		expect(expressionReferences(where, workspaces.archivedAt)).toBe(true);
 	});
 
+	it("rejects renaming a workspace not owned by the caller", async () => {
+		const returning = vi.fn().mockResolvedValue([]);
+		const where = vi.fn(() => ({ returning }));
+		const set = vi.fn(() => ({ where }));
+		const db = {
+			update: vi.fn().mockReturnValueOnce({ set }),
+		};
+		const caller = createWorkspaceCaller(db);
+
+		await expect(
+			caller.renameWorkspace({
+				name: "Renamed workspace",
+				workspaceId: "22222222-2222-4222-8222-222222222222",
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
 	it("archives an owned workspace", async () => {
 		const archived = {
 			archivedAt: new Date("2026-04-29T00:00:00.000Z"),

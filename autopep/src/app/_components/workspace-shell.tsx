@@ -109,6 +109,7 @@ type WorkspaceShellProps = {
 	onCreateWorkspace: () => void;
 	onDeleteAttachment?: (artifactId: string) => void;
 	onOpenRecipes: () => void;
+	onRenameWorkspace?: (workspaceId: string, name: string) => void;
 	onSelectWorkspace: (workspaceId: string) => void;
 	onSendMessage: (input: ChatPanelSendInput) => void;
 	onUpdateRecipe: (input: RecipeInput & { recipeId: string }) => void;
@@ -143,6 +144,7 @@ export function WorkspaceShell({
 	onCreateWorkspace,
 	onDeleteAttachment,
 	onOpenRecipes,
+	onRenameWorkspace,
 	onSelectWorkspace,
 	onSendMessage,
 	onUpdateRecipe,
@@ -184,6 +186,7 @@ export function WorkspaceShell({
 				onArchiveWorkspace={onArchiveWorkspace}
 				onCreateWorkspace={onCreateWorkspace}
 				onOpenRecipes={onOpenRecipes}
+				onRename={onRenameWorkspace}
 				onSelectWorkspace={onSelectWorkspace}
 				workspaces={workspaces}
 			/>

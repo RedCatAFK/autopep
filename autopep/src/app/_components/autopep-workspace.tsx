@@ -90,6 +90,11 @@ export function AutopepWorkspace() {
 			await invalidateWorkspace();
 		},
 	});
+	const renameWorkspace = api.workspace.renameWorkspace.useMutation({
+		onSuccess: async (_result, variables) => {
+			await invalidateWorkspace(variables.workspaceId);
+		},
+	});
 	const sendMessage = api.workspace.sendMessage.useMutation({
 		onSuccess: async (result) => {
 			setActiveWorkspaceId(result.workspace.id);
@@ -414,6 +419,9 @@ export function AutopepWorkspace() {
 			onCreateRecipe={createRecipeForWorkspace}
 			onCreateWorkspace={createWorkspaceFromRail}
 			onOpenRecipes={() => setIsRecipesOpen(true)}
+			onRenameWorkspace={(workspaceId, name) =>
+				renameWorkspace.mutate({ name, workspaceId })
+			}
 			onSelectWorkspace={setActiveWorkspaceId}
 			onSendMessage={sendWorkspaceMessage}
 			onUpdateRecipe={updateRecipeForWorkspace}
