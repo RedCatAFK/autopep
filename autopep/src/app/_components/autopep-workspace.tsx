@@ -17,6 +17,18 @@ import {
 
 const spikeGoal = "Design a protein binder for SARS-CoV-2 spike RBD";
 
+export type IsLoadingWorkspaceArgs = {
+	latestIsLoading: boolean;
+	latestIsFetching: boolean;
+	selectedIsLoading: boolean;
+	selectedIsFetching: boolean;
+};
+
+export const computeIsLoadingWorkspace = ({
+	latestIsLoading,
+	selectedIsLoading,
+}: IsLoadingWorkspaceArgs) => latestIsLoading || selectedIsLoading;
+
 export function AutopepWorkspace() {
 	const utils = api.useUtils();
 	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
@@ -282,12 +294,12 @@ export function AutopepWorkspace() {
 			contextReferences={contextReferences}
 			events={events}
 			isChatDisabled={!currentWorkspaceId}
-			isLoadingWorkspace={
-				latestWorkspace.isLoading ||
-				selectedWorkspace.isLoading ||
-				latestWorkspace.isFetching ||
-				selectedWorkspace.isFetching
-			}
+			isLoadingWorkspace={computeIsLoadingWorkspace({
+				latestIsLoading: latestWorkspace.isLoading,
+				latestIsFetching: latestWorkspace.isFetching,
+				selectedIsLoading: selectedWorkspace.isLoading,
+				selectedIsFetching: selectedWorkspace.isFetching,
+			})}
 			isRecipeDisabled={!currentWorkspaceId}
 			isSavingRecipe={
 				createRecipe.isPending ||
