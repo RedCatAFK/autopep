@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from preprocessing import preprocess_structure_file, sanitize_name, write_preprocessed_outputs
+from proteina_complexa.preprocessing import preprocess_structure_file, sanitize_name, write_preprocessed_outputs
 
 
 def parse_args() -> argparse.Namespace:

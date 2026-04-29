@@ -20,7 +20,6 @@ class TargetPayload:
     chains: str | None
     hotspot_residues: list[str]
     binder_length: list[int]
-    encode_latents: bool
 
 
 @dataclass(frozen=True)
@@ -166,11 +165,6 @@ def _target_payload(payload: dict[str, Any], *, default_binder_length: list[int]
         ),
         field_name="binder_length",
     )
-    encode_latents = _as_bool(
-        _first_present(nested_payload, "encode_latents", default=payload.get("encode_latents")),
-        default=False,
-        field_name="encode_latents",
-    )
 
     return TargetPayload(
         structure_text=structure_text,
@@ -180,7 +174,6 @@ def _target_payload(payload: dict[str, Any], *, default_binder_length: list[int]
         chains=chains,
         hotspot_residues=hotspot_residues,
         binder_length=binder_length,
-        encode_latents=encode_latents,
     )
 
 

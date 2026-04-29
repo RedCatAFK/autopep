@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from preprocessing import preprocess_cif_text, sanitize_name
+from proteina_complexa.preprocessing import preprocess_cif_text, sanitize_name
 
 
 SAMPLE_CIF = """\

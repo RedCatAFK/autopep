@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .modal/
 .DS_Store
+runs/
+preprocessed/
