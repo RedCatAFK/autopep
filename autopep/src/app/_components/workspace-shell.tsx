@@ -7,6 +7,7 @@ import {
 	type ChatRecipe,
 } from "./chat-panel";
 import type { StreamItem } from "./chat-stream-item";
+import type { AttachmentChip } from "./use-attachment-upload";
 import { FilesPanel } from "./files-panel";
 import {
 	type RecipeInput,
@@ -92,6 +93,7 @@ type WorkspaceShellProps = {
 	activeArtifactId: string | null;
 	activeTabId: string | null;
 	activeWorkspaceId: string | null;
+	chatAttachments?: AttachmentChip[];
 	candidateScores: WorkspaceCandidateScore[];
 	candidates: WorkspaceCandidate[];
 	closeTab: (tabId: string) => void;
@@ -104,15 +106,18 @@ type WorkspaceShellProps = {
 	isSendingMessage: boolean;
 	onArchiveRecipe: (recipeId: string) => void;
 	onArchiveWorkspace: (workspaceId: string) => void;
+	onClearChatAttachments?: () => void;
 	onCloseRecipes: () => void;
 	onCreateRecipe: (input: RecipeInput) => void;
 	onCreateWorkspace: () => void;
 	onDeleteAttachment?: (artifactId: string) => void;
 	onOpenRecipes: () => void;
+	onRemoveChatAttachment?: (chipId: string) => void;
 	onRenameWorkspace?: (workspaceId: string, name: string) => void;
 	onSelectWorkspace: (workspaceId: string) => void;
 	onSendMessage: (input: ChatPanelSendInput) => void;
 	onUpdateRecipe: (input: RecipeInput & { recipeId: string }) => void;
+	onUploadChatAttachments?: (files: File[]) => void;
 	openArtifactInTab: (artifactId: string) => void;
 	openCandidateInTab: (candidateId: string) => void;
 	openFileInTab: (artifact: WorkspaceFileArtifact) => void;
@@ -128,6 +133,7 @@ export function WorkspaceShell({
 	activeArtifactId,
 	activeTabId,
 	activeWorkspaceId,
+	chatAttachments,
 	candidateScores,
 	candidates,
 	closeTab,
@@ -140,15 +146,18 @@ export function WorkspaceShell({
 	isSendingMessage,
 	onArchiveRecipe,
 	onArchiveWorkspace,
+	onClearChatAttachments,
 	onCloseRecipes,
 	onCreateRecipe,
 	onCreateWorkspace,
 	onDeleteAttachment,
 	onOpenRecipes,
+	onRemoveChatAttachment,
 	onRenameWorkspace,
 	onSelectWorkspace,
 	onSendMessage,
 	onUpdateRecipe,
+	onUploadChatAttachments,
 	openArtifactInTab,
 	openCandidateInTab,
 	openFileInTab,
@@ -192,13 +201,17 @@ export function WorkspaceShell({
 				workspaces={workspaces}
 			/>
 			<ChatPanel
+				attachments={chatAttachments}
 				contextReferences={contextReferences}
 				isDisabled={isChatDisabled}
 				isSending={isSendingMessage}
 				items={streamItems}
+				onClearAttachments={onClearChatAttachments}
 				onOpenArtifact={openArtifactInTab}
 				onOpenCandidate={openCandidateInTab}
+				onRemoveAttachment={onRemoveChatAttachment}
 				onSend={onSendMessage}
+				onUploadAttachments={onUploadChatAttachments}
 				recipes={chatRecipes}
 			/>
 			<div className="relative min-h-0 lg:min-h-0 lg:overflow-hidden">

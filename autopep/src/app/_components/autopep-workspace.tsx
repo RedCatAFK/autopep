@@ -6,6 +6,7 @@ import type { ChatPanelSendInput } from "@/app/_components/chat-panel";
 import { api } from "@/trpc/react";
 import { buildStreamItems } from "./build-stream-items";
 import type { RecipeInput } from "./recipes-dialog";
+import { useAttachmentUpload } from "./use-attachment-upload";
 import type { ViewerTab } from "./viewer-tabs";
 import {
 	type WorkspaceArtifact,
@@ -116,6 +117,9 @@ export function AutopepWorkspace() {
 			await invalidateWorkspace(activeWorkspaceId);
 		},
 	});
+	const createAttachmentMutation = api.workspace.createAttachment.useMutation();
+	const confirmAttachmentMutation =
+		api.workspace.confirmAttachment.useMutation();
 
 	const candidates = useMemo<WorkspaceCandidate[]>(
 		() =>
@@ -280,6 +284,12 @@ export function AutopepWorkspace() {
 
 	const currentWorkspaceId = activeWorkspaceId ?? payload?.workspace.id ?? null;
 
+	const attachmentUpload = useAttachmentUpload({
+		confirmAttachment: confirmAttachmentMutation.mutateAsync,
+		createAttachment: createAttachmentMutation.mutateAsync,
+		workspaceId: currentWorkspaceId,
+	});
+
 	// Auto-pin: when the candidates list goes from empty -> non-empty,
 	// auto-set the candidates tab as active if no other tab is active.
 	useEffect(() => {
@@ -353,6 +363,7 @@ export function AutopepWorkspace() {
 
 	const sendWorkspaceMessage = (input: ChatPanelSendInput) => {
 		sendMessage.mutate({
+			attachmentRefs: input.attachmentRefs,
 			contextRefs: input.contextRefs,
 			prompt: input.prompt,
 			recipeRefs: input.recipeRefs,
@@ -394,6 +405,7 @@ export function AutopepWorkspace() {
 			activeWorkspaceId={currentWorkspaceId}
 			candidateScores={candidateScores}
 			candidates={candidates}
+			chatAttachments={attachmentUpload.attachments}
 			closeTab={closeTab}
 			contextReferences={contextReferences}
 			fileArtifacts={fileArtifacts}
@@ -415,16 +427,19 @@ export function AutopepWorkspace() {
 			onArchiveWorkspace={(workspaceId) =>
 				archiveWorkspace.mutate({ workspaceId })
 			}
+			onClearChatAttachments={attachmentUpload.clear}
 			onCloseRecipes={() => setIsRecipesOpen(false)}
 			onCreateRecipe={createRecipeForWorkspace}
 			onCreateWorkspace={createWorkspaceFromRail}
 			onOpenRecipes={() => setIsRecipesOpen(true)}
+			onRemoveChatAttachment={attachmentUpload.remove}
 			onRenameWorkspace={(workspaceId, name) =>
 				renameWorkspace.mutate({ name, workspaceId })
 			}
 			onSelectWorkspace={setActiveWorkspaceId}
 			onSendMessage={sendWorkspaceMessage}
 			onUpdateRecipe={updateRecipeForWorkspace}
+			onUploadChatAttachments={attachmentUpload.upload}
 			openArtifactInTab={openArtifactInTab}
 			openCandidateInTab={openCandidateInTab}
 			openFileInTab={openFileInTab}
