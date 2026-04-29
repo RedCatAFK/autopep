@@ -5,7 +5,7 @@ import {
 	createProjectRunWithLaunch,
 } from "@/server/agent/project-run-creator";
 import { createCallerFactory } from "@/server/api/trpc";
-import { agentRuns, workspaces } from "@/server/db/schema";
+import { agentEvents, agentRuns, workspaces } from "@/server/db/schema";
 import { getWorkspacePayload, workspaceRouter } from "./workspace";
 
 vi.mock("@/server/agent/project-run-creator", () => ({
@@ -777,6 +777,103 @@ describe("workspace router procedures", () => {
 		).resolves.toEqual([]);
 
 		expect(db.query.agentEvents.findMany).not.toHaveBeenCalled();
+	});
+
+	it("returns events with sequence > sinceSequence", async () => {
+		const runId = "11111111-1111-4111-8111-111111111111";
+		const workspaceId = "22222222-2222-4222-8222-222222222222";
+		const run = {
+			id: runId,
+			status: "running" as const,
+			workspaceId,
+		};
+		const workspace = {
+			id: workspaceId,
+			ownerId: "user-1",
+		};
+		const allEvents = [1, 2, 3, 4, 5].map((sequence) => ({
+			createdAt: new Date(`2026-04-29T12:0${sequence}:00.000Z`),
+			displayJson: { step: `step-${sequence}` },
+			id: `99999999-9999-4999-8999-99999999999${sequence}`,
+			payloadJson: {},
+			rawJson: { raw: sequence },
+			runId,
+			sequence,
+			summary: `Summary ${sequence}`,
+			title: `Title ${sequence}`,
+			type: "step",
+		}));
+		const filteredEvents = allEvents.filter((event) => event.sequence > 3);
+
+		const orderBy = vi.fn().mockResolvedValue(filteredEvents);
+		const where = vi.fn(() => ({ orderBy }));
+		const from = vi.fn(() => ({ where }));
+		const runFindFirst = vi.fn().mockResolvedValue(run);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const db = {
+			query: {
+				agentRuns: { findFirst: runFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+			select: vi.fn(() => ({ from })),
+		};
+		const caller = createWorkspaceCaller(db);
+
+		const result = await caller.streamEvents({
+			runId,
+			sinceSequence: 3,
+		});
+
+		expect(result.runStatus).toBe("running");
+		expect(result.events.map((event) => event.sequence)).toEqual([4, 5]);
+		expect(result.events[0]).toEqual(
+			expect.objectContaining({
+				createdAt: filteredEvents[0]?.createdAt.toISOString(),
+				displayJson: { step: "step-4" },
+				rawJson: { raw: 4 },
+				sequence: 4,
+				summary: "Summary 4",
+				title: "Title 4",
+				type: "step",
+			}),
+		);
+
+		const runWhere = runFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(runWhere, agentRuns.id)).toBe(true);
+		const workspaceWhere = workspaceFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(workspaceWhere, workspaces.id)).toBe(true);
+		expect(expressionReferences(workspaceWhere, workspaces.ownerId)).toBe(
+			true,
+		);
+		const eventsWhere = where.mock.calls[0]?.[0];
+		expect(expressionReferences(eventsWhere, agentEvents.runId)).toBe(true);
+		expect(expressionReferences(eventsWhere, agentEvents.sequence)).toBe(true);
+	});
+
+	it("rejects streamEvents when the run is owned by another user", async () => {
+		const runId = "11111111-1111-4111-8111-111111111111";
+		const run = {
+			id: runId,
+			status: "running" as const,
+			workspaceId: "22222222-2222-4222-8222-222222222222",
+		};
+		const runFindFirst = vi.fn().mockResolvedValue(run);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(null);
+		const select = vi.fn();
+		const db = {
+			query: {
+				agentRuns: { findFirst: runFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+			select,
+		};
+		const caller = createWorkspaceCaller(db);
+
+		await expect(
+			caller.streamEvents({ runId, sinceSequence: 0 }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(select).not.toHaveBeenCalled();
 	});
 });
 

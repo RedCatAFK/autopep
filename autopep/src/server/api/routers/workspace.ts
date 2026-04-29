@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { publicTaskKindSchema } from "@/server/agent/contracts";
@@ -12,7 +12,7 @@ import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
 import { r2ArtifactStore } from "@/server/artifacts/r2";
 import type { db as appDb } from "@/server/db";
 import {
-	type agentEvents,
+	agentEvents,
 	agentRuns,
 	type artifacts,
 	contextReferences,
@@ -603,6 +603,65 @@ export const workspaceRouter = createTRPCRouter({
 			});
 
 			return events.map(mapEvent);
+		}),
+
+	streamEvents: protectedProcedure
+		.input(
+			z.object({
+				runId: z.string().uuid(),
+				sinceSequence: z.number().int().min(0).default(0),
+			}),
+		)
+		.query(async ({ ctx, input }) => {
+			const run = await ctx.db.query.agentRuns.findFirst({
+				where: eq(agentRuns.id, input.runId),
+			});
+			if (!run) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Run not found.",
+				});
+			}
+
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, run.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Run not found.",
+				});
+			}
+
+			const events = await ctx.db
+				.select()
+				.from(agentEvents)
+				.where(
+					and(
+						eq(agentEvents.runId, input.runId),
+						gt(agentEvents.sequence, input.sinceSequence),
+					),
+				)
+				.orderBy(asc(agentEvents.sequence));
+
+			return {
+				events: events.map((event) => ({
+					createdAt: event.createdAt.toISOString(),
+					detail: event.summary ?? null,
+					displayJson: event.displayJson ?? {},
+					id: event.id,
+					payloadJson: event.displayJson ?? {},
+					rawJson: event.rawJson ?? {},
+					sequence: event.sequence,
+					summary: event.summary ?? null,
+					title: event.title,
+					type: event.type,
+				})),
+				runStatus: run.status,
+			};
 		}),
 
 	answerQuestion: protectedProcedure
