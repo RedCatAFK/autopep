@@ -1,0 +1,11 @@
+modal>=1.1.4
+fastapi>=0.115.0
+python-multipart>=0.0.20
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+biopython>=1.84
+numpy>=1.26.0
+pandas>=2.2.0
+torch>=2.5.0
+dscript==0.3.1
+prodigy-prot==2.4.0
