@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +87,62 @@ async def _push_token_done(run_id: str) -> None:
         queue = modal.Queue.from_name(_token_queue_name(run_id), create_if_missing=True)
         await queue.put.aio({"type": "done"})
     except Exception:
+        pass
+
+
+# Per-run accumulator for assistant text deltas. Keyed by run_id so a single
+# Modal worker process can serve multiple runs without cross-contamination.
+# Cleared in `_flush_assistant_message` when the run completes; if a run
+# fails before `response.completed`, the buffer is best-effort and may leak —
+# acceptable because the buffer is cheap and bounded by run lifetime.
+ASSISTANT_TEXT_BUFFERS: dict[str, list[str]] = {}
+
+
+def _accumulate_assistant_text(run_id: str, text: str) -> None:
+    """Append a token delta to the per-run assistant-text buffer."""
+    ASSISTANT_TEXT_BUFFERS.setdefault(run_id, []).append(text)
+
+
+def _flush_assistant_message(run_id: str, thread_id: str) -> None:
+    """POST the accumulated assistant text to the Next.js webhook.
+
+    Best-effort: if the webhook is unconfigured (local dev / smoke contexts)
+    or unreachable, the run still succeeds. The webhook upserts a deterministic
+    `messages` row keyed off (runId, role) so retries are idempotent.
+    """
+    text = "".join(ASSISTANT_TEXT_BUFFERS.pop(run_id, []))
+    if not text:
+        return
+    secret = os.environ.get("AUTOPEP_MODAL_WEBHOOK_SECRET", "")
+    base = os.environ.get("AUTOPEP_NEXT_PUBLIC_URL", "")
+    if not secret or not base:
+        # Local-dev / smoke / test contexts may not configure webhooks; skip
+        # silently rather than failing the run.
+        return
+    body = json.dumps(
+        {
+            "content": text,
+            "metadata": {},
+            "role": "assistant",
+            "runId": run_id,
+            "threadId": thread_id,
+        },
+    ).encode("utf-8")
+    url = f"{base.rstrip('/')}/api/agent/messages"
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {secret}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        # Best-effort: do not fail the run if the webhook is unreachable.
         pass
 
 
@@ -296,6 +355,7 @@ async def _append_normalized_stream_events(
     *,
     run_id: str,
     writer: EventWriter,
+    thread_id: str | None = None,
 ) -> None:
     coalescer = SandboxOutputCoalescer()
     async for event in _stream_events(streamed_run):
@@ -309,9 +369,21 @@ async def _append_normalized_stream_events(
             if delta is None and isinstance(data, dict):
                 delta = data.get("delta", "")
             if delta:
-                await _push_token_delta(run_id, str(delta))
+                delta_text = str(delta)
+                await _push_token_delta(run_id, delta_text)
+                # Accumulate the same text into the per-run buffer so that
+                # `response.completed` can POST the full assistant message
+                # to the Next.js webhook for durable replay across reloads.
+                _accumulate_assistant_text(run_id, delta_text)
         elif data_type == "response.completed":
             await _push_token_done(run_id)
+            if thread_id is not None:
+                try:
+                    _flush_assistant_message(run_id, thread_id)
+                except Exception:
+                    # Persistence is best-effort; never fail the run if the
+                    # webhook helper raises unexpectedly.
+                    pass
 
         # Sandbox events are state-y: per-chunk stdout/stderr deltas must be
         # buffered in-memory and merged into the parent ``sandbox_command_
@@ -536,7 +608,12 @@ async def _execute_smoke_run(
             run_config=run_config,
         ),
     )
-    await _append_normalized_stream_events(streamed_run, run_id=run_id, writer=writer)
+    await _append_normalized_stream_events(
+        streamed_run,
+        run_id=run_id,
+        writer=writer,
+        thread_id=thread_id,
+    )
 
 
 async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
@@ -674,6 +751,7 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 streamed_run,
                 run_id=run_id,
                 writer=writer,
+                thread_id=thread_id,
             )
         finally:
             reset_tool_run_context(ctx_token)

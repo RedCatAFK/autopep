@@ -450,6 +450,94 @@ async def test_sandbox_stdout_truncates_at_10kb_with_truncation_flag() -> None:
 
 
 @pytest.mark.asyncio
+async def test_response_completed_flushes_accumulated_assistant_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`response.completed` must flush the accumulated text via the webhook."""
+    writer = _FakeEventWriter("test-db")
+    streamed = _FakeStreamedRun(
+        [
+            {
+                "type": "raw_response_event",
+                "data": {"type": "response.output_text.delta", "delta": "Hel"},
+            },
+            {
+                "type": "raw_response_event",
+                "data": {"type": "response.output_text.delta", "delta": "lo!"},
+            },
+            {
+                "type": "raw_response_event",
+                "data": {"type": "response.completed"},
+            },
+        ],
+    )
+
+    flush_calls: list[tuple[str, str]] = []
+
+    def fake_flush(run_id: str, thread_id: str) -> None:
+        # Capture the buffered text BEFORE the runner pops it.
+        captured = "".join(runner_mod.ASSISTANT_TEXT_BUFFERS.get(run_id, []))
+        flush_calls.append((run_id, thread_id))
+        # Drain the buffer so module state stays clean between tests.
+        runner_mod.ASSISTANT_TEXT_BUFFERS.pop(run_id, None)
+        assert captured == "Hello!"
+
+    monkeypatch.setattr(runner_mod, "_flush_assistant_message", fake_flush)
+
+    await runner_mod._append_normalized_stream_events(
+        streamed,
+        run_id="r-flush",
+        writer=writer,
+        thread_id="t-flush",
+    )
+
+    assert flush_calls == [("r-flush", "t-flush")]
+    # Buffer should have been cleared.
+    assert "r-flush" not in runner_mod.ASSISTANT_TEXT_BUFFERS
+
+
+@pytest.mark.asyncio
+async def test_flush_assistant_message_skips_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No webhook POST when AUTOPEP_NEXT_PUBLIC_URL or secret is missing."""
+    runner_mod.ASSISTANT_TEXT_BUFFERS["r-noenv"] = ["partial"]
+    monkeypatch.delenv("AUTOPEP_NEXT_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("AUTOPEP_MODAL_WEBHOOK_SECRET", raising=False)
+
+    calls: list[Any] = []
+
+    def fake_urlopen(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        raise AssertionError("urlopen must not be called when env is unset")
+
+    monkeypatch.setattr(runner_mod.urllib.request, "urlopen", fake_urlopen)
+    runner_mod._flush_assistant_message("r-noenv", "t-noenv")
+    assert calls == []
+    # The buffer should still be cleared.
+    assert "r-noenv" not in runner_mod.ASSISTANT_TEXT_BUFFERS
+
+
+@pytest.mark.asyncio
+async def test_flush_assistant_message_swallows_webhook_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Webhook failures must not propagate and break the run."""
+    import urllib.error as urllib_error
+
+    runner_mod.ASSISTANT_TEXT_BUFFERS["r-err"] = ["text"]
+    monkeypatch.setenv("AUTOPEP_NEXT_PUBLIC_URL", "http://localhost:3000")
+    monkeypatch.setenv("AUTOPEP_MODAL_WEBHOOK_SECRET", "secret")
+
+    def fake_urlopen(*_args: Any, **_kwargs: Any) -> Any:
+        raise urllib_error.URLError("connection refused")
+
+    monkeypatch.setattr(runner_mod.urllib.request, "urlopen", fake_urlopen)
+    # Should not raise.
+    runner_mod._flush_assistant_message("r-err", "t-err")
+
+
+@pytest.mark.asyncio
 async def test_execute_run_happy_path_writes_normalized_events_and_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
