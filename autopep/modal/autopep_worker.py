@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +80,59 @@ def _require_uuid(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _verify_run_stream_jwt(token: str, expected_run_id: str) -> None:
+    """Verify the HS256 JWT minted by the Next.js server.
+
+    The token is the compact form `<header>.<body>.<sig>` where each segment
+    is base64url-encoded WITHOUT padding (Node's `digest('base64url')` and
+    Buffer.toString('base64url') strip padding).
+    """
+    expected_secret = os.environ.get("AUTOPEP_MODAL_WEBHOOK_SECRET")
+    if not expected_secret:
+        raise _http_error(status_code=500, detail="Stream secret not configured.")
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise _http_error(status_code=401, detail="Invalid token.")
+    header, body, signature = parts
+
+    message = f"{header}.{body}".encode("utf-8")
+    expected_sig = (
+        base64.urlsafe_b64encode(
+            hmac.new(
+                expected_secret.encode("utf-8"),
+                message,
+                hashlib.sha256,
+            ).digest(),
+        )
+        .rstrip(b"=")
+        .decode("utf-8")
+    )
+
+    # Strip any padding from the provided signature so we compare unpadded
+    # base64url to unpadded base64url.
+    provided_sig = signature.rstrip("=")
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        raise _http_error(status_code=401, detail="Invalid token.")
+
+    try:
+        padded = body + ("=" * ((4 - len(body) % 4) % 4))
+        payload = json.loads(
+            base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8"),
+        )
+    except Exception:
+        raise _http_error(status_code=401, detail="Invalid token.") from None
+
+    if not isinstance(payload, dict):
+        raise _http_error(status_code=401, detail="Invalid token.")
+
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or exp < int(time.time()):
+        raise _http_error(status_code=401, detail="Token expired.")
+    if payload.get("runId") != expected_run_id:
+        raise _http_error(status_code=401, detail="Token does not match runId.")
+
+
 @app.function(
     image=worker_image,
     secrets=[runtime_secret],
@@ -142,13 +200,13 @@ async def start_run(request: Request) -> Any:
 async def run_stream(request: Request) -> Any:
     """Tail a per-run Modal Queue and forward token deltas as SSE.
 
-    Auth here is a temporary shared-secret check against
-    AUTOPEP_MODAL_WEBHOOK_SECRET. Task 2.6 will replace this with a signed
-    JWT minted by the Next.js server. Until then, callers pass the secret
-    via the `token` query parameter (EventSource cannot set Authorization
-    headers).
+    Auth: an HS256 JWT minted by the Next.js server (see
+    `src/server/agent/run-stream-token.ts`) using
+    AUTOPEP_MODAL_WEBHOOK_SECRET as the HMAC key. The token's `runId` claim
+    must match the `runId` query parameter, and the token must not be
+    expired. Callers pass the token via the `token` query parameter because
+    EventSource cannot set Authorization headers.
     """
-    import json
     import queue as _queue
 
     from fastapi.responses import StreamingResponse
@@ -158,12 +216,10 @@ async def run_stream(request: Request) -> Any:
     if not run_id or not token:
         raise _http_error(status_code=400, detail="runId and token are required.")
 
-    expected = os.environ.get("AUTOPEP_MODAL_WEBHOOK_SECRET", "")
-    if not expected or token != expected:
-        raise _http_error(status_code=401, detail="Unauthorized.")
-
     if not UUID_RE.match(run_id):
         raise _http_error(status_code=422, detail="runId must be a UUID.")
+
+    _verify_run_stream_jwt(token, run_id)
 
     token_queue = modal.Queue.from_name(
         f"autopep-tokens-{run_id}",

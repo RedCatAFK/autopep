@@ -156,6 +156,7 @@ describe("workspace router procedures", () => {
 				"getWorkspace",
 				"listRecipes",
 				"listWorkspaces",
+				"mintRunStreamToken",
 				"renameWorkspace",
 				"sendMessage",
 				"updateRecipe",
@@ -874,6 +875,83 @@ describe("workspace router procedures", () => {
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 
 		expect(select).not.toHaveBeenCalled();
+	});
+
+	it("mints a run-stream URL with a signed JWT for the run's owner", async () => {
+		const runId = "11111111-1111-4111-8111-111111111111";
+		const workspaceId = "22222222-2222-4222-8222-222222222222";
+		const run = {
+			id: runId,
+			status: "running" as const,
+			workspaceId,
+		};
+		const workspace = { id: workspaceId, ownerId: "user-1" };
+		const runFindFirst = vi.fn().mockResolvedValue(run);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const db = {
+			query: {
+				agentRuns: { findFirst: runFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		};
+		const caller = createWorkspaceCaller(db);
+
+		const result = await caller.mintRunStreamToken({ runId });
+
+		expect(result.url).toMatch(/^https:\/\/example\.invalid\/run-stream\?/);
+		const url = new URL(result.url);
+		expect(url.searchParams.get("runId")).toBe(runId);
+		const token = url.searchParams.get("token");
+		expect(token).toBeTruthy();
+		expect(token?.split(".").length).toBe(3);
+
+		const runWhere = runFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(runWhere, agentRuns.id)).toBe(true);
+		const workspaceWhere = workspaceFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(workspaceWhere, workspaces.id)).toBe(true);
+		expect(expressionReferences(workspaceWhere, workspaces.ownerId)).toBe(true);
+	});
+
+	it("rejects mintRunStreamToken when the run does not exist", async () => {
+		const runFindFirst = vi.fn().mockResolvedValue(null);
+		const workspaceFindFirst = vi.fn();
+		const db = {
+			query: {
+				agentRuns: { findFirst: runFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		};
+		const caller = createWorkspaceCaller(db);
+
+		await expect(
+			caller.mintRunStreamToken({
+				runId: "11111111-1111-4111-8111-111111111111",
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(workspaceFindFirst).not.toHaveBeenCalled();
+	});
+
+	it("rejects mintRunStreamToken when the run is owned by another user", async () => {
+		const runId = "11111111-1111-4111-8111-111111111111";
+		const run = {
+			id: runId,
+			status: "running" as const,
+			workspaceId: "22222222-2222-4222-8222-222222222222",
+		};
+		const runFindFirst = vi.fn().mockResolvedValue(run);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(null);
+		const db = {
+			query: {
+				agentRuns: { findFirst: runFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		};
+		const caller = createWorkspaceCaller(db);
+
+		await expect(
+			caller.mintRunStreamToken({ runId }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
 	});
 });
 

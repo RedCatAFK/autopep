@@ -2,11 +2,13 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
 import { z } from "zod";
 
+import { env } from "@/env";
 import { publicTaskKindSchema } from "@/server/agent/contracts";
 import {
 	createMessageRunWithLaunch,
 	createProjectRunWithLaunch,
 } from "@/server/agent/project-run-creator";
+import { signRunStreamToken } from "@/server/agent/run-stream-token";
 import { answerWorkspaceQuestion } from "@/server/agent/workspace-answer";
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
 import { r2ArtifactStore } from "@/server/artifacts/r2";
@@ -661,6 +663,57 @@ export const workspaceRouter = createTRPCRouter({
 					type: event.type,
 				})),
 				runStatus: run.status,
+			};
+		}),
+
+	mintRunStreamToken: protectedProcedure
+		.input(z.object({ runId: z.string().uuid() }))
+		.query(async ({ ctx, input }) => {
+			const run = await ctx.db.query.agentRuns.findFirst({
+				where: eq(agentRuns.id, input.runId),
+			});
+			if (!run) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Run not found.",
+				});
+			}
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, run.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Run not found.",
+				});
+			}
+
+			const secret = env.AUTOPEP_MODAL_WEBHOOK_SECRET;
+			if (!secret) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Run stream secret not configured.",
+				});
+			}
+			const baseUrl = env.AUTOPEP_MODAL_RUN_STREAM_URL;
+			if (!baseUrl) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Run stream URL not configured.",
+				});
+			}
+
+			const token = signRunStreamToken({
+				payload: { runId: input.runId, userId: ctx.session.user.id },
+				secret,
+				expiresInSeconds: 60 * 60,
+			});
+
+			return {
+				url: `${baseUrl}?runId=${input.runId}&token=${token}`,
 			};
 		}),
 

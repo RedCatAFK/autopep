@@ -12,6 +12,8 @@ export default defineConfig({
 		globals: true,
 		setupFiles: ["./src/test/setup.ts"],
 		env: {
+			AUTOPEP_MODAL_RUN_STREAM_URL: "https://example.invalid/run-stream",
+			AUTOPEP_MODAL_WEBHOOK_SECRET: "test-modal-webhook-secret",
 			BETTER_AUTH_SECRET: "test-secret",
 			DATABASE_URL: "postgres://user:password@localhost:5432/autopep_test",
 			NODE_ENV: "test",
