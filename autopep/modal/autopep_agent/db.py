@@ -15,6 +15,15 @@ class AgentRunContext:
     enabled_recipes: list[str]
 
 
+@dataclass(frozen=True)
+class AttachmentRow:
+    """Row describing an attachment artifact referenced by an agent run."""
+
+    artifact_id: str
+    storage_key: str
+    name: str
+
+
 async def connect(database_url: str) -> Any:
     return await psycopg.AsyncConnection.connect(database_url)
 
@@ -83,6 +92,49 @@ async def get_run_context(
         task_kind=str(row[2]) if row[2] else "chat",
         enabled_recipes=[str(recipe_row[0]) for recipe_row in recipe_rows],
     )
+
+
+async def get_run_attachments(
+    database_url: str,
+    *,
+    run_id: str,
+) -> list[AttachmentRow]:
+    """Return attachment artifacts referenced by ``run_id``'s workspace.
+
+    A row is included when:
+      * an ``autopep_context_reference`` of kind ``artifact`` exists for the
+        run's workspace, AND
+      * the referenced artifact has ``kind = 'attachment'``.
+
+    Rows are returned in deterministic ``name, artifact_id`` order so that
+    the system message announcing them, and the on-volume directory listing,
+    are stable across runs.
+    """
+
+    async with await psycopg.AsyncConnection.connect(database_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select distinct a.id, a.storage_key, a.name
+                from autopep_artifact a
+                join autopep_context_reference cr
+                  on cr.artifact_id = a.id and cr.kind = 'artifact'
+                join autopep_agent_run r
+                  on r.workspace_id = cr.workspace_id
+                where r.id = %s and a.kind = 'attachment'
+                order by a.name asc, a.id asc
+                """,
+                (run_id,),
+            )
+            rows = await cur.fetchall()
+    return [
+        AttachmentRow(
+            artifact_id=str(row[0]),
+            storage_key=str(row[1]),
+            name=str(row[2]),
+        )
+        for row in rows
+    ]
 
 
 async def mark_run_completed(database_url: str, run_id: str) -> None:

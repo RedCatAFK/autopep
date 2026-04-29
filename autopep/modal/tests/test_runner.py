@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from autopep_agent import runner as runner_mod
-from autopep_agent.db import AgentRunContext
+from autopep_agent.db import AgentRunContext, AttachmentRow
 from autopep_agent.run_context import get_tool_run_context
 from autopep_agent.runner import (
     build_agent_instructions,
@@ -197,6 +197,31 @@ def _wire_fake_runner(
     return runner_double, streamed_run
 
 
+def _stub_get_run_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    rows: list[AttachmentRow] | None = None,
+) -> list[AttachmentRow]:
+    """Replace ``runner_mod.get_run_attachments`` with an in-memory stub.
+
+    The default returns an empty list so existing happy-path tests do not
+    accidentally hit a real database when execute_run starts looking up
+    attachments. Pass ``rows`` to drive the new attachment-mounting test.
+    """
+
+    fixed = list(rows or [])
+
+    async def _fake_get_run_attachments(
+        _database_url: str,
+        *,
+        run_id: str,
+    ) -> list[AttachmentRow]:
+        return fixed
+
+    monkeypatch.setattr(runner_mod, "get_run_attachments", _fake_get_run_attachments)
+    return fixed
+
+
 def _wire_fake_writer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> _FakeEventWriter:
@@ -259,6 +284,7 @@ async def test_execute_run_uses_persisted_task_kind_not_prompt_heuristic(
     monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
     monkeypatch.setattr(runner_mod, "mark_run_completed", fake_mark_completed)
     monkeypatch.setattr(runner_mod, "mark_run_failed", fake_mark_failed)
+    _stub_get_run_attachments(monkeypatch)
 
     spy_choose_task_kind = MagicMock(side_effect=lambda prompt: "branch_design")
     monkeypatch.setattr(runner_mod, "choose_task_kind", spy_choose_task_kind)
@@ -538,6 +564,130 @@ async def test_flush_assistant_message_swallows_webhook_errors(
 
 
 @pytest.mark.asyncio
+async def test_attachments_are_downloaded_and_announced_to_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Attachment artifacts referenced by the run are mounted into ``inputs/``.
+
+    The test drives ``execute_run`` end-to-end with stubbed DB / Runner /
+    R2 download, then asserts:
+
+      * ``inputs/`` under the redirected workspace volume contains the
+        downloaded attachment file
+      * the ``input`` string passed to ``Runner.run_streamed`` includes the
+        sanitized on-volume path so the agent learns about the attachment
+    """
+
+    _set_required_env(monkeypatch)
+    writer = _wire_fake_writer(monkeypatch)
+
+    # Redirect the volume mount to the test tmp dir so we don't try to
+    # write under the real "/autopep-workspaces" path on developer laptops.
+    monkeypatch.setattr(runner_mod, "WORKSPACE_DIR", str(tmp_path))
+
+    runner_double, _streamed = _wire_fake_runner(monkeypatch)
+
+    async def fake_get_run_context(*_args: Any, **_kwargs: Any) -> AgentRunContext:
+        return AgentRunContext(
+            prompt="Use the attached spec.",
+            model=None,
+            task_kind="chat",
+            enabled_recipes=[],
+        )
+
+    async def fake_claim_run(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    async def fake_mark_completed(_url: str, _run_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(runner_mod, "get_run_context", fake_get_run_context)
+    monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
+    monkeypatch.setattr(runner_mod, "mark_run_completed", fake_mark_completed)
+    monkeypatch.setattr(
+        runner_mod,
+        "mark_run_failed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not mark failed on happy path"),
+        ),
+    )
+
+    _stub_get_run_attachments(
+        monkeypatch,
+        rows=[
+            AttachmentRow(
+                artifact_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                storage_key="workspaces/w-attach/uploads/notes.txt",
+                # Names with weird chars must be sanitized before landing on disk.
+                name="notes/../weird name.txt",
+            ),
+        ],
+    )
+
+    download_calls: list[dict[str, Any]] = []
+
+    async def fake_download_object(
+        *,
+        bucket: str,
+        account_id: str,
+        access_key_id: str,
+        secret_access_key: str,
+        key: str,
+        dest_path: Any,
+    ) -> None:
+        download_calls.append(
+            {
+                "bucket": bucket,
+                "account_id": account_id,
+                "key": key,
+                "dest_path": str(dest_path),
+            },
+        )
+        # Simulate boto3 writing the bytes into the destination path.
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        dest_path.write_bytes(b"hello attachment")
+
+    monkeypatch.setattr(runner_mod, "r2_download_object", fake_download_object)
+
+    await execute_run(run_id="r-attach", thread_id="t-attach", workspace_id="w-attach")
+
+    # 1. The R2 download was invoked once with the attachment's storage key.
+    assert len(download_calls) == 1
+    assert download_calls[0]["key"] == "workspaces/w-attach/uploads/notes.txt"
+
+    # 2. The file landed under {workspace_dir}/{workspace_id}/inputs/ with
+    #    a sanitized basename (no ".." traversal, no spaces, no slashes).
+    inputs_dir = tmp_path / "w-attach" / "inputs"
+    listing = sorted(p.name for p in inputs_dir.iterdir())
+    assert listing == ["weird_name.txt"]
+    assert (inputs_dir / "weird_name.txt").read_bytes() == b"hello attachment"
+
+    # 3. The system-style hint was prepended to the agent input so the model
+    #    sees the on-volume path before it processes the user prompt.
+    runner_double.run_streamed.assert_called_once()
+    _agent_arg, *_ = runner_double.run_streamed.call_args.args
+    agent_input = runner_double.run_streamed.call_args.kwargs["input"]
+    expected_path = str(inputs_dir / "weird_name.txt")
+    assert "Attached files available at:" in agent_input
+    assert expected_path in agent_input
+    # The prompt must still appear AFTER the attachment announcement so the
+    # model encounters the file paths first.
+    assert agent_input.index("Attached files available at:") < agent_input.index(
+        "Use the attached spec.",
+    )
+
+    # 4. The runner emitted an ``attachments_mounted`` event for the ledger
+    #    so operators can see in the trace which paths the agent received.
+    mounted = next(
+        (event for event in writer.events if event["type"] == "attachments_mounted"),
+        None,
+    )
+    assert mounted is not None
+    assert expected_path in (mounted["display"] or {}).get("paths", [])
+
+
+@pytest.mark.asyncio
 async def test_execute_run_happy_path_writes_normalized_events_and_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -586,6 +736,7 @@ async def test_execute_run_happy_path_writes_normalized_events_and_completes(
             AssertionError("must not mark failed on happy path"),
         ),
     )
+    _stub_get_run_attachments(monkeypatch)
 
     await execute_run(run_id="r4", thread_id="t1", workspace_id="w1")
 

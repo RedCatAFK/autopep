@@ -3,9 +3,11 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import modal
@@ -33,13 +35,16 @@ from autopep_agent.biology_tools import (
 )
 from autopep_agent.config import WorkerConfig
 from autopep_agent.db import (
+    AttachmentRow,
     claim_run,
+    get_run_attachments,
     get_run_context,
     mark_run_completed,
     mark_run_failed,
 )
 from autopep_agent.demo_pipeline import execute_demo_one_loop
 from autopep_agent.events import EventWriter
+from autopep_agent.r2_client import download_object as r2_download_object
 from autopep_agent.run_context import (
     ToolRunContext,
     reset_tool_run_context,
@@ -61,6 +66,89 @@ from autopep_agent.streaming import (
 SANDBOX_APP_NAME = "autopep-agent-runtime"
 SANDBOX_TIMEOUT_SECONDS = 60 * 60
 SMOKE_TASK_KINDS = {"smoke_chat", "smoke_tool", "smoke_sandbox"}
+
+# Mount path of the ``autopep-workspaces`` Modal volume. Attachments are
+# downloaded into ``{WORKSPACE_DIR}/{workspace_id}/inputs/`` so the agent
+# (and any sandbox commands it spawns) can read them by absolute path.
+WORKSPACE_DIR = "/autopep-workspaces"
+
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_attachment_filename(name: str) -> str:
+    """Reduce ``name`` to a filesystem-safe basename.
+
+    The artifact ``name`` flows from user uploads, so it can contain path
+    separators, NUL bytes, or other characters that would let a malicious
+    upload escape the workspace's ``inputs/`` directory or clobber a sibling
+    file. We:
+
+      * take only the basename (drop directory components)
+      * replace anything outside ``[A-Za-z0-9._-]`` with ``_``
+      * collapse leading dots so the file cannot become hidden / dotfile
+      * fall back to a deterministic placeholder if nothing remains
+    """
+
+    base = os.path.basename(name).strip()
+    cleaned = _FILENAME_SAFE_RE.sub("_", base).lstrip(".")
+    return cleaned or "attachment"
+
+
+async def _download_attachments_to_inputs(
+    attachments: list[AttachmentRow],
+    *,
+    workspace_id: str,
+    config: WorkerConfig,
+) -> list[Path]:
+    """Materialize ``attachments`` under the workspace volume's ``inputs/``.
+
+    Each attachment is fetched from R2 once and written to
+    ``/autopep-workspaces/{workspace_id}/inputs/{sanitized_filename}``. The
+    returned list preserves input order so callers can format a stable
+    "Attached files available at" announcement for the agent.
+
+    On a filename collision (two artifacts sanitize to the same basename),
+    later entries are disambiguated with the first 8 characters of their
+    artifact id so neither attachment silently wins.
+    """
+
+    if not attachments:
+        # Skip mkdir entirely on the no-attachments path so callers do not
+        # need a writable workspace volume mounted just to invoke a chat run
+        # without attachments (and so unit tests do not need to fake the
+        # ``/autopep-workspaces`` mount path).
+        return []
+
+    inputs_dir = Path(WORKSPACE_DIR) / workspace_id / "inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+
+    used: set[str] = set()
+    paths: list[Path] = []
+    for attachment in attachments:
+        safe_name = _sanitize_attachment_filename(attachment.name)
+        if safe_name in used:
+            stem, dot, ext = safe_name.partition(".")
+            suffix = attachment.artifact_id[:8]
+            safe_name = f"{stem}-{suffix}{dot}{ext}" if dot else f"{stem}-{suffix}"
+        used.add(safe_name)
+        dest = inputs_dir / safe_name
+        await r2_download_object(
+            bucket=config.r2_bucket,
+            account_id=config.r2_account_id,
+            access_key_id=config.r2_access_key_id,
+            secret_access_key=config.r2_secret_access_key,
+            key=attachment.storage_key,
+            dest_path=dest,
+        )
+        paths.append(dest)
+    return paths
+
+
+def _format_attachments_system_message(paths: list[Path]) -> str:
+    """Format the system-style hint that announces downloaded attachment paths."""
+
+    bullet_lines = "\n".join(f"  {path}" for path in paths)
+    return "Attached files available at:\n" + bullet_lines
 
 
 def _token_queue_name(run_id: str) -> str:
@@ -310,18 +398,29 @@ def _build_runner_input(
     task_kind: str,
     thread_id: str,
     workspace_id: str,
+    attachment_paths: list[Path] | None = None,
 ) -> str:
-    return "\n".join(
-        [
-            f"Run ID: {run_id}",
-            f"Workspace ID: {workspace_id}",
-            f"Thread ID: {thread_id}",
-            f"Task kind: {task_kind}",
-            "",
-            "User prompt:",
-            prompt,
-        ],
-    )
+    """Build the agent ``input`` string sent to ``Runner.run_streamed``.
+
+    When ``attachment_paths`` is non-empty, prepend an "Attached files
+    available at" block listing each on-volume path so the agent sees the
+    files BEFORE it processes the user prompt. The Agents SDK accepts a
+    plain string for ``input``, and the agent's ``instructions`` already
+    define its persona, so the cheapest way to surface attachments is to
+    extend the input itself with a system-style preamble.
+    """
+
+    sections: list[str] = [
+        f"Run ID: {run_id}",
+        f"Workspace ID: {workspace_id}",
+        f"Thread ID: {thread_id}",
+        f"Task kind: {task_kind}",
+    ]
+    if attachment_paths:
+        sections.append("")
+        sections.append(_format_attachments_system_message(attachment_paths))
+    sections.extend(["", "User prompt:", prompt])
+    return "\n".join(sections)
 
 
 def _summarize_error(error: BaseException) -> str:
@@ -707,6 +806,26 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
             await mark_run_completed(database_url, run_id)
             return
 
+        # Fetch attachment artifacts referenced by the run's workspace and
+        # download them into the workspace volume's ``inputs/`` directory
+        # BEFORE the agent stream loop starts. The downloads run on a thread
+        # via boto3 so they do not block the asyncio event loop. Failures
+        # surface as run failures via the surrounding try/except.
+        attachment_rows = await get_run_attachments(database_url, run_id=run_id)
+        attachment_paths = await _download_attachments_to_inputs(
+            attachment_rows,
+            workspace_id=workspace_id,
+            config=config,
+        )
+        if attachment_paths:
+            await writer.append_event(
+                run_id=run_id,
+                event_type="attachments_mounted",
+                title="Attachments mounted",
+                summary=f"Mounted {len(attachment_paths)} attachment(s) into inputs/.",
+                display={"paths": [str(path) for path in attachment_paths]},
+            )
+
         agent = build_autopep_agent(run_context.enabled_recipes)
         run_config = _build_run_config(
             model=run_context.model or config.default_model,
@@ -743,6 +862,7 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                         task_kind=task_kind,
                         thread_id=thread_id,
                         workspace_id=workspace_id,
+                        attachment_paths=attachment_paths,
                     ),
                     run_config=run_config,
                 ),

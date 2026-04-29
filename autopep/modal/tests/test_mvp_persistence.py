@@ -1150,9 +1150,15 @@ async def test_execute_run_sets_tool_run_context_before_streaming(
     async def fake_mark_completed(*_a: Any, **_k: Any) -> None:
         return None
 
+    async def fake_get_run_attachments(*_a: Any, **_k: Any) -> list[Any]:
+        # No attachments for this test path; the per-run download step is
+        # exercised separately in tests/test_runner.py.
+        return []
+
     monkeypatch.setattr(runner_mod, "get_run_context", fake_get_run_context)
     monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
     monkeypatch.setattr(runner_mod, "mark_run_completed", fake_mark_completed)
+    monkeypatch.setattr(runner_mod, "get_run_attachments", fake_get_run_attachments)
 
     await runner_mod.execute_run(run_id="r1", thread_id="t1", workspace_id="w1")
 
