@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Flask, Plus } from "@phosphor-icons/react";
+import { Archive, BookOpen, Flask, Plus } from "@phosphor-icons/react";
 
 import { HoverTooltip } from "./hover-tooltip";
 import { WorkspaceAvatar } from "./workspace-avatar";
@@ -15,6 +15,7 @@ type WorkspaceRailProps = {
 	activeWorkspaceId: string | null;
 	onArchiveWorkspace: (workspaceId: string) => void;
 	onCreateWorkspace: () => void;
+	onOpenRecipes?: () => void;
 	onSelectWorkspace: (workspaceId: string) => void;
 	workspaces: RailWorkspace[];
 };
@@ -23,6 +24,7 @@ export function WorkspaceRail({
 	activeWorkspaceId,
 	onArchiveWorkspace,
 	onCreateWorkspace,
+	onOpenRecipes,
 	onSelectWorkspace,
 	workspaces,
 }: WorkspaceRailProps) {
@@ -78,6 +80,16 @@ export function WorkspaceRail({
 					})
 				)}
 			</nav>
+			{onOpenRecipes ? (
+				<button
+					aria-label="Open recipes"
+					className="mt-auto flex size-10 shrink-0 items-center justify-center rounded-md text-[#5a6360] transition-colors duration-200 hover:bg-[#f0efe8] hover:text-[#26332e] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
+					onClick={onOpenRecipes}
+					type="button"
+				>
+					<BookOpen aria-hidden="true" size={18} />
+				</button>
+			) : null}
 		</aside>
 	);
 }

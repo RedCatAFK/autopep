@@ -1,21 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ChatPanelSendInput } from "@/app/_components/chat-panel";
-import type { ProteinSelection } from "@/app/_components/molstar-stage";
-import type { RecipeInput } from "@/app/_components/recipe-manager";
 import { api } from "@/trpc/react";
+import { buildStreamItems } from "./build-stream-items";
+import type { RecipeInput } from "./recipes-dialog";
+import type { ViewerTab } from "./viewer-tabs";
 import {
 	type WorkspaceArtifact,
 	type WorkspaceCandidate,
 	type WorkspaceCandidateScore,
 	type WorkspaceChatMessage,
 	type WorkspaceEvent,
+	type WorkspaceFileArtifact,
+	type WorkspaceRunSummary,
 	WorkspaceShell,
 } from "./workspace-shell";
-
-const spikeGoal = "Design a protein binder for SARS-CoV-2 spike RBD";
 
 export type IsLoadingWorkspaceArgs = {
 	latestIsLoading: boolean;
@@ -34,6 +35,10 @@ export function AutopepWorkspace() {
 	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
 		null,
 	);
+	const [tabs, setTabs] = useState<ViewerTab[]>([]);
+	const [activeTabId, setActiveTabId] = useState<string | null>(null);
+	const [isRecipesOpen, setIsRecipesOpen] = useState(false);
+	const previousCandidateCount = useRef(0);
 
 	const workspacesQuery = api.workspace.listWorkspaces.useQuery();
 	const latestWorkspace = api.workspace.getLatestWorkspace.useQuery(undefined, {
@@ -91,12 +96,6 @@ export function AutopepWorkspace() {
 			await invalidateWorkspace(result.workspace.id);
 		},
 	});
-	const createContextReference =
-		api.workspace.createContextReference.useMutation({
-			onSuccess: async (_reference, variables) => {
-				await invalidateWorkspace(variables.workspaceId);
-			},
-		});
 	const createRecipe = api.workspace.createRecipe.useMutation({
 		onSuccess: async (_result, variables) => {
 			await invalidateWorkspace(variables.workspaceId);
@@ -134,6 +133,7 @@ export function AutopepWorkspace() {
 	const events = useMemo<WorkspaceEvent[]>(
 		() =>
 			(payload?.events ?? []).map((event) => ({
+				createdAt: event.createdAt,
 				detail: event.detail,
 				displayJson: event.displayJson,
 				id: event.id,
@@ -156,11 +156,26 @@ export function AutopepWorkspace() {
 				id: artifact.id,
 				kind: artifact.kind,
 				name: artifact.name,
+				runId: artifact.runId,
 				signedUrl: artifact.signedUrl,
 				sourceUrl: artifact.sourceUrl,
 				type: artifact.type,
 			})),
 		[payload?.artifacts],
+	);
+
+	const fileArtifacts = useMemo<WorkspaceFileArtifact[]>(
+		() =>
+			artifacts.map((artifact) => ({
+				byteSize: artifact.byteSize ?? 0,
+				candidateId: artifact.candidateId,
+				fileName: artifact.fileName,
+				id: artifact.id,
+				kind: artifact.kind ?? artifact.type,
+				runId: artifact.runId ?? null,
+				signedUrl: artifact.signedUrl,
+			})),
+		[artifacts],
 	);
 
 	const candidateScores = useMemo<WorkspaceCandidateScore[]>(
@@ -179,6 +194,7 @@ export function AutopepWorkspace() {
 		() =>
 			(payload?.messages ?? []).map((message) => ({
 				content: message.content,
+				createdAt: message.createdAt,
 				id: message.id,
 				role: message.role as "assistant" | "system" | "user",
 			})),
@@ -208,30 +224,127 @@ export function AutopepWorkspace() {
 		[payload?.contextReferences],
 	);
 
-	const artifactRows = artifacts;
+	const runs = useMemo<WorkspaceRunSummary[]>(
+		() =>
+			(payload?.runs ?? []).flatMap((run) =>
+				typeof run.startedAt === "string"
+					? [
+							{
+								id: run.id,
+								startedAt: run.startedAt,
+								status: run.status,
+							},
+						]
+					: [],
+			),
+		[payload?.runs],
+	);
+
+	const streamItems = useMemo(
+		() =>
+			buildStreamItems({
+				events: events.map((event) => ({
+					createdAt: event.createdAt,
+					displayJson: event.displayJson ?? {},
+					id: event.id,
+					sequence: event.sequence,
+					type: event.type,
+				})),
+				messages: messages.map((message) => ({
+					content: message.content ?? message.text ?? "",
+					createdAt: message.createdAt,
+					id: message.id,
+					role: message.role,
+				})),
+			}),
+		[events, messages],
+	);
+
 	const findCifArtifact = (candidateId?: string) =>
-		artifactRows.find(
+		artifacts.find(
 			(artifact) =>
 				(!candidateId || artifact.candidateId === candidateId) &&
 				artifact.type === "prepared_cif",
 		) ??
-		artifactRows.find(
+		artifacts.find(
 			(artifact) =>
 				(!candidateId || artifact.candidateId === candidateId) &&
 				(artifact.type === "source_cif" || artifact.kind === "mmcif"),
 		) ??
 		null;
-	const selectedCandidate =
-		candidates.find(
-			(candidate) =>
-				candidate.proteinaReady && Boolean(findCifArtifact(candidate.id)),
-		) ??
-		candidates[0] ??
-		null;
-	const selectedArtifact =
-		findCifArtifact(selectedCandidate?.id) ?? findCifArtifact();
-	const projectGoal = payload?.project.goal || spikeGoal;
+
 	const currentWorkspaceId = activeWorkspaceId ?? payload?.workspace.id ?? null;
+
+	// Auto-pin: when the candidates list goes from empty -> non-empty,
+	// auto-set the candidates tab as active if no other tab is active.
+	useEffect(() => {
+		const previous = previousCandidateCount.current;
+		const current = candidates.length;
+		previousCandidateCount.current = current;
+		if (previous === 0 && current > 0 && activeTabId === null) {
+			setActiveTabId("candidates");
+		}
+	}, [candidates.length, activeTabId]);
+
+	// Drop tabs whose underlying artifact no longer exists.
+	useEffect(() => {
+		setTabs((prev) => {
+			const valid = prev.filter(
+				(tab) =>
+					tab.kind === "candidates" ||
+					fileArtifacts.some((artifact) => artifact.id === tab.artifactId),
+			);
+			if (valid.length === prev.length) return prev;
+			return valid;
+		});
+	}, [fileArtifacts]);
+
+	const openFileInTab = (artifact: WorkspaceFileArtifact) => {
+		const tabId = `file:${artifact.id}`;
+		setTabs((prev) => {
+			if (prev.some((tab) => tab.id === tabId)) {
+				return prev;
+			}
+			return [
+				...prev,
+				{
+					artifactId: artifact.id,
+					fileName: artifact.fileName,
+					id: tabId,
+					kind: "file",
+					signedUrl: artifact.signedUrl,
+				},
+			];
+		});
+		setActiveTabId(tabId);
+	};
+
+	const closeTab = (tabId: string) => {
+		setTabs((prev) => prev.filter((tab) => tab.id !== tabId));
+		if (activeTabId === tabId) {
+			setActiveTabId(candidates.length > 0 ? "candidates" : null);
+		}
+	};
+
+	const openArtifactInTab = (artifactId: string) => {
+		const artifact = fileArtifacts.find((entry) => entry.id === artifactId);
+		if (!artifact) return;
+		openFileInTab(artifact);
+	};
+
+	const openCandidateInTab = (candidateId: string) => {
+		const cif = findCifArtifact(candidateId);
+		if (!cif) return;
+		const fileArtifact = fileArtifacts.find((entry) => entry.id === cif.id);
+		if (!fileArtifact) return;
+		openFileInTab(fileArtifact);
+	};
+
+	const activeArtifactId = (() => {
+		const tab = tabs.find((entry) => entry.id === activeTabId);
+		if (tab && tab.kind === "file") return tab.artifactId;
+		return null;
+	})();
 
 	const sendWorkspaceMessage = (input: ChatPanelSendInput) => {
 		sendMessage.mutate({
@@ -269,30 +382,16 @@ export function AutopepWorkspace() {
 		archiveRecipe.mutate({ recipeId });
 	};
 
-	const createProteinSelectionReference = (selection: ProteinSelection) => {
-		if (!currentWorkspaceId) {
-			return;
-		}
-		createContextReference.mutate({
-			artifactId: selection.artifactId,
-			candidateId: selection.candidateId,
-			kind: "protein_selection",
-			label: selection.label,
-			selector: selection.selector,
-			workspaceId: currentWorkspaceId,
-		});
-	};
-
 	return (
 		<WorkspaceShell
-			activeRunStatus={payload?.activeRun?.status ?? null}
+			activeArtifactId={activeArtifactId}
+			activeTabId={activeTabId}
 			activeWorkspaceId={currentWorkspaceId}
-			artifacts={artifacts}
 			candidateScores={candidateScores}
 			candidates={candidates}
-			chatMessages={messages}
+			closeTab={closeTab}
 			contextReferences={contextReferences}
-			events={events}
+			fileArtifacts={fileArtifacts}
 			isChatDisabled={!currentWorkspaceId}
 			isLoadingWorkspace={computeIsLoadingWorkspace({
 				latestIsLoading: latestWorkspace.isLoading,
@@ -300,7 +399,7 @@ export function AutopepWorkspace() {
 				selectedIsLoading: selectedWorkspace.isLoading,
 				selectedIsFetching: selectedWorkspace.isFetching,
 			})}
-			isRecipeDisabled={!currentWorkspaceId}
+			isRecipesOpen={isRecipesOpen}
 			isSavingRecipe={
 				createRecipe.isPending ||
 				updateRecipe.isPending ||
@@ -311,19 +410,21 @@ export function AutopepWorkspace() {
 			onArchiveWorkspace={(workspaceId) =>
 				archiveWorkspace.mutate({ workspaceId })
 			}
+			onCloseRecipes={() => setIsRecipesOpen(false)}
 			onCreateRecipe={createRecipeForWorkspace}
 			onCreateWorkspace={createWorkspaceFromRail}
-			onProteinSelection={createProteinSelectionReference}
-			onRefresh={() => {
-				void invalidateWorkspace(currentWorkspaceId);
-			}}
+			onOpenRecipes={() => setIsRecipesOpen(true)}
 			onSelectWorkspace={setActiveWorkspaceId}
 			onSendMessage={sendWorkspaceMessage}
 			onUpdateRecipe={updateRecipeForWorkspace}
-			projectGoal={projectGoal}
+			openArtifactInTab={openArtifactInTab}
+			openCandidateInTab={openCandidateInTab}
+			openFileInTab={openFileInTab}
 			recipes={recipes}
-			selectedArtifact={selectedArtifact ?? null}
-			selectedCandidate={selectedCandidate}
+			runs={runs}
+			setActiveTabId={setActiveTabId}
+			streamItems={streamItems}
+			tabs={tabs}
 			workspaces={(workspacesQuery.data ?? []).map((workspace) => ({
 				description: workspace.description,
 				id: workspace.id,

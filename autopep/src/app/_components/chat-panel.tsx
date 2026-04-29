@@ -8,6 +8,8 @@ import {
 } from "@phosphor-icons/react";
 import { type FormEvent, useMemo, useState } from "react";
 
+import { ChatStream } from "./chat-stream";
+import type { StreamItem } from "./chat-stream-item";
 import { isMeaningfulTraceEvent } from "./event-filters";
 import { type TraceEvent, TraceEventCard } from "./trace-event-card";
 
@@ -36,10 +38,13 @@ export type ChatPanelSendInput = {
 
 type ChatPanelProps = {
 	contextReferences: ChatContextReference[];
-	events: TraceEvent[];
+	events?: TraceEvent[];
 	isDisabled?: boolean;
 	isSending: boolean;
-	messages: ChatMessage[];
+	items?: StreamItem[];
+	messages?: ChatMessage[];
+	onOpenArtifact?: (artifactId: string) => void;
+	onOpenCandidate?: (candidateId: string) => void;
 	onSend: (input: ChatPanelSendInput) => void;
 	recipes: ChatRecipe[];
 };
@@ -55,7 +60,10 @@ export function ChatPanel({
 	events,
 	isDisabled = false,
 	isSending,
+	items,
 	messages,
+	onOpenArtifact,
+	onOpenCandidate,
 	onSend,
 	recipes,
 }: ChatPanelProps) {
@@ -67,7 +75,12 @@ export function ChatPanel({
 				.map((recipe) => recipe.id),
 		[recipes],
 	);
-	const hasMessages = messages.length > 0;
+	const useStream = items !== undefined;
+	const legacyMessages = messages ?? [];
+	const legacyEvents = events ?? [];
+	const hasMessages = useStream
+		? (items?.length ?? 0) > 0
+		: legacyMessages.length > 0;
 	const canSend = draft.trim().length > 0 && !isSending && !isDisabled;
 
 	const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -88,58 +101,100 @@ export function ChatPanel({
 	return (
 		<aside className="flex min-h-0 flex-col border-[#e5e2d9] border-r bg-[#fbfaf6]">
 			<div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-				{hasMessages ? (
-					<div className="space-y-3">
-						{messages.map((message) => (
-							<MessageBubble key={message.id} message={message} />
-						))}
-						{isSending ? (
-							<div
-								aria-live="polite"
-								className="mr-8 rounded-md border border-[#e1ded4] bg-[#fffef9] px-3 py-2 text-[#4e5953] text-sm"
-							>
-								<CircleNotch
-									aria-hidden="true"
-									className="mr-1.5 inline animate-spin"
-									size={14}
-								/>
-								Writing…
-							</div>
-						) : null}
-					</div>
-				) : (
-					<div className="space-y-2" data-testid="chat-empty-state">
-						<p className="mb-3 text-[#7a817a] text-xs">Start With A Goal</p>
-						{examples.map((example) => (
-							<button
-								className="w-full rounded-md border border-[#ddd9cf] bg-[#fffef9] px-3 py-3 text-left text-[#26332e] text-sm leading-5 transition-colors duration-200 hover:border-[#c6d335] hover:bg-[#fefff1] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55"
-								disabled={isDisabled}
-								key={example}
-								onClick={() => setDraft(example)}
-								type="button"
-							>
-								{example}
-							</button>
-						))}
-					</div>
-				)}
-
-				<div className="mt-6">
-					{events.length > 0 ? (
-						<div className="border-[#e5e2d9] border-t">
-							{events
-								.filter((event) => isMeaningfulTraceEvent(event.type))
-								.map((event) => (
-									<TraceEventCard event={event} key={event.id} />
-								))}
-						</div>
+				{useStream ? (
+					hasMessages ? (
+						<>
+							<ChatStream
+								items={items ?? []}
+								onOpenArtifact={onOpenArtifact}
+								onOpenCandidate={onOpenCandidate}
+							/>
+							{isSending ? (
+								<div
+									aria-live="polite"
+									className="mt-3 mr-8 rounded-md border border-[#e1ded4] bg-[#fffef9] px-3 py-2 text-[#4e5953] text-sm"
+								>
+									<CircleNotch
+										aria-hidden="true"
+										className="mr-1.5 inline animate-spin"
+										size={14}
+									/>
+									Writing…
+								</div>
+							) : null}
+						</>
 					) : (
-						<div className="rounded-md border border-[#d7d4c9] border-dashed bg-[#fffef9] px-3 py-4 text-[#69716b] text-sm leading-6">
-							Tool calls, sandbox output, artifacts, and score events will
-							appear here when a run starts.
+						<div className="space-y-2" data-testid="chat-empty-state">
+							<p className="mb-3 text-[#7a817a] text-xs">Start With A Goal</p>
+							{examples.map((example) => (
+								<button
+									className="w-full rounded-md border border-[#ddd9cf] bg-[#fffef9] px-3 py-3 text-left text-[#26332e] text-sm leading-5 transition-colors duration-200 hover:border-[#c6d335] hover:bg-[#fefff1] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55"
+									disabled={isDisabled}
+									key={example}
+									onClick={() => setDraft(example)}
+									type="button"
+								>
+									{example}
+								</button>
+							))}
 						</div>
-					)}
-				</div>
+					)
+				) : (
+					<>
+						{hasMessages ? (
+							<div className="space-y-3">
+								{legacyMessages.map((message) => (
+									<MessageBubble key={message.id} message={message} />
+								))}
+								{isSending ? (
+									<div
+										aria-live="polite"
+										className="mr-8 rounded-md border border-[#e1ded4] bg-[#fffef9] px-3 py-2 text-[#4e5953] text-sm"
+									>
+										<CircleNotch
+											aria-hidden="true"
+											className="mr-1.5 inline animate-spin"
+											size={14}
+										/>
+										Writing…
+									</div>
+								) : null}
+							</div>
+						) : (
+							<div className="space-y-2" data-testid="chat-empty-state">
+								<p className="mb-3 text-[#7a817a] text-xs">Start With A Goal</p>
+								{examples.map((example) => (
+									<button
+										className="w-full rounded-md border border-[#ddd9cf] bg-[#fffef9] px-3 py-3 text-left text-[#26332e] text-sm leading-5 transition-colors duration-200 hover:border-[#c6d335] hover:bg-[#fefff1] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-55"
+										disabled={isDisabled}
+										key={example}
+										onClick={() => setDraft(example)}
+										type="button"
+									>
+										{example}
+									</button>
+								))}
+							</div>
+						)}
+
+						<div className="mt-6">
+							{legacyEvents.length > 0 ? (
+								<div className="border-[#e5e2d9] border-t">
+									{legacyEvents
+										.filter((event) => isMeaningfulTraceEvent(event.type))
+										.map((event) => (
+											<TraceEventCard event={event} key={event.id} />
+										))}
+								</div>
+							) : (
+								<div className="rounded-md border border-[#d7d4c9] border-dashed bg-[#fffef9] px-3 py-4 text-[#69716b] text-sm leading-6">
+									Tool calls, sandbox output, artifacts, and score events will
+									appear here when a run starts.
+								</div>
+							)}
+						</div>
+					</>
+				)}
 			</div>
 
 			<form

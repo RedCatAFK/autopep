@@ -1,23 +1,19 @@
 "use client";
 
-import { ArrowClockwise } from "@phosphor-icons/react";
-
 import {
 	type ChatContextReference,
-	type ChatMessage,
 	ChatPanel,
 	type ChatPanelSendInput,
 	type ChatRecipe,
 } from "./chat-panel";
-import { JourneyPanel } from "./journey-panel";
+import type { StreamItem } from "./chat-stream-item";
+import { FilesPanel } from "./files-panel";
 import {
-	MolstarStage,
-	type ProteinSelection,
-	type StageArtifact,
-	type StageCandidate,
-} from "./molstar-stage";
-import { type Recipe, type RecipeInput, RecipeManager } from "./recipe-manager";
-import type { TraceEvent } from "./trace-event-card";
+	type RecipeInput,
+	type RecipeRow,
+	RecipesDialog,
+} from "./recipes-dialog";
+import { type ViewerTab, ViewerTabs } from "./viewer-tabs";
 import { type RailWorkspace, WorkspaceRail } from "./workspace-rail";
 
 export type WorkspaceCandidate = {
@@ -35,6 +31,7 @@ export type WorkspaceCandidate = {
 };
 
 export type WorkspaceEvent = {
+	createdAt: string;
 	detail?: string | null;
 	displayJson?: Record<string, unknown>;
 	id: string;
@@ -53,6 +50,7 @@ export type WorkspaceArtifact = {
 	id: string;
 	kind?: string;
 	name?: string;
+	runId?: string | null;
 	signedUrl: string | null;
 	sourceUrl: string | null;
 	type: string;
@@ -60,6 +58,7 @@ export type WorkspaceArtifact = {
 
 export type WorkspaceChatMessage = {
 	content?: string;
+	createdAt: string;
 	id: string;
 	role: "assistant" | "system" | "user";
 	text?: string;
@@ -73,191 +72,159 @@ export type WorkspaceCandidateScore = {
 	value: number | null;
 };
 
+export type WorkspaceFileArtifact = {
+	byteSize: number;
+	candidateId: string | null;
+	fileName: string;
+	id: string;
+	kind: string;
+	runId: string | null;
+	signedUrl: string | null;
+};
+
+export type WorkspaceRunSummary = {
+	id: string;
+	startedAt: string;
+	status: string;
+};
+
 type WorkspaceShellProps = {
-	activeRunStatus: string | null;
+	activeArtifactId: string | null;
+	activeTabId: string | null;
 	activeWorkspaceId: string | null;
-	artifacts: WorkspaceArtifact[];
 	candidateScores: WorkspaceCandidateScore[];
 	candidates: WorkspaceCandidate[];
-	chatMessages: WorkspaceChatMessage[];
+	closeTab: (tabId: string) => void;
 	contextReferences: ChatContextReference[];
-	events: WorkspaceEvent[];
+	fileArtifacts: WorkspaceFileArtifact[];
 	isChatDisabled?: boolean;
 	isLoadingWorkspace: boolean;
-	isRecipeDisabled?: boolean;
+	isRecipesOpen: boolean;
 	isSavingRecipe?: boolean;
 	isSendingMessage: boolean;
 	onArchiveRecipe: (recipeId: string) => void;
 	onArchiveWorkspace: (workspaceId: string) => void;
+	onCloseRecipes: () => void;
 	onCreateRecipe: (input: RecipeInput) => void;
 	onCreateWorkspace: () => void;
-	onProteinSelection: (selection: ProteinSelection) => void;
-	onRefresh: () => void;
+	onDeleteAttachment?: (artifactId: string) => void;
+	onOpenRecipes: () => void;
 	onSelectWorkspace: (workspaceId: string) => void;
 	onSendMessage: (input: ChatPanelSendInput) => void;
 	onUpdateRecipe: (input: RecipeInput & { recipeId: string }) => void;
-	projectGoal: string;
-	recipes: Recipe[];
-	selectedArtifact: WorkspaceArtifact | null;
-	selectedCandidate: WorkspaceCandidate | null;
+	openArtifactInTab: (artifactId: string) => void;
+	openCandidateInTab: (candidateId: string) => void;
+	openFileInTab: (artifact: WorkspaceFileArtifact) => void;
+	recipes: RecipeRow[];
+	runs: WorkspaceRunSummary[];
+	setActiveTabId: (tabId: string | null) => void;
+	streamItems: StreamItem[];
+	tabs: ViewerTab[];
 	workspaces: RailWorkspace[];
 };
 
 export function WorkspaceShell({
-	activeRunStatus,
+	activeArtifactId,
+	activeTabId,
 	activeWorkspaceId,
-	artifacts,
 	candidateScores,
 	candidates,
-	chatMessages,
+	closeTab,
 	contextReferences,
-	events,
+	fileArtifacts,
 	isChatDisabled = false,
-	isLoadingWorkspace,
-	isRecipeDisabled = false,
+	isRecipesOpen,
 	isSavingRecipe = false,
 	isSendingMessage,
 	onArchiveRecipe,
 	onArchiveWorkspace,
+	onCloseRecipes,
 	onCreateRecipe,
 	onCreateWorkspace,
-	onProteinSelection,
-	onRefresh,
+	onDeleteAttachment,
+	onOpenRecipes,
 	onSelectWorkspace,
 	onSendMessage,
 	onUpdateRecipe,
-	projectGoal,
+	openArtifactInTab,
+	openCandidateInTab,
+	openFileInTab,
 	recipes,
-	selectedArtifact,
-	selectedCandidate,
+	runs,
+	setActiveTabId,
+	streamItems,
+	tabs,
 	workspaces,
 }: WorkspaceShellProps) {
-	const traceEvents = events.map(toTraceEvent);
-	const stageArtifact = toStageArtifact(selectedArtifact);
-	const stageCandidate = toStageCandidate(selectedCandidate);
-	const normalizedMessages = chatMessages.map(toChatMessage);
 	const chatRecipes: ChatRecipe[] = recipes.map((recipe) => ({
 		enabledByDefault: recipe.enabledByDefault,
 		id: recipe.id,
 		name: recipe.name,
 	}));
 
+	const tabCandidates = candidates.map((candidate) => ({
+		id: candidate.id,
+		method: candidate.method,
+		organism: candidate.organism,
+		rank: candidate.rank,
+		resolutionAngstrom: candidate.resolutionAngstrom,
+		title: candidate.title,
+	}));
+
+	const fileCandidates = candidates.map((candidate) => ({
+		id: candidate.id,
+		rank: candidate.rank,
+		title: candidate.title,
+	}));
+
 	return (
-		<main className="grid min-h-[100dvh] grid-cols-1 bg-[#f8f7f2] text-[#17211e] lg:fixed lg:inset-0 lg:min-h-0 lg:grid-cols-[64px_minmax(320px,390px)_minmax(0,1fr)_minmax(300px,360px)] lg:overflow-hidden">
+		<main className="grid min-h-[100dvh] grid-cols-1 bg-[#f8f7f2] text-[#17211e] lg:fixed lg:inset-0 lg:min-h-0 lg:grid-cols-[56px_minmax(360px,420px)_minmax(0,1fr)_minmax(260px,300px)] lg:overflow-hidden">
 			<WorkspaceRail
 				activeWorkspaceId={activeWorkspaceId}
 				onArchiveWorkspace={onArchiveWorkspace}
 				onCreateWorkspace={onCreateWorkspace}
+				onOpenRecipes={onOpenRecipes}
 				onSelectWorkspace={onSelectWorkspace}
 				workspaces={workspaces}
 			/>
 			<ChatPanel
 				contextReferences={contextReferences}
-				events={traceEvents}
 				isDisabled={isChatDisabled}
 				isSending={isSendingMessage}
-				messages={normalizedMessages}
+				items={streamItems}
+				onOpenArtifact={openArtifactInTab}
+				onOpenCandidate={openCandidateInTab}
 				onSend={onSendMessage}
 				recipes={chatRecipes}
 			/>
-			<section className="relative min-w-0 lg:min-h-0 lg:overflow-hidden lg:border-[#e5e2d9] lg:border-r">
-				<div className="absolute top-3 right-3 z-[1]">
-					<button
-						aria-label="Refresh workspace"
-						className="flex size-8 items-center justify-center rounded-md border border-[#d7d4c9] bg-[#fffef9] text-[#394541] shadow-[0_10px_28px_-24px_rgba(25,39,33,0.75)] transition-colors duration-200 hover:border-[#cbd736] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
-						onClick={onRefresh}
-						type="button"
-					>
-						<ArrowClockwise aria-hidden="true" size={17} />
-					</button>
-				</div>
-				<MolstarStage
-					artifact={stageArtifact}
-					candidate={stageCandidate}
-					onProteinSelection={onProteinSelection}
-				/>
-				{isLoadingWorkspace ? (
-					<div className="pointer-events-none absolute inset-x-6 bottom-6 overflow-hidden rounded-md border border-[#dfe4d7] bg-[#fffef9]/90 p-3 text-[#52605a] text-xs shadow-[0_16px_44px_-30px_rgba(20,43,35,0.7)] backdrop-blur">
-						<div className="h-1.5 overflow-hidden rounded-full bg-[#e5eadc]">
-							<div className="molstar-loading-bar h-full w-1/2 rounded-full bg-[#dce846]" />
-						</div>
-						<p className="mt-2">Syncing workspace ledger…</p>
-					</div>
-				) : null}
-			</section>
-			<aside className="min-h-0 overflow-y-auto border-[#e5e2d9] border-t bg-[#fbfaf6] lg:border-t-0 lg:border-l">
-				<JourneyPanel
-					activeRunStatus={activeRunStatus}
-					artifacts={artifacts.map((artifact) => ({
-						id: artifact.id,
-						kind: artifact.kind ?? artifact.type,
-						name: artifact.name ?? artifact.fileName,
-					}))}
-					candidateScores={candidateScores}
-					candidates={candidates.map((candidate) => ({
-						id: candidate.id,
-						rank: candidate.rank,
-						title: candidate.title,
-					}))}
-					objective={projectGoal}
-				/>
-				<RecipeManager
-					isDisabled={isRecipeDisabled}
+			<ViewerTabs
+				activeTabId={activeTabId}
+				candidateScores={candidateScores}
+				candidates={tabCandidates}
+				onClose={closeTab}
+				onOpenCandidate={openCandidateInTab}
+				onSelect={setActiveTabId}
+				tabs={tabs}
+			/>
+			<FilesPanel
+				activeArtifactId={activeArtifactId}
+				artifacts={fileArtifacts}
+				candidates={fileCandidates}
+				onDeleteAttachment={onDeleteAttachment}
+				onOpenFile={openFileInTab}
+				runs={runs}
+			/>
+			{isRecipesOpen ? (
+				<RecipesDialog
 					isSaving={isSavingRecipe}
 					onArchive={onArchiveRecipe}
+					onClose={onCloseRecipes}
 					onCreate={onCreateRecipe}
 					onUpdate={onUpdateRecipe}
+					open
 					recipes={recipes}
 				/>
-			</aside>
+			) : null}
 		</main>
 	);
-}
-
-function toTraceEvent(event: WorkspaceEvent): TraceEvent {
-	return {
-		displayJson: event.displayJson ?? event.payloadJson ?? {},
-		id: event.id,
-		rawJson: event.rawJson ?? {},
-		sequence: event.sequence,
-		summary: event.summary ?? event.detail ?? null,
-		title: event.title,
-		type: event.type,
-	};
-}
-
-function toChatMessage(message: WorkspaceChatMessage): ChatMessage {
-	return {
-		content: message.content ?? message.text ?? "",
-		id: message.id,
-		role: message.role,
-	};
-}
-
-function toStageArtifact(
-	artifact: WorkspaceArtifact | null,
-): StageArtifact | null {
-	if (!artifact) {
-		return null;
-	}
-
-	return {
-		id: artifact.id,
-		label: artifact.fileName,
-		name: artifact.name ?? artifact.fileName,
-		url: artifact.sourceUrl ?? artifact.signedUrl,
-	};
-}
-
-function toStageCandidate(
-	candidate: WorkspaceCandidate | null,
-): StageCandidate | null {
-	if (!candidate) {
-		return null;
-	}
-
-	return {
-		id: candidate.id,
-		title: candidate.title,
-	};
 }
