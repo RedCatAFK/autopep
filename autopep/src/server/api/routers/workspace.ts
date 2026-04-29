@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { createProjectRunWithLaunch } from "@/server/agent/project-run-creator";
@@ -10,7 +10,9 @@ import {
 	agentEvents,
 	agentRuns,
 	artifacts,
+	candidateScores,
 	proteinCandidates,
+	threads,
 	workspaces,
 } from "@/server/db/schema";
 
@@ -131,7 +133,7 @@ const mapArtifact = async (artifact: typeof artifacts.$inferSelect) => {
 
 const getLatestWorkspaceForOwner = async (db: Db, ownerId: string) =>
 	db.query.workspaces.findFirst({
-		where: eq(workspaces.ownerId, ownerId),
+		where: and(eq(workspaces.ownerId, ownerId), isNull(workspaces.archivedAt)),
 		orderBy: [desc(workspaces.createdAt)],
 	});
 
@@ -141,18 +143,35 @@ export const getWorkspacePayload = async (
 	ownerId: string,
 ) => {
 	const workspace = await db.query.workspaces.findFirst({
-		where: and(eq(workspaces.id, projectId), eq(workspaces.ownerId, ownerId)),
+		where: and(
+			eq(workspaces.id, projectId),
+			eq(workspaces.ownerId, ownerId),
+			isNull(workspaces.archivedAt),
+		),
 	});
 
 	if (!workspace) {
 		return null;
 	}
 
-	const runs = await db.query.agentRuns.findMany({
-		where: eq(agentRuns.workspaceId, workspace.id),
-		orderBy: [desc(agentRuns.createdAt)],
-		limit: 10,
+	const threadRows = await db.query.threads.findMany({
+		where: eq(threads.workspaceId, workspace.id),
+		orderBy: [desc(threads.updatedAt)],
 	});
+	const activeThread =
+		threadRows.find((thread) => thread.id === workspace.activeThreadId) ??
+		threadRows[0] ??
+		null;
+	const runs = activeThread
+		? await db.query.agentRuns.findMany({
+				where: and(
+					eq(agentRuns.workspaceId, workspace.id),
+					eq(agentRuns.threadId, activeThread.id),
+				),
+				orderBy: [desc(agentRuns.createdAt)],
+				limit: 10,
+			})
+		: [];
 
 	const activeRun = runs[0] ?? null;
 	const project = mapWorkspaceToProject(workspace, activeRun);
@@ -160,30 +179,39 @@ export const getWorkspacePayload = async (
 	if (!activeRun) {
 		return {
 			activeRun,
+			activeThread,
 			artifacts: [],
+			candidateScores: [],
 			candidates: [],
 			events: [],
 			project,
 			runs,
 			targetEntities: [],
+			threads: threadRows,
 			workspace,
 		};
 	}
 
-	const [eventRows, candidateRows, artifactRows] = await Promise.all([
-		db.query.agentEvents.findMany({
-			where: eq(agentEvents.runId, activeRun.id),
-			orderBy: [asc(agentEvents.sequence)],
-		}),
-		db.query.proteinCandidates.findMany({
-			where: eq(proteinCandidates.runId, activeRun.id),
-			orderBy: [asc(proteinCandidates.rank)],
-		}),
-		db.query.artifacts.findMany({
-			where: eq(artifacts.runId, activeRun.id),
-			orderBy: [desc(artifacts.createdAt)],
-		}),
-	]);
+	const [eventRows, candidateRows, artifactRows, scoreRows] = await Promise.all(
+		[
+			db.query.agentEvents.findMany({
+				where: eq(agentEvents.runId, activeRun.id),
+				orderBy: [asc(agentEvents.sequence)],
+			}),
+			db.query.proteinCandidates.findMany({
+				where: eq(proteinCandidates.runId, activeRun.id),
+				orderBy: [asc(proteinCandidates.rank)],
+			}),
+			db.query.artifacts.findMany({
+				where: eq(artifacts.runId, activeRun.id),
+				orderBy: [desc(artifacts.createdAt)],
+			}),
+			db.query.candidateScores.findMany({
+				where: eq(candidateScores.runId, activeRun.id),
+				orderBy: [asc(candidateScores.createdAt)],
+			}),
+		],
+	);
 
 	const targetEntities = [
 		{
@@ -196,12 +224,15 @@ export const getWorkspacePayload = async (
 
 	return {
 		activeRun,
+		activeThread,
 		artifacts: await Promise.all(artifactRows.map(mapArtifact)),
+		candidateScores: scoreRows,
 		candidates: candidateRows.map(mapCandidate),
 		events: eventRows.map(mapEvent),
 		project,
 		runs,
 		targetEntities,
+		threads: threadRows,
 		workspace,
 	};
 };
@@ -216,6 +247,7 @@ export const workspaceRouter = createTRPCRouter({
 						where: and(
 							eq(workspaces.id, input.projectId),
 							eq(workspaces.ownerId, ownerId),
+							isNull(workspaces.archivedAt),
 						),
 					})
 				: await getLatestWorkspaceForOwner(ctx.db, ownerId);

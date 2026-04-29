@@ -25,19 +25,43 @@ type AppendRunEventInput = {
 	runId: string;
 	type: AgentEventType | LegacyAgentEventType;
 	title: string;
+	summary?: string | null;
+	display?: Record<string, unknown> | null;
+	raw?: Record<string, unknown> | null;
 	detail?: string | null;
-	payload?: Record<string, unknown>;
+	payload?: Record<string, unknown> | null;
 };
+
+const RUN_EVENT_SEQUENCE_RETRY_ATTEMPTS = 50;
+const RUN_EVENT_SEQUENCE_RETRY_BASE_DELAY_MS = 2;
+const RUN_EVENT_SEQUENCE_RETRY_JITTER_MS = 4;
+
+export const deriveNextSequence = (latestSequence: number | undefined) =>
+	(latestSequence ?? 0) + 1;
+
+const sequenceRetryDelay = (attempt: number) =>
+	Math.min(20, RUN_EVENT_SEQUENCE_RETRY_BASE_DELAY_MS * (attempt + 1)) +
+	Math.random() * RUN_EVENT_SEQUENCE_RETRY_JITTER_MS;
+
+const wait = (milliseconds: number) =>
+	new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export const appendRunEvent = async ({
 	db,
 	runId,
 	type,
 	title,
-	detail = null,
-	payload = {},
+	summary,
+	display,
+	raw,
+	detail,
+	payload,
 }: AppendRunEventInput) => {
-	for (let attempt = 0; attempt < 5; attempt += 1) {
+	for (
+		let attempt = 0;
+		attempt < RUN_EVENT_SEQUENCE_RETRY_ATTEMPTS;
+		attempt += 1
+	) {
 		const [latestEvent] = await db
 			.select({ sequence: agentEvents.sequence })
 			.from(agentEvents)
@@ -48,11 +72,11 @@ export const appendRunEvent = async ({
 		const [event] = await db
 			.insert(agentEvents)
 			.values({
-				displayJson: payload,
-				rawJson: {},
+				displayJson: display ?? payload ?? {},
+				rawJson: raw ?? {},
 				runId,
-				sequence: (latestEvent?.sequence ?? 0) + 1,
-				summary: detail,
+				sequence: deriveNextSequence(latestEvent?.sequence),
+				summary: summary ?? detail ?? null,
 				title,
 				type,
 			})
@@ -63,6 +87,10 @@ export const appendRunEvent = async ({
 
 		if (event) {
 			return event;
+		}
+
+		if (attempt < RUN_EVENT_SEQUENCE_RETRY_ATTEMPTS - 1) {
+			await wait(sequenceRetryDelay(attempt));
 		}
 	}
 
