@@ -19,6 +19,7 @@ This design replaces the Codex harness-in-Modal approach with a Python OpenAI Ag
 - Keep Vercel as a thin frontend/API layer, not the long-running execution host.
 - Always load the Life Science Research plugin into the agent environment.
 - Model core biology actions as structured tools with stable inputs, outputs, artifacts, and events.
+- Treat the Modal-hosted Proteina-Complexa and Chai-1 inference endpoints as first-class agent tools.
 - Add first-class workspaces, threads, recipes, context references, artifacts, and run lineage.
 - Make Mol* selection a prompt context source so a user can refer to clicked protein regions.
 - Preserve flexibility for later branching candidate-generation pipelines.
@@ -30,6 +31,7 @@ This design replaces the Codex harness-in-Modal approach with a Python OpenAI Ag
 - Wet-lab validation or medical/clinical claims.
 - Perfect multi-agent branching optimization in the first implementation pass.
 - A direct frontend connection to the OpenAI SDK stream as the only source of truth.
+- Binding-affinity or safety scoring functions. Chai-1 confidence values may rank folds from one request, but they are not binding scores.
 
 ## Architecture
 
@@ -47,7 +49,7 @@ Use four explicit runtime boundaries:
    - Acts as the durable realtime ledger. The frontend reads events by cursor.
 
 3. **Cloudflare R2 or compatible object storage**
-   - Owns file bytes: CIF/mmCIF, FASTA, raw search responses worth preserving, generated BioPython scripts, mutated structures, logs, thumbnails, and later generated structures.
+- Owns file bytes: CIF/mmCIF, PDB, FASTA, raw search responses worth preserving, generated BioPython scripts, generated or mutated structures, logs, thumbnails, and later scoring reports.
    - Neon stores object keys, hashes, MIME type, size, provenance, and semantic metadata.
 
 4. **Modal worker and sandboxes**
@@ -227,7 +229,7 @@ Fields:
 - `workspace_id`
 - `run_id`
 - `source_artifact_id`
-- `kind`: `cif | mmcif | fasta | pdb_metadata | literature_snapshot | biopython_script | mutated_structure | log | image | other`
+- `kind`: `cif | mmcif | pdb | fasta | sequence | pdb_metadata | literature_snapshot | biopython_script | proteina_result | chai_result | mutated_structure | score_report | log | image | other`
 - `name`
 - `storage_provider`
 - `storage_key`
@@ -248,17 +250,44 @@ Fields:
 - `run_id`
 - `parent_candidate_id`
 - `rank`
-- `source`: `rcsb_pdb | alphafold | generated | uploaded | mutated`
+- `source`: `rcsb_pdb | alphafold | proteina_complexa | chai_1 | generated | uploaded | mutated`
 - `structure_id`
 - `chain_ids_json`
+- `sequence`
 - `title`
 - `score_json`
 - `why_selected`
 - `artifact_id`
+- `fold_artifact_id`
+- `parent_inference_id`
 - `metadata_json`
 - `created_at`
 
 `parent_candidate_id` supports future mutation lineage.
+
+### `model_inferences`
+
+One external model/tool invocation that may create many candidates or artifacts.
+
+Fields:
+
+- `id`
+- `workspace_id`
+- `run_id`
+- `parent_inference_id`
+- `provider`: `modal`
+- `model_name`: `proteina_complexa | chai_1 | future_scorer`
+- `status`: `queued | running | completed | failed | cancelled`
+- `endpoint_url_snapshot`
+- `request_json`
+- `response_json`
+- `external_request_id`
+- `started_at`
+- `finished_at`
+- `error_summary`
+- `created_at`
+
+This table keeps long-running generation/folding calls auditable without turning the chat trace into the only source of provenance.
 
 ### `context_references`
 
@@ -337,6 +366,8 @@ Autopep-specific tools should wrap the same ideas in stable product contracts:
 - `inspect_structure(artifact_id, selector)` - summarizes chains, residues, ligands, interfaces, or clicked selections.
 - `run_biopython(task, input_artifacts, code_policy)` - executes generated BioPython in a sandbox and returns artifacts/logs.
 - `mutate_structure(artifact_id, mutations, selector, rationale)` - applies controlled mutations in BioPython and produces a new structure artifact.
+- `generate_binder_candidates(target_artifact_id, target_input, hotspot_residues, binder_length, warm_start_candidates, mode)` - calls Proteina-Complexa and stores generated PDB candidates.
+- `fold_sequences_with_chai(fasta, sequence_candidates, sampling)` - calls Chai-1 and stores ranked CIF fold predictions.
 
 Each tool returns structured JSON plus any artifact IDs. Raw source payloads should be stored only when useful for audit/debugging; the UI should default to compact summaries.
 
@@ -347,16 +378,159 @@ Initial biology scope:
 - PDB search/download/visualization.
 - CIF/mmCIF preparation and validation.
 - BioPython execution for inspection and simple mutation tasks.
+- Proteina-Complexa candidate generation from a prepared target structure.
+- Chai-1 folding of amino-acid sequences into ranked CIF structures.
 
 Later scope:
 
-- sequence generation tools
 - branch-and-bound candidate trees
 - hierarchical validation
 - model scoring
 - generated protein lineage
 
 The current schema already leaves room for those later phases through `parent_run_id`, `root_run_id`, and `parent_candidate_id`.
+
+## Modal Inference Endpoints
+
+Autopep now has two deployed Modal inference APIs that should be called only from server-side code or the Modal worker. The browser must never receive these API keys.
+
+Required environment variables:
+
+- `MODAL_CHAI_URL`
+- `MODAL_CHAI_API_KEY`
+- `MODAL_PROTEINA_URL`
+- `MODAL_PROTEINA_API_KEY`
+
+Both APIs accept `X-API-Key`, `Authorization: Bearer`, or HTTP Basic auth. Autopep should use `X-API-Key` for backend calls.
+
+### Chai-1
+
+Purpose: predict 3D structures from amino-acid FASTA input.
+
+Endpoint:
+
+- `GET /health`
+- `POST /predict`
+- `POST /`
+
+Request options:
+
+- raw FASTA body, or JSON body with `fasta`
+- `fasta`: required, max 128 KiB, must start with `>`
+- `num_trunk_recycles`: default `3`, range `1-20`
+- `num_diffn_timesteps`: default `200`, range `1-1000`
+- `num_diffn_samples`: default `5`, range `1-10`
+- `seed`: default `42`, range `0-2147483647`
+- `include_pdb`: default `false`
+- `include_viewer_html`: default `false`
+
+Server-fixed model settings:
+
+- MSA search disabled
+- template search disabled
+- ESM embeddings enabled
+- primary output format is CIF/mmCIF
+
+Response:
+
+- `format: "cif"`
+- `count`
+- `request_id`
+- `cifs[]` with `rank`, `filename`, `cif`, `aggregate_score`, `mean_plddt`, and optional `pdb` or `viewer_html`
+- `parameters`
+- `timings`
+
+Autopep handling:
+
+- Store every returned CIF as an artifact.
+- Create or update generated/folded `protein_candidates` for each returned rank.
+- Use `aggregate_score` and `mean_plddt` as fold-confidence metadata only. They do not replace binding or safety scoring.
+- Render rank 1 by default in Mol*, with rank switching available from the candidate card.
+
+### Proteina-Complexa
+
+Purpose: generate binder candidate structures from a target structure and optional warm-start seed binders.
+
+Endpoint:
+
+- `GET /health`
+- `POST /design`
+- `POST /predict`
+- `POST /design.pdb`
+- `POST /predict.pdb`
+- `POST /`
+
+Request is JSON only.
+
+Target contract:
+
+- `target.structure`: required CIF/PDB text, max 16 MiB. File paths are rejected.
+- `target.filename`: source filename, used to infer structure format.
+- `target.name`: optional target name.
+- `target.target_input`: target residue selection such as `A1-162`; if omitted the server attempts to infer contiguous chain ranges.
+- `target.chains`: optional chain filter.
+- `target.hotspot_residues`: optional list such as `["A45"]`.
+- `target.binder_length`: inclusive `[min_length, max_length]`, default `[60, 120]`.
+
+Generation controls:
+
+- `action`: `design-cif`, `design`, `predict`, `smoke-cif`, or `smoke`.
+- `run_name`: optional durable run name.
+- `pipeline_config`: optional Complexa pipeline config.
+- `overrides`: optional Hydra override strings.
+- `design_steps`: optional subset of `generate | filter | evaluate | analyze`.
+- `return_format`: `pdb`, `file`, or `download` to return only the first PDB.
+
+Warm start:
+
+- `warm_start` may be one object or a list.
+- each seed contains `structure`, `filename`, optional `chain`, optional `noise_level`, optional `start_t`, optional `num_steps`.
+- batched warm starts must share `noise_level`, `start_t`, and `num_steps` when those controls are set.
+- if warm-start setup fails, the wrapper falls back to cold generation and reports that in `design.warm_start.mode`.
+
+Response:
+
+- `run_name`
+- `task_name`
+- `mode`
+- `format: "pdb"`
+- `warm_start_count`
+- `count`
+- `pdbs[]` with `rank`, `filename`, `relative_path`, `pdb`
+- first `pdb_filename` and `pdb`
+- `preprocessed_target` with target sequence, target input, paths, feature JSON/FASTA paths, and Hydra overrides
+- `design.warm_start` metadata
+
+Autopep handling:
+
+- Send prepared target CIF/mmCIF text or PDB text from stored artifacts.
+- Use Mol* selections to populate `target_input` and `hotspot_residues` when the user explicitly selects a binding region.
+- Store every returned PDB as an artifact.
+- Extract binder sequences from returned PDBs into `protein_candidates.sequence` and/or FASTA artifacts.
+- Create `protein_candidates` with `source="proteina_complexa"` and lineage back to the target candidate/artifact.
+- Fan out Chai-1 folding calls for generated sequences when the workflow requires independent folding prediction.
+- Keep `smoke-cif` as a health/check mode; use `design-cif` for real candidate generation.
+
+## Big Demo Workflow
+
+The primary demo prompt is:
+
+> Generate a protein that binds to 3CL-protease.
+
+The intended agent path:
+
+1. Understand the biological target and normalize entities for 3CL-protease.
+2. Search literature, especially bioRxiv/PubMed/PMC, for target biology, known inhibitors, interfaces, and design-relevant residues.
+3. Search and filter PDB structures for suitable target structures.
+4. Prepare the selected target CIF/mmCIF artifact and identify target input ranges/hotspots.
+5. Call Proteina-Complexa to generate binder candidates against the selected target.
+6. Extract candidate sequences and store generated PDB artifacts.
+7. Call Chai-1 in parallel to fold candidate sequences into ranked CIF predictions.
+8. Display target, Proteina outputs, and Chai folds as selectable structure artifacts.
+9. Mark scoring as pending because no binding/safety scoring functions exist yet.
+10. Later, once scoring tools exist, score candidates in parallel, choose promising branches, mutate or warm-start from them, and iterate as a tree.
+
+Until scoring exists, the agent may summarize candidate confidence and provenance but must not claim that a candidate binds strongly. UI copy should say "fold confidence" or "generation result", not "binding score".
 
 ## Product Shell
 
@@ -400,6 +574,16 @@ The right panel becomes a compact design journey and workspace summary:
 - important artifacts
 
 It should not duplicate raw trace, ranked structures, or detailed tool output. Those belong in the chat trace.
+
+For generation workflows, the right panel should also include a compact candidate tree:
+
+- root: target structure
+- child batch: Proteina generation
+- candidate leaves: generated PDBs and extracted sequences
+- fold children: Chai CIF predictions
+- scoring status: `not available` or `pending`, until scoring tools exist
+
+The tree is a navigation and status surface, not a dense data table. Detailed payloads stay in collapsible chat/tool trace cards.
 
 ## Mol* Context References
 
@@ -508,27 +692,31 @@ Implement as one architecture spine with three specs/streams of work:
    - destructive Autopep schema migration
    - Python Agents SDK worker
    - `SandboxAgent` plus `ModalSandboxClient`
-   - run/event/artifact persistence
-   - cursor polling endpoint
-   - Life Science Research plugin loading
-   - initial tool wrappers
+- run/event/artifact persistence
+- model inference persistence
+- cursor polling endpoint
+- Life Science Research plugin loading
+- initial tool wrappers
 
 2. **Biology workflow**
    - PDB search/download
    - PubMed/PMC/bioRxiv search
    - CIF/mmCIF validation
-   - prepared target artifact
-   - BioPython inspection and simple mutation
-   - ranked candidate events and artifacts
+- prepared target artifact
+- BioPython inspection and simple mutation
+- Proteina-Complexa candidate generation
+- Chai-1 sequence folding
+- ranked candidate events and artifacts
 
 3. **Product shell**
    - unified chat panel
    - compact journey panel
    - larger Mol* stage
    - Mol* context references
-   - workspace navigation and CRUD
-   - recipe management UI
-   - trace cards for tools, commands, artifacts, candidates, and errors
+- workspace navigation and CRUD
+- recipe management UI
+- generation/folding candidate tree
+- trace cards for tools, commands, artifacts, candidates, and errors
 
 The implementation plan should start with track 1, because tracks 2 and 3 should render and consume the same durable contracts rather than inventing separate state paths.
 
@@ -540,6 +728,8 @@ Required coverage:
 - TypeScript contract tests for run/event/artifact APIs
 - Python unit tests for event normalization from SDK stream events
 - Python tests for biology tool wrappers using mocked RCSB, PubMed/PMC, and bioRxiv fixtures
+- mocked Proteina-Complexa contract tests for target, warm-start, response, and error handling
+- mocked Chai-1 contract tests for FASTA, sampling parameters, ranked CIF response, and error handling
 - mocked Modal sandbox tests for command stdout/stderr event streaming
 - artifact persistence tests for R2-compatible storage adapters
 - frontend component tests for chat trace event rendering
@@ -556,3 +746,5 @@ Do not depend on real OpenAI, Modal, RCSB, PubMed, or R2 calls in the default lo
 - Modal OpenAI Agents SDK example: https://github.com/modal-labs/openai-agents-python-example
 - Modal sandbox command streaming: https://modal.com/docs/guide/sandbox-spawn
 - Vercel function limits: https://vercel.com/docs/functions/limitations
+- Chai-1 endpoint implementation: `tools/chai-1`
+- Proteina-Complexa endpoint implementation: `tools/proteina-complexa`
