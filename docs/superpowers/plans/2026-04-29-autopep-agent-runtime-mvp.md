@@ -2878,6 +2878,31 @@ git add autopep/modal/autopep_agent/smoke_agent.py autopep/modal/autopep_agent/r
 git commit -m "test: add integration smoke roundtrip"
 ```
 
+## Frontend Quality And Verification Policy (Tasks 12-14)
+
+The plan's example components are starting points, not finals. **Tasks 12-14 must use design-taste skills and drive the rendered UI with browser automation before the commit step. Green Vitest is necessary but not sufficient for a frontend task.**
+
+**Skills to invoke during component design (use the `Skill` tool):**
+
+- `frontend-design` — distinctive, production-grade interfaces.
+- `design-taste-frontend` — senior UI/UX engineering judgment, overrides default LLM design biases.
+- `web-design-guidelines` — accessibility, responsiveness, web interface best practices.
+- `design-review` — designer's-eye QA on rendered output (call this on screenshots after implementing each component).
+- Targeted refinement skills as needed: `polish`, `arrange`, `typeset`, `clarify`, `critique`, `harden`, `delight`.
+
+**Visual target:** the editorial, paper-ish, low-contrast feel called out in `docs/superpowers/specs/2026-04-29-autopep-agent-runtime-redesign-design.md` and embodied in this plan's example components (warm cream/sage palette `#fbfaf6 / #fffef9 / #e5e2d9`, accent `#dfe94c`). Closer to Cursor than to a generic SaaS dashboard. **No AI-slop patterns**: no gratuitous gradients, no default Tailwind blue/purple accents, no overcrowded grids, no oversized hero text without anchor content.
+
+**Browser verification protocol** — run this for every Task 12-14 implementation step before the corresponding commit step:
+
+1. Start the dev server: `bun run dev`.
+2. Drive the actual UI using the **codex browser-use plugin** (or the Claude in Chrome MCP tools, or the `browse` / `gstack` skills if those are installed). Do not rely on Vitest's jsdom rendering — exercise real DOM, real CSS, real Mol*.
+3. For each new component, exercise the golden-path interaction: send a message, scroll trace events, click a Mol* region, switch workspaces, etc. If a component depends on backend wiring that does not yet exist, mock the data at the page level so the visual surface can still be driven.
+4. Screenshot **three viewports**: desktop (≥1440 wide), laptop (~1280), and mobile (~375).
+5. Run the `design-review` skill on the screenshots. Fix every issue surfaced before committing — do not park a "follow-up" comment unless the user has explicitly approved deferring it.
+6. Capture browser console + network. Zero unhandled errors and zero failed requests on the happy path. If any appear, fix them before committing.
+
+If the browser verification surfaces design issues, use the targeted skills (`polish`, `arrange`, `typeset`, `clarify`) to fix them, re-screenshot, and re-review. Iterate until the screenshots pass `design-review` cleanly.
+
 ## Task 12: Unified Chat Panel And Trace Cards
 
 **Files:**
@@ -3105,7 +3130,18 @@ bunx vitest run src/app/_components/chat-panel.test.tsx src/app/_components/trac
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Drive the rendered chat panel with browser automation**
+
+Follow the Frontend Quality And Verification Policy. For Task 12 specifically:
+
+- Mount `ChatPanel` on a temporary workspace route (or in a Storybook-like scratch page) with mocked messages, events, recipes, and context references so the panel renders without depending on Tasks 13/14.
+- Drive the UI with the codex browser-use plugin or Claude in Chrome MCP:
+  - empty state: confirm all three example prompts render and clicking one fills the composer
+  - filled state: confirm assistant messages indent right with the cream bubble; user messages indent left with the muted-green bubble; trace event cards expand to JSON; sequence numbers are visible
+  - composer: send-button disabled state, attachment + settings buttons hover, context chips render with truncation, paperclip icon does not steal pixel-snapping from the textarea baseline
+- Screenshot desktop / laptop / mobile. Run `design-review` and fix issues. The chat column must read like an editorial sidebar, not a chat-bubble toy.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add autopep/src/app/_components/chat-panel.tsx autopep/src/app/_components/trace-event-card.tsx autopep/src/app/_components/*.test.tsx
@@ -3240,7 +3276,20 @@ bun run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Drive the Mol* stage with browser automation**
+
+Follow the Frontend Quality And Verification Policy. For Task 13 specifically:
+
+- Load a real CIF artifact (e.g. 6M0J or 6LU7 fetched from RCSB and uploaded to local R2 / served via a fixture) into `MolstarStage` so this is not a jsdom-only verification.
+- Drive the UI with the codex browser-use plugin or Claude in Chrome MCP:
+  - confirm the four viewer actions render in-view (fullscreen, download/export, reset camera, settings) and each works
+  - click on a residue or chain in the viewer; confirm a context chip with a sensible label (e.g. `6M0J chain A residue 145`) appears in the chat composer and a `createContextReference` row lands in Neon
+  - reload the page; confirm the chip persists if the design calls for it, or correctly clears if it does not
+  - confirm the viewer is visually larger than every other panel (per design doc)
+  - confirm Mol* loci → selector serialization round-trips: the stored `selector_json` should be enough to restore the same highlight on reload
+- Screenshot desktop / laptop / mobile. Run `design-review`. Verify the viewer chrome is compact and does not crowd the structure.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add autopep/src/app/_components/molstar-viewer.tsx autopep/src/app/_components/molstar-stage.tsx autopep/src/app/_components/molstar-stage.test.tsx autopep/src/server/api/routers/workspace.ts autopep/src/server/agent/contracts.test.ts
@@ -3513,7 +3562,20 @@ bun run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Drive the full WorkspaceShell with browser automation**
+
+Follow the Frontend Quality And Verification Policy. For Task 14 specifically:
+
+- Open the deployed shell in a browser via the codex browser-use plugin or Claude in Chrome MCP. Drive the four-column desktop layout end-to-end:
+  - workspace rail: create a new workspace, switch between workspaces, archive a workspace, confirm the rail visually communicates "separate agents on separate tasks"
+  - chat panel: send a smoke prompt; confirm trace events stream in via cursor polling
+  - Mol* stage: confirm the viewer is the largest visual element on screen and stays compact-chromed
+  - journey panel: run a smoke prompt with the smoke agent (Task 11.5) so candidate cards / score leaves render with the expected aggregate label, D-SCRIPT, PRODIGY, fold confidence layout
+  - recipes manager: create, enable, edit, archive a recipe; confirm `enabledByDefault` toggle drives `runRecipes` snapshotting on the next run
+- Verify mobile single-column layout: `grid-cols-1`, component order chat → viewer → journey, no horizontal scroll, all controls reachable without zoom.
+- Screenshot every viewport. Run `design-review` on each. Iterate with `polish`, `arrange`, `typeset`, `clarify` until the screenshots pass cleanly. The shell should feel coherent — not like four different apps stitched together.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add autopep/src/app/_components/journey-panel.tsx autopep/src/app/_components/recipe-manager.tsx autopep/src/app/_components/workspace-rail.tsx autopep/src/app/_components/workspace-shell.tsx autopep/src/app/_components/autopep-workspace.tsx autopep/src/app/_components/*.test.tsx autopep/src/server/api/routers/workspace.ts
@@ -3748,19 +3810,38 @@ bun run scripts/deployed-e2e-3clpro.ts
 
 Expected: the run reaches `completed`, all five required event types appear at least once, and the Neon MCP spot-checks confirm artifacts, candidates, model_inferences, and candidate_scores rows. If the run fails, read the preserved events + `error_summary`, fix the underlying issue (in TS, in the worker, in env, wherever), redeploy whatever is needed, and re-run. Do not ship Task 15 without one fully successful run.
 
-- [ ] **Step 7: Optional browser smoke + README + final commit**
+- [ ] **Step 7: Drive the deployed UI end-to-end**
 
-Once Step 6 passes, do a single browser-use pass against the deployed Vercel URL to confirm the UI renders the same flow:
+Step 6 verifies the backend pipeline. This step verifies that a real user reaches a successful demo through the rendered UI on the deployed stack — Vercel + Modal + Neon + R2 — using the codex browser-use plugin (or the Claude in Chrome MCP tools, or the `qa` skill which automates this loop). Both Step 6 and Step 7 must pass before Task 15 is done.
 
-1. Open the Vercel production URL.
-2. Sign in.
-3. Open the workspace created in Step 6 (or a new one).
+Drive the **production Vercel URL**, not localhost. Localhost can mask deployment issues (env mismatch, missing static assets, CSP, edge config, route handler timeouts).
+
+UI E2E flow:
+
+1. Open the production Vercel URL in the browser-use plugin / Chrome MCP.
+2. Sign in with a development account.
+3. Open the workspace created in Step 6, or create a fresh one.
 4. Send `Generate a protein that binds to 3CL-protease`.
-5. Confirm chat events render through polling, Mol* loads a structure, the journey panel shows score leaves.
+5. Watch chat events stream through polling. Confirm trace cards for run start, literature/PDB steps, Proteina, Chai, scoring, and completion all render readably and expand to JSON detail.
+6. Confirm Mol* loads the selected target structure as soon as the prepare step finishes, and that rank-1 generated PDB renders when generation completes.
+7. Click a protein region in Mol*. Confirm the context chip appears in the composer with a sensible label and that the underlying `context_references` row was created in Neon (verify via the Neon MCP plugin).
+8. Confirm the journey panel shows: milestones complete, candidate cards with aggregate label + D-SCRIPT probability + PRODIGY delta G, fold confidence, and the "MVP loop complete" stop marker.
+9. Capture full-page screenshots at desktop (≥1440), laptop (~1280), and mobile (~375). Run `design-review` on the screenshots. Fix any visual regressions vs the design doc — re-deploy Vercel as needed.
+10. Verify the browser console is clean (zero unhandled errors) and the network tab shows no failed requests on the happy path.
 
-This is corroboration, not the source of truth. If Step 6 passes and the browser smoke shows a UI rendering glitch, treat it as a UI bug, not an E2E failure.
+Expected: a real user clicking through the deployed app reaches a `completed` run end-to-end with no console errors, no network failures, and no design regressions. If anything fails — backend, frontend, network, design — fix the root cause, redeploy whatever is needed (Vercel for frontend changes, Modal for worker changes), and re-run from step 4. There is no acceptable workaround for "the UI looks broken on prod" because there are no users to insulate from breakage during fixes.
 
-Update `autopep/README.md` with a `## Autopep MVP Runtime` section listing required runtime secrets and a `## Production runbook` section pointing at this task's steps, the Task 11.5 smokes, and the Neon/Cloudflare MCP plugins as the canonical inspection tools.
+If you discover a UI-only bug (rendering, layout, console error) after Step 6 passed, treat it as a real bug — fix it in code, redeploy Vercel, re-verify. Do not declare Task 15 done until Steps 6 AND 7 both pass against the deployed stack on the same code revision.
+
+- [ ] **Step 8: Update README and final commit**
+
+Update `autopep/README.md` with a `## Autopep MVP Runtime` section listing the required runtime secrets, and a `## Production runbook` section pointing at:
+
+- Task 11.5 smokes for cheap roundtrip verification (`gpt-5.5-mini` or any `gpt-5.x-mini`).
+- Task 15 Steps 1-7 for the deployed E2E (`gpt-5.5`).
+- Neon MCP plugin for schema/state inspection.
+- Cloudflare MCP plugin for R2 verification.
+- The `frontend-design`, `design-review`, `polish`, `qa` skills for any UI regression triage.
 
 Required runtime secrets:
 
@@ -3789,8 +3870,9 @@ git commit -m "docs: document autopep mvp runtime and deployed e2e"
 
 ## Self-Review Checklist
 
-- Spec coverage: Tasks 1-4 cover contracts, schema, workspaces, messages, runs, events, and polling. Tasks 5-11 cover artifacts, Python Agents SDK runtime, Modal sandbox setup, Life Science Research context, Proteina, Chai, scoring, and one-loop persistence. Task 11.5 covers integration smoke roundtrips against a Neon branch and a smoke Modal app to surface integration drift before any frontend work. Tasks 12-14 cover unified chat, larger Mol* stage, context chips, compact journey, candidate tree, workspace navigation, and recipes. Task 15 covers a deployed production end-to-end pass: destructive migration to production Neon (with Neon MCP verification), Cloudflare R2 verification (with the Cloudflare MCP plugin), Modal worker deploy, Vercel env + production deploy, and a headless backend E2E driving the 3CL-protease prompt against the deployed stack with `gpt-5.5`. Production breakage is acceptable while there are no users.
+- Spec coverage: Tasks 1-4 cover contracts, schema, workspaces, messages, runs, events, and polling. Tasks 5-11 cover artifacts, Python Agents SDK runtime, Modal sandbox setup, Life Science Research context, Proteina, Chai, scoring, and one-loop persistence. Task 11.5 covers integration smoke roundtrips against a Neon branch and a smoke Modal app to surface integration drift before any frontend work. Tasks 12-14 cover unified chat, larger Mol* stage, context chips, compact journey, candidate tree, workspace navigation, and recipes — and are subject to the Frontend Quality And Verification Policy (design-taste skills + browser-automation drive against the rendered UI before commit). Task 15 covers a deployed production end-to-end pass: destructive migration to production Neon (with Neon MCP verification), Cloudflare R2 verification (with the Cloudflare MCP plugin), Modal worker deploy, Vercel env + production deploy, a headless backend E2E driving the 3CL-protease prompt with `gpt-5.5`, and a required UI E2E driven through the deployed Vercel URL with the codex browser-use plugin. Production breakage is acceptable while there are no users.
 - Model selection: Real demo runs use `gpt-5.5`. Smoke and CI runs use a `gpt-5.x-mini` (e.g. `gpt-5.5-mini`). Anthropic Haiku and other non-OpenAI models are not compatible with the worker.
+- Frontend stance: Tasks 12-14 must invoke `frontend-design` / `design-taste-frontend` / `web-design-guidelines` / `design-review` (and refinement skills like `polish`, `arrange`, `typeset`, `clarify`, `critique`) and must drive the rendered UI through real browser automation before committing. Vitest passing alone is not sufficient. Visual target: editorial paper-ish low-contrast feel from the design doc, no AI-slop patterns.
 - MVP boundary: The plan stops after one scored generation/folding batch and only preserves lineage for Phase 2 branching.
 - Test stance: Default local tests mock OpenAI, Modal inference endpoints, RCSB, PubMed, bioRxiv, R2, and browser flows. Real endpoint calls are verification steps only.
 - Security stance: Modal/OpenAI/R2 credentials remain server/worker-only. Browser code receives signed/public artifact URLs and database-backed display payloads only.
