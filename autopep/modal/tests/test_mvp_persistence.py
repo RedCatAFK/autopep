@@ -14,6 +14,7 @@ from autopep_agent.db import (
     complete_model_inference,
     insert_candidate_scores,
     map_scoring_result_to_rows,
+    update_candidate_fold_artifact,
 )
 from autopep_agent.run_context import (
     ToolRunContext,
@@ -162,9 +163,16 @@ def test_map_scoring_result_to_candidate_score_rows_unavailable_dscript() -> Non
 class _FakeCursor:
     """Async-context-manager cursor that records executes and serves canned rows."""
 
-    def __init__(self, returning: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        returning: list[Any] | None = None,
+        *,
+        rowcounts: list[int] | None = None,
+    ) -> None:
         self.executes: list[tuple[str, tuple[Any, ...]]] = []
         self._returning = list(returning or [])
+        self._rowcounts = list(rowcounts or [])
+        self.rowcount = 1
 
     async def __aenter__(self) -> "_FakeCursor":
         return self
@@ -174,6 +182,8 @@ class _FakeCursor:
 
     async def execute(self, sql: str, params: tuple[Any, ...] | None = None) -> None:
         self.executes.append((sql, tuple(params or ())))
+        if self._rowcounts:
+            self.rowcount = self._rowcounts.pop(0)
 
     async def fetchone(self) -> Any:
         if not self._returning:
@@ -346,7 +356,9 @@ async def test_create_candidate_inserts_with_source_and_returns_id(
 async def test_insert_candidate_scores_executes_one_insert_per_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = _FakeCursor()
+    # The first cursor.fetchone() satisfies the tenant-isolation precondition
+    # select, then the inserts run.
+    cursor = _FakeCursor(returning=[(1,)])
     _patch_psycopg_connect(monkeypatch, cursor)
 
     rows = [
@@ -385,13 +397,102 @@ async def test_insert_candidate_scores_executes_one_insert_per_row(
         rows=rows,
     )
 
-    assert len(cursor.executes) == 2
-    for sql, params in cursor.executes:
+    # 1 precondition (select 1 ...) + 2 inserts = 3 executes.
+    assert len(cursor.executes) == 3
+    precondition_sql, precondition_params = cursor.executes[0]
+    assert "select 1" in precondition_sql
+    assert "autopep_protein_candidate" in precondition_sql
+    assert "w1" in precondition_params
+    assert "r1" in precondition_params
+    assert "c1" in precondition_params
+    for sql, params in cursor.executes[1:]:
         assert "insert into autopep_candidate_score" in sql
         assert "w1" in params
         assert "r1" in params
         assert "c1" in params
         assert "i1" in params
+
+
+@pytest.mark.asyncio
+async def test_insert_candidate_scores_raises_when_candidate_not_in_workspace_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Precondition select returns no row -> tenant isolation violation.
+    cursor = _FakeCursor(returning=[None])
+    _patch_psycopg_connect(monkeypatch, cursor)
+
+    rows = [
+        {
+            "candidate_id": "c-other",
+            "model_inference_id": "i1",
+            "scorer": "dscript",
+            "status": "ok",
+            "label": None,
+            "value": 0.7,
+            "unit": "probability",
+            "values_json": {"available": True},
+            "warnings_json": [],
+            "errors_json": [],
+        },
+    ]
+
+    with pytest.raises(RuntimeError, match="candidate not found"):
+        await insert_candidate_scores(
+            "postgres://x",
+            workspace_id="w1",
+            run_id="r1",
+            candidate_id="c-other",
+            model_inference_id="i1",
+            rows=rows,
+        )
+
+    # Only the precondition select ran — no inserts.
+    assert len(cursor.executes) == 1
+    sql, _ = cursor.executes[0]
+    assert "select 1" in sql
+
+
+@pytest.mark.asyncio
+async def test_update_candidate_fold_artifact_scopes_to_workspace_and_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = _FakeCursor(rowcounts=[1])
+    _patch_psycopg_connect(monkeypatch, cursor)
+
+    await update_candidate_fold_artifact(
+        "postgres://x",
+        candidate_id="c1",
+        workspace_id="w1",
+        run_id="r1",
+        fold_artifact_id="fold-1",
+    )
+
+    assert len(cursor.executes) == 1
+    sql, params = cursor.executes[0]
+    assert "update autopep_protein_candidate" in sql
+    assert "workspace_id" in sql
+    assert "run_id" in sql
+    assert "c1" in params
+    assert "w1" in params
+    assert "r1" in params
+    assert "fold-1" in params
+
+
+@pytest.mark.asyncio
+async def test_update_candidate_fold_artifact_raises_when_no_row_matched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = _FakeCursor(rowcounts=[0])
+    _patch_psycopg_connect(monkeypatch, cursor)
+
+    with pytest.raises(RuntimeError, match="candidate not found"):
+        await update_candidate_fold_artifact(
+            "postgres://x",
+            candidate_id="c-other",
+            workspace_id="w1",
+            run_id="r1",
+            fold_artifact_id="fold-1",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -572,8 +673,6 @@ def _wire_persistence_doubles(
         recorder.update_candidate_fold_artifact,
     )
 
-    monkeypatch.setattr(biology_tools, "EventWriter", _FakeEventWriter)
-
     # Replace the EventWriter constructor so all tools see the same writer.
     def make_writer(_url: str) -> _FakeEventWriter:
         return writer
@@ -704,6 +803,51 @@ async def test_generate_binder_candidates_marks_inference_failed_and_reraises(
 
 
 @pytest.mark.asyncio
+async def test_generate_binder_candidates_marks_inference_failed_when_persistence_loop_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    recorder, _writer = _wire_persistence_doubles(monkeypatch)
+
+    # client.design returns successfully ...
+    response = {"pdbs": [{"filename": "design-1.pdb", "pdb": PDB_TEXT}]}
+
+    class FakeProteinaClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        async def design(self, **_kwargs: Any) -> dict[str, Any]:
+            return response
+
+    monkeypatch.setattr(biology_tools, "ProteinaClient", FakeProteinaClient)
+
+    # ... but the persistence loop blows up mid-way (R2 upload fails).
+    async def boom_r2_put(*_args: Any, **_kwargs: Any) -> str:
+        raise RuntimeError("r2 upload exploded")
+
+    monkeypatch.setattr(biology_tools, "r2_put_object", boom_r2_put)
+
+    set_tool_run_context(_make_ctx())
+
+    with pytest.raises(RuntimeError, match="r2 upload exploded"):
+        await biology_tools._generate_binder_candidates(
+            target_structure="x",
+            target_filename="x.pdb",
+            target_input=None,
+            hotspot_residues=[],
+            binder_length_min=10,
+            binder_length_max=20,
+        )
+
+    # Inference must end up failed, not completed — the persistence loop is
+    # part of the inference's success criteria.
+    assert len(recorder.inference_calls) == 1
+    assert len(recorder.complete_calls) == 1
+    assert recorder.complete_calls[0]["status"] == "failed"
+    assert recorder.complete_calls[0]["error_summary"]
+
+
+@pytest.mark.asyncio
 async def test_fold_sequences_with_chai_persists_inference_and_artifacts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -756,6 +900,42 @@ async def test_fold_sequences_with_chai_persists_inference_and_artifacts(
 
     types = [e["type"] for e in writer.events]
     assert "artifact_created" in types
+
+
+@pytest.mark.asyncio
+async def test_fold_sequences_with_chai_marks_inference_failed_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    recorder, _writer = _wire_persistence_doubles(monkeypatch)
+    monkeypatch.setattr(biology_tools, "r2_put_object", _fake_r2_put)
+
+    class BoomChaiClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        async def predict(self, *_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("chai exploded")
+
+    monkeypatch.setattr(biology_tools, "ChaiClient", BoomChaiClient)
+
+    set_tool_run_context(_make_ctx())
+
+    with pytest.raises(RuntimeError, match="chai exploded"):
+        await biology_tools._fold_sequences_with_chai(
+            sequence_candidates=[
+                {
+                    "id": "candidate-1",
+                    "sequence": "ACDE",
+                    "candidate_id": "db-candidate-1",
+                },
+            ],
+        )
+
+    assert len(recorder.inference_calls) == 1
+    assert len(recorder.complete_calls) == 1
+    assert recorder.complete_calls[0]["status"] == "failed"
+    assert recorder.complete_calls[0]["error_summary"]
 
 
 @pytest.mark.asyncio
@@ -825,6 +1005,44 @@ async def test_score_candidate_interactions_persists_score_rows(
         "prodigy",
         "protein_interaction_aggregate",
     }
+
+
+@pytest.mark.asyncio
+async def test_score_candidate_interactions_marks_inference_failed_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    recorder, _writer = _wire_persistence_doubles(monkeypatch)
+
+    class BoomScoringClient:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        async def score_batch(self, *_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("scoring exploded")
+
+    monkeypatch.setattr(biology_tools, "ScoringClient", BoomScoringClient)
+
+    set_tool_run_context(_make_ctx())
+
+    with pytest.raises(RuntimeError, match="scoring exploded"):
+        await biology_tools._score_candidate_interactions(
+            target_name="target",
+            target_sequence="AAAA",
+            candidates=[
+                {
+                    "id": "candidate-1",
+                    "candidate_id": "db-candidate-1",
+                    "sequence": "GG",
+                    "pdb": PDB_TEXT,
+                },
+            ],
+        )
+
+    assert len(recorder.inference_calls) == 1
+    assert len(recorder.complete_calls) == 1
+    assert recorder.complete_calls[0]["status"] == "failed"
+    assert recorder.complete_calls[0]["error_summary"]
 
 
 # ---------------------------------------------------------------------------

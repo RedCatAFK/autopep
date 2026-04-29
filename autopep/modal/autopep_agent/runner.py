@@ -35,7 +35,11 @@ from autopep_agent.db import (
     mark_run_failed,
 )
 from autopep_agent.events import EventWriter
-from autopep_agent.run_context import ToolRunContext, set_tool_run_context
+from autopep_agent.run_context import (
+    ToolRunContext,
+    reset_tool_run_context,
+    set_tool_run_context,
+)
 from autopep_agent.streaming import normalize_stream_event
 
 
@@ -298,8 +302,11 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
         )
         # Install the per-run tool context BEFORE invoking Runner.run_streamed
         # so any tool the agent calls can read URLs / API keys / DB url /
-        # workspace + run ids without the LLM ever seeing them.
-        set_tool_run_context(
+        # workspace + run ids without the LLM ever seeing them. The matching
+        # reset_tool_run_context in the finally block prevents the context
+        # from leaking into a subsequent run that happens to share this
+        # event loop / worker process.
+        ctx_token = set_tool_run_context(
             ToolRunContext(
                 workspace_id=workspace_id,
                 run_id=run_id,
@@ -312,32 +319,35 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 scoring_api_key=config.modal_protein_interaction_scoring_api_key,
             ),
         )
-        streamed_run = await _maybe_await(
-            Runner.run_streamed(
-                agent,
-                input=_build_runner_input(
-                    prompt=run_context.prompt,
-                    run_id=run_id,
-                    task_kind=task_kind,
-                    thread_id=thread_id,
-                    workspace_id=workspace_id,
+        try:
+            streamed_run = await _maybe_await(
+                Runner.run_streamed(
+                    agent,
+                    input=_build_runner_input(
+                        prompt=run_context.prompt,
+                        run_id=run_id,
+                        task_kind=task_kind,
+                        thread_id=thread_id,
+                        workspace_id=workspace_id,
+                    ),
+                    run_config=run_config,
                 ),
-                run_config=run_config,
-            ),
-        )
-
-        async for event in _stream_events(streamed_run):
-            normalized = normalize_stream_event(event)
-            if normalized is None:
-                continue
-            await writer.append_event(
-                run_id=run_id,
-                event_type=normalized["type"],
-                title=normalized["title"],
-                summary=normalized.get("summary"),
-                display=normalized.get("display"),
-                raw=normalized.get("raw"),
             )
+
+            async for event in _stream_events(streamed_run):
+                normalized = normalize_stream_event(event)
+                if normalized is None:
+                    continue
+                await writer.append_event(
+                    run_id=run_id,
+                    event_type=normalized["type"],
+                    title=normalized["title"],
+                    summary=normalized.get("summary"),
+                    display=normalized.get("display"),
+                    raw=normalized.get("raw"),
+                )
+        finally:
+            reset_tool_run_context(ctx_token)
 
         await writer.append_event(
             run_id=run_id,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
 
@@ -32,15 +32,21 @@ _tool_run_context_var: ContextVar[ToolRunContext | None] = ContextVar(
 )
 
 
-def set_tool_run_context(ctx: ToolRunContext) -> None:
+def set_tool_run_context(ctx: ToolRunContext) -> Token[ToolRunContext | None]:
     """Install ``ctx`` as the current tool run context.
 
-    Each Modal function call uses its own asyncio event loop; the ContextVar
-    is scoped to that loop, so it is safe to leave the context set for the
-    lifetime of a run.
+    Returns the ``Token`` from ``ContextVar.set`` so callers can pair this
+    with :func:`reset_tool_run_context` in a ``try/finally`` and avoid
+    leaking the context across runs that share an event loop.
     """
 
-    _tool_run_context_var.set(ctx)
+    return _tool_run_context_var.set(ctx)
+
+
+def reset_tool_run_context(token: Token[ToolRunContext | None]) -> None:
+    """Reset the tool run context using the token returned by :func:`set_tool_run_context`."""
+
+    _tool_run_context_var.reset(token)
 
 
 def get_tool_run_context() -> ToolRunContext:

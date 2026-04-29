@@ -107,88 +107,104 @@ async def _generate_binder_candidates(
         )
         raise
 
+    # The persistence loop (R2 upload + create_artifact + create_candidate +
+    # events) is part of the inference's success criteria. If any of those
+    # steps fail, the inference must be marked `failed` so we never end up
+    # with a `completed` model_inference row whose artifacts/candidates are
+    # missing or partial. complete_model_inference("completed", ...) only runs
+    # AFTER the loop finishes cleanly.
+    try:
+        candidates: list[dict[str, Any]] = []
+        for rank, pdb_record in enumerate(_extract_pdb_records(response), start=1):
+            pdb_text = pdb_record["pdb"]
+            filename = pdb_record["filename"]
+            sequences = extract_pdb_sequences(pdb_text)
+            sequence = sequences.get("B") or next(iter(sequences.values()), "")
+            body = pdb_text.encode("utf-8")
+            storage_key = _candidate_artifact_key(
+                workspace_id=ctx.workspace_id,
+                run_id=ctx.run_id,
+                filename=filename,
+            )
+            sha256 = await r2_put_object(
+                bucket=config["bucket"],
+                account_id=config["account_id"],
+                access_key_id=config["access_key_id"],
+                secret_access_key=config["secret_access_key"],
+                key=storage_key,
+                body=body,
+                content_type="chemical/x-pdb",
+            )
+
+            artifact_id = await create_artifact(
+                ctx.database_url,
+                workspace_id=ctx.workspace_id,
+                run_id=ctx.run_id,
+                kind="proteina_result",
+                name=filename,
+                storage_key=storage_key,
+                content_type="chemical/x-pdb",
+                size_bytes=len(body),
+                sha256=sha256,
+            )
+            await writer.append_event(
+                run_id=ctx.run_id,
+                event_type="artifact_created",
+                title=f"Stored {filename}",
+                summary=f"Saved Proteina design {filename} to R2.",
+                display={"artifactId": artifact_id, "kind": "proteina_result"},
+            )
+
+            candidate_db_id = await create_candidate(
+                ctx.database_url,
+                workspace_id=ctx.workspace_id,
+                run_id=ctx.run_id,
+                rank=rank,
+                source="proteina_complexa",
+                title=f"Proteina design #{rank}",
+                sequence=sequence,
+                chain_ids=sorted(sequences.keys()),
+                artifact_id=artifact_id,
+                parent_inference_id=inference_id,
+            )
+            await writer.append_event(
+                run_id=ctx.run_id,
+                event_type="candidate_ranked",
+                title=f"Candidate #{rank} stored",
+                summary=f"Persisted Proteina candidate {rank}.",
+                display={
+                    "candidateId": candidate_db_id,
+                    "rank": rank,
+                    "source": "proteina_complexa",
+                },
+            )
+
+            candidates.append(
+                {
+                    "rank": rank,
+                    "filename": filename,
+                    "pdb": pdb_text,
+                    "sequence": sequence,
+                    "candidate_id": candidate_db_id,
+                    "artifact_id": artifact_id,
+                },
+            )
+    except BaseException as exc:
+        await complete_model_inference(
+            ctx.database_url,
+            inference_id=inference_id,
+            status="failed",
+            response_json={"raw": response} if not isinstance(response, dict) else response,
+            error_summary=_summarize_error(exc),
+        )
+        raise
+
     await complete_model_inference(
         ctx.database_url,
         inference_id=inference_id,
         status="completed",
         response_json={"raw": response} if not isinstance(response, dict) else response,
     )
-
-    candidates: list[dict[str, Any]] = []
-    for rank, pdb_record in enumerate(_extract_pdb_records(response), start=1):
-        pdb_text = pdb_record["pdb"]
-        filename = pdb_record["filename"]
-        sequences = extract_pdb_sequences(pdb_text)
-        sequence = sequences.get("B") or next(iter(sequences.values()), "")
-        body = pdb_text.encode("utf-8")
-        storage_key = _candidate_artifact_key(
-            workspace_id=ctx.workspace_id,
-            run_id=ctx.run_id,
-            filename=filename,
-        )
-        sha256 = await r2_put_object(
-            bucket=config["bucket"],
-            account_id=config["account_id"],
-            access_key_id=config["access_key_id"],
-            secret_access_key=config["secret_access_key"],
-            key=storage_key,
-            body=body,
-            content_type="chemical/x-pdb",
-        )
-
-        artifact_id = await create_artifact(
-            ctx.database_url,
-            workspace_id=ctx.workspace_id,
-            run_id=ctx.run_id,
-            kind="proteina_result",
-            name=filename,
-            storage_key=storage_key,
-            content_type="chemical/x-pdb",
-            size_bytes=len(body),
-            sha256=sha256,
-        )
-        await writer.append_event(
-            run_id=ctx.run_id,
-            event_type="artifact_created",
-            title=f"Stored {filename}",
-            summary=f"Saved Proteina design {filename} to R2.",
-            display={"artifactId": artifact_id, "kind": "proteina_result"},
-        )
-
-        candidate_db_id = await create_candidate(
-            ctx.database_url,
-            workspace_id=ctx.workspace_id,
-            run_id=ctx.run_id,
-            rank=rank,
-            source="proteina_complexa",
-            title=f"Proteina design #{rank}",
-            sequence=sequence,
-            chain_ids=sorted(sequences.keys()),
-            artifact_id=artifact_id,
-            parent_inference_id=inference_id,
-        )
-        await writer.append_event(
-            run_id=ctx.run_id,
-            event_type="candidate_ranked",
-            title=f"Candidate #{rank} stored",
-            summary=f"Persisted Proteina candidate {rank}.",
-            display={
-                "candidateId": candidate_db_id,
-                "rank": rank,
-                "source": "proteina_complexa",
-            },
-        )
-
-        candidates.append(
-            {
-                "rank": rank,
-                "filename": filename,
-                "pdb": pdb_text,
-                "sequence": sequence,
-                "candidate_id": candidate_db_id,
-                "artifact_id": artifact_id,
-            },
-        )
 
     return {"raw": response, "candidates": candidates}
 
@@ -301,6 +317,8 @@ async def _fold_sequences_with_chai(
         if candidate_db_id is not None:
             await update_candidate_fold_artifact(
                 ctx.database_url,
+                workspace_id=ctx.workspace_id,
+                run_id=ctx.run_id,
                 candidate_id=str(candidate_db_id),
                 fold_artifact_id=artifact_id,
             )
@@ -385,9 +403,13 @@ async def _score_candidate_interactions(
         if not isinstance(result_row, Mapping):
             continue
         item_id = str(result_row.get("id") or "")
+        # Prefer the request-side mapping: we trust the candidate_id we
+        # paired with each input over whatever the (potentially LLM-shaped)
+        # response echoes back. Fall back to the response's candidate_id
+        # only if we have no request-side entry for this item_id.
         candidate_db_id = (
-            result_row.get("candidate_id")
-            or candidate_id_by_input.get(item_id)
+            candidate_id_by_input.get(item_id)
+            or result_row.get("candidate_id")
         )
         if candidate_db_id is None:
             continue

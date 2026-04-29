@@ -5,6 +5,12 @@ import hashlib
 from typing import Any
 
 
+# TODO(MVP scale): hoist boto3 client construction out of the per-call path.
+# Building a fresh client on every put_object thrashes the cert/signer setup
+# (TLS, credential resolver, region resolver) and adds avoidable latency to
+# each artifact upload. A module-level cached client (or a small dict keyed by
+# account_id + access_key_id) would be a one-time fix. Acceptable for MVP
+# scale where the agent uploads a handful of artifacts per run.
 def _build_client(
     *,
     account_id: str,

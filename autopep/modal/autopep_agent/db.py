@@ -225,6 +225,13 @@ def map_scoring_result_to_rows(
 
 # ---------------------------------------------------------------------------
 # Persistence helpers for the MVP one-loop workflow
+#
+# TODO(MVP scale): every helper opens its own psycopg connection. Per-helper
+# connections accumulate latency and put avoidable pressure on Postgres
+# (TLS handshake, auth round-trip, search_path setup). Consider passing a
+# single connection through the call chain or introducing a connection pool
+# (e.g. psycopg_pool) when we move past the one-loop MVP. Acceptable for MVP
+# scale where each helper is called a handful of times per run.
 # ---------------------------------------------------------------------------
 
 
@@ -440,13 +447,34 @@ async def insert_candidate_scores(
     model_inference_id: str,
     rows: list[dict[str, Any]],
 ) -> None:
-    """Batch-insert ``candidate_score`` rows produced by ``map_scoring_result_to_rows``."""
+    """Batch-insert ``candidate_score`` rows produced by ``map_scoring_result_to_rows``.
+
+    ``candidate_id`` flows from LLM-controlled tool arguments, so we verify
+    that the candidate row actually belongs to ``(workspace_id, run_id)``
+    before writing any score rows. If it does not, we raise rather than
+    silently scoring a candidate from a different workspace or run.
+    """
 
     if not rows:
         return
 
     async with await psycopg.AsyncConnection.connect(database_url) as conn:
         async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select 1
+                from autopep_protein_candidate
+                where id = %s
+                  and workspace_id = %s
+                  and run_id = %s
+                """,
+                (candidate_id, workspace_id, run_id),
+            )
+            if await cur.fetchone() is None:
+                raise RuntimeError(
+                    "candidate not found in this workspace/run",
+                )
+
             for row in rows:
                 await cur.execute(
                     """
@@ -489,10 +517,18 @@ async def insert_candidate_scores(
 async def update_candidate_fold_artifact(
     database_url: str,
     *,
+    workspace_id: str,
+    run_id: str,
     candidate_id: str,
     fold_artifact_id: str,
 ) -> None:
-    """Set ``fold_artifact_id`` on an existing ``protein_candidate`` row."""
+    """Set ``fold_artifact_id`` on an existing ``protein_candidate`` row.
+
+    ``candidate_id`` flows from LLM-controlled tool arguments, so the update
+    is scoped to ``(workspace_id, run_id)``. If no row matches, raise rather
+    than silently mutating a candidate that belongs to a different
+    workspace or run.
+    """
 
     async with await psycopg.AsyncConnection.connect(database_url) as conn:
         async with conn.cursor() as cur:
@@ -501,6 +537,12 @@ async def update_candidate_fold_artifact(
                 update autopep_protein_candidate
                 set fold_artifact_id = %s
                 where id = %s
+                  and workspace_id = %s
+                  and run_id = %s
                 """,
-                (fold_artifact_id, candidate_id),
+                (fold_artifact_id, candidate_id, workspace_id, run_id),
             )
+            if cur.rowcount == 0:
+                raise RuntimeError(
+                    "candidate not found in this workspace/run",
+                )
