@@ -35,6 +35,7 @@ from autopep_agent.db import (
     mark_run_failed,
 )
 from autopep_agent.events import EventWriter
+from autopep_agent.run_context import ToolRunContext, set_tool_run_context
 from autopep_agent.streaming import normalize_stream_event
 
 
@@ -294,6 +295,22 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
             run_id=run_id,
             thread_id=thread_id,
             workspace_id=workspace_id,
+        )
+        # Install the per-run tool context BEFORE invoking Runner.run_streamed
+        # so any tool the agent calls can read URLs / API keys / DB url /
+        # workspace + run ids without the LLM ever seeing them.
+        set_tool_run_context(
+            ToolRunContext(
+                workspace_id=workspace_id,
+                run_id=run_id,
+                database_url=database_url,
+                proteina_base_url=config.modal_proteina_url,
+                proteina_api_key=config.modal_proteina_api_key,
+                chai_base_url=config.modal_chai_url,
+                chai_api_key=config.modal_chai_api_key,
+                scoring_base_url=config.modal_protein_interaction_scoring_url,
+                scoring_api_key=config.modal_protein_interaction_scoring_api_key,
+            ),
         )
         streamed_run = await _maybe_await(
             Runner.run_streamed(

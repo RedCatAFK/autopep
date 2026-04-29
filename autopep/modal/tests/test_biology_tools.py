@@ -5,7 +5,77 @@ from typing import Any
 import pytest
 
 from autopep_agent import biology_tools
+from autopep_agent.run_context import ToolRunContext, set_tool_run_context
 from autopep_agent.structure_utils import encode_structure_base64
+
+
+def _install_test_run_context() -> ToolRunContext:
+    """Install a fresh ``ToolRunContext`` for biology tools to read.
+
+    Tests use this to provide URLs / API keys that the tool implementations
+    need but the LLM never sees.
+    """
+
+    ctx = ToolRunContext(
+        workspace_id="w1",
+        run_id="r1",
+        database_url="postgresql://test:test@db.example/autopep",
+        proteina_base_url="https://proteina.example/run",
+        proteina_api_key="proteina-key",
+        chai_base_url="https://chai.example/run",
+        chai_api_key="chai-key",
+        scoring_base_url="https://scoring.example/run",
+        scoring_api_key="scoring-key",
+    )
+    set_tool_run_context(ctx)
+    return ctx
+
+
+async def _stub_db_helper(*_args: Any, **_kwargs: Any) -> str:
+    return "stub-id"
+
+
+async def _stub_void_helper(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+async def _stub_r2_put(*_args: Any, **_kwargs: Any) -> str:
+    return "deadbeef" * 8
+
+
+def _disable_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub all persistence calls so existing biology unit tests don't need DB."""
+
+    monkeypatch.setattr(biology_tools, "create_model_inference", _stub_db_helper)
+    monkeypatch.setattr(biology_tools, "complete_model_inference", _stub_void_helper)
+    monkeypatch.setattr(biology_tools, "create_artifact", _stub_db_helper)
+    monkeypatch.setattr(biology_tools, "create_candidate", _stub_db_helper)
+    monkeypatch.setattr(
+        biology_tools, "insert_candidate_scores", _stub_void_helper,
+    )
+    monkeypatch.setattr(
+        biology_tools, "update_candidate_fold_artifact", _stub_void_helper,
+    )
+    monkeypatch.setattr(biology_tools, "r2_put_object", _stub_r2_put)
+
+    class _FakeWriter:
+        def __init__(self, _url: str) -> None:
+            pass
+
+        async def append_event(self, **_kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(biology_tools, "EventWriter", _FakeWriter)
+    monkeypatch.setattr(
+        biology_tools,
+        "_r2_config_from_env",
+        lambda: {
+            "bucket": "b",
+            "account_id": "a",
+            "access_key_id": "ak",
+            "secret_access_key": "sk",
+        },
+    )
 
 
 def _atom_line(serial: int, atom: str, residue: str, chain: str, number: int) -> str:
@@ -61,6 +131,9 @@ def test_exported_biology_tools_are_agents_sdk_function_tools() -> None:
 async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_b(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
     calls: list[dict[str, Any]] = []
     response = {"pdbs": [{"filename": "design-1.pdb", "pdb": PDB_TEXT}]}
 
@@ -100,8 +173,6 @@ async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_
         hotspot_residues=["A:42"],
         binder_length_min=55,
         binder_length_max=88,
-        proteina_base_url="https://proteina.example/run",
-        proteina_api_key="proteina-key",
     )
 
     assert calls == [
@@ -115,23 +186,20 @@ async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_
             "binder_length": [55, 88],
         },
     ]
-    assert result == {
-        "raw": response,
-        "candidates": [
-            {
-                "rank": 1,
-                "filename": "design-1.pdb",
-                "pdb": PDB_TEXT,
-                "sequence": "G",
-            },
-        ],
-    }
+    assert result["raw"] == response
+    assert result["candidates"][0]["filename"] == "design-1.pdb"
+    assert result["candidates"][0]["pdb"] == PDB_TEXT
+    assert result["candidates"][0]["sequence"] == "G"
+    assert result["candidates"][0]["rank"] == 1
 
 
 @pytest.mark.asyncio
 async def test_fold_sequences_with_chai_uses_candidate_fasta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
     calls: list[dict[str, Any]] = []
     response = {"cifs": ["prediction.cif"]}
 
@@ -159,8 +227,6 @@ async def test_fold_sequences_with_chai_uses_candidate_fasta(
 
     result = await biology_tools._fold_sequences_with_chai(
         sequence_candidates=[{"id": "candidate-1", "sequence": " acde "}],
-        chai_base_url="https://chai.example/run",
-        chai_api_key="chai-key",
     )
 
     assert result == response
@@ -178,6 +244,9 @@ async def test_fold_sequences_with_chai_uses_candidate_fasta(
 async def test_score_candidate_interactions_sends_valid_scoring_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
     calls: list[dict[str, Any]] = []
     response = {"aggregate_label": "high-confidence"}
 
@@ -208,8 +277,6 @@ async def test_score_candidate_interactions_sends_valid_scoring_items(
                 "pdb": PDB_TEXT,
             },
         ],
-        scoring_base_url="https://scoring.example/run",
-        scoring_api_key="scoring-key",
     )
 
     assert result == response
