@@ -51,7 +51,7 @@ def ensure_warm_start_support(complexa_root: Path = COMPLEXA_ROOT) -> str:
     if status == "missing":
         raise RuntimeError(
             "Proteina warm-start hooks are not installed in this image. "
-            "Rebuild the Modal image with patches/proteina-warm-start.patch or use a custom Proteina-Complexa image."
+            "Rebuild the Modal image from a Proteina-Complexa fork that includes the warm-start hooks."
         )
     return status
 

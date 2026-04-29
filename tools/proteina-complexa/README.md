@@ -11,8 +11,8 @@ CLI in the Modal container, and returns generated PDB text.
   volumes, secrets, and ASGI app.
 - `proteina_complexa/config.py` names Modal paths, model paths, defaults, and
   runtime constants.
-- `proteina_complexa/modal_resources.py` builds the CUDA image, applies the
-  upstream warm-start patch, and declares Modal Volumes/Secrets.
+- `proteina_complexa/modal_resources.py` builds the CUDA image from the
+  configured Proteina-Complexa fork and declares Modal Volumes/Secrets.
 - `proteina_complexa/payloads.py` normalizes the HTTP JSON contract.
 - `proteina_complexa/preprocessing.py` parses CIF/PDB text into sequence and
   C-alpha metadata.
@@ -21,8 +21,6 @@ CLI in the Modal container, and returns generated PDB text.
 - `proteina_complexa/warm_start.py` contains optional seed-binder support.
 - `proteina_complexa/design.py` builds and runs the `complexa design` command.
 - `proteina_complexa/http_server.py` owns FastAPI routes and response shaping.
-- `patches/proteina-warm-start.patch` is the upstream Proteina-Complexa patch
-  applied during Modal image build.
 
 Generated run outputs belong under `runs/` and should not be committed.
 
@@ -42,12 +40,12 @@ The usual cold-start binder path is:
 
 Warm start is optional. When a request includes `warm_start`, the same target
 preprocessing path still runs first, then the seed binder is written under
-`/data/seed_binders`, seed-binder Hydra overrides are added, and the patched
-Complexa sampler resumes denoising from the supplied binder state. `warm_start`
-can be either one seed object or a list of seed objects; the list form keeps the
-target fixed and runs the seeds as one generation batch. If seed setup fails, the
-wrapper logs the problem and falls back to the cold path. The response reports
-this as `design.warm_start.mode: "cold"` or `"warm"`.
+`/data/seed_binders`, seed-binder Hydra overrides are added, and the
+warm-start-enabled Complexa sampler resumes denoising from the supplied binder
+state. `warm_start` can be either one seed object or a list of seed objects; the
+list form keeps the target fixed and runs the seeds as one generation batch. If
+seed setup fails, the wrapper logs the problem and falls back to the cold path.
+The response reports this as `design.warm_start.mode: "cold"` or `"warm"`.
 
 Warm-start controls:
 
@@ -57,6 +55,21 @@ Warm-start controls:
 - `chain`: optional chain selection within the seed binder.
 
 ## Modal Resources
+
+The Modal image clones the configured Proteina-Complexa fork directly:
+
+- `COMPLEXA_REPO_URL=https://github.com/RedCatAFK/Proteina-Complexa.git`
+- `COMPLEXA_REPO_REF=dev`
+
+That fork/ref must contain the warm-start hooks. The image build validates the
+hooks before installing the Complexa environment so deployment uses committed
+source directly. The fork must be cloneable from Modal during image build.
+
+To populate the fork and deploy in one step after the GitHub fork exists:
+
+```bash
+./scripts/bootstrap_complexa_fork_and_deploy.sh
+```
 
 The service expects these resources in the `autopep` workspace's `main`
 environment:
@@ -116,6 +129,20 @@ Authentication accepts any of:
 `POST /predict.pdb`, or `"return_format": "pdb"` return the first generated PDB
 as `chemical/x-pdb`.
 
+Target fields:
+
+- `target_input` selects the target residues Complexa sees, using chain and
+  residue ranges such as `A1-162`.
+- `hotspot_residues` is an optional list of target residues that Complexa should
+  treat as interface hotspots. Each value is a chain ID followed by the residue
+  number from the supplied target structure, for example `A45`. During target
+  preprocessing those IDs are converted into Complexa's target hotspot mask and
+  passed through the generated Hydra target config, so generation is conditioned
+  toward making binder contacts at those target positions. Use `[]` when you do
+  not want hotspot conditioning beyond the selected `target_input`.
+- `binder_length` is the inclusive binder length range, `[min_length,
+  max_length]`.
+
 ```bash
 curl -X POST "$PROTEINA_COMPLEXA_MODAL_URL/design" \
   -H "X-API-Key: $PROTEINA_COMPLEXA_API_KEY" \
@@ -129,7 +156,7 @@ curl -X POST "$PROTEINA_COMPLEXA_MODAL_URL/design" \
     "filename": "102L.cif",
     "name": "target_102L",
     "target_input": "A1-162",
-    "hotspot_residues": [],
+    "hotspot_residues": ["A45"],
     "binder_length": [60, 120]
   },
   "warm_start": {
@@ -217,7 +244,7 @@ Response shape:
 For a lightweight local parse without Modal/GPU work:
 
 ```bash
-python3 scripts/preprocess_cif.py /path/to/target.cif \
+python3 -m proteina_complexa.preprocess_structure /path/to/target.cif \
   --target-name my_target \
   --target-input A1-150 \
   --output-dir preprocessed

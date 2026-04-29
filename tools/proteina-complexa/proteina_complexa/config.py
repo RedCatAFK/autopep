@@ -7,9 +7,8 @@ APP_NAME = "proteina-complexa"
 SECRET_NAME = "proteina-complexa-api-key"
 API_KEY_ENV = "PROTEINA_COMPLEXA_API_KEY"
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-WARM_START_PATCH_PATH = REPO_ROOT / "patches" / "proteina-warm-start.patch"
-WARM_START_PATCH_REMOTE_PATH = Path("/tmp/proteina-warm-start.patch")
+COMPLEXA_REPO_URL = "https://github.com/RedCatAFK/Proteina-Complexa.git"
+COMPLEXA_REPO_REF = "dev"
 
 MODEL_REPO_ID = "nvidia/NV-Proteina-Complexa-Protein-Target-160M-v1"
 MODEL_SUBDIR = "protein-target-160m"

@@ -12,25 +12,35 @@ from unittest import mock
 
 
 class _FakeImage:
+    def __init__(self):
+        self.calls = []
+
     def apt_install(self, *args, **kwargs):
+        self.calls.append(("apt_install", args, kwargs))
         return self
 
     def run_commands(self, *args, **kwargs):
+        self.calls.append(("run_commands", args, kwargs))
         return self
 
     def pip_install(self, *args, **kwargs):
+        self.calls.append(("pip_install", args, kwargs))
         return self
 
     def env(self, *args, **kwargs):
+        self.calls.append(("env", args, kwargs))
         return self
 
     def workdir(self, *args, **kwargs):
+        self.calls.append(("workdir", args, kwargs))
         return self
 
     def add_local_python_source(self, *args, **kwargs):
+        self.calls.append(("add_local_python_source", args, kwargs))
         return self
 
     def add_local_file(self, *args, **kwargs):
+        self.calls.append(("add_local_file", args, kwargs))
         return self
 
 
@@ -107,6 +117,31 @@ class DesignCommandTests(unittest.TestCase):
         modal_app = importlib.import_module("modal_app")
 
         self.assertTrue(callable(modal_app.fastapi_app))
+
+    def test_modal_image_clones_configured_fork_without_patch_upload(self) -> None:
+        config = importlib.import_module("proteina_complexa.config")
+        modal_resources = importlib.import_module("proteina_complexa.modal_resources")
+        image_calls = modal_resources.image.calls
+        run_commands = [
+            command
+            for method_name, args, _kwargs in image_calls
+            if method_name == "run_commands"
+            for command in args
+        ]
+
+        self.assertTrue(
+            any(
+                config.COMPLEXA_REPO_URL in command
+                and f"--branch {config.COMPLEXA_REPO_REF}" in command
+                for command in run_commands
+            )
+        )
+        self.assertTrue(
+            any("Proteina warm-start hooks: present in forked source" in command for command in run_commands)
+        )
+        self.assertFalse(any(method_name == "add_local_file" for method_name, _args, _kwargs in image_calls))
+        self.assertFalse(any("git apply" in command for command in run_commands))
+        self.assertFalse(any("proteina-warm-start.patch" in command for command in run_commands))
 
     def test_steps_are_appended_after_hydra_overrides(self) -> None:
         command = commands.design_command(

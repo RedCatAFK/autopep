@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from shlex import quote
+
 import modal
 
 from .config import (
     APP_NAME,
     COMPLEXA_ROOT,
+    COMPLEXA_REPO_REF,
+    COMPLEXA_REPO_URL,
     MODEL_DIR,
     SECRET_NAME,
-    WARM_START_PATCH_PATH,
-    WARM_START_PATCH_REMOTE_PATH,
 )
 
 
@@ -21,12 +23,33 @@ api_secret = modal.Secret.from_name(SECRET_NAME)
 
 app = modal.App(APP_NAME)
 
+
+def _clone_complexa_command() -> str:
+    return (
+        "git clone --depth 1 "
+        f"--branch {quote(COMPLEXA_REPO_REF)} "
+        f"{quote(COMPLEXA_REPO_URL)} "
+        f"{quote(str(COMPLEXA_ROOT))}"
+    )
+
+
+def _require_warm_start_hooks_command() -> str:
+    return (
+        f"cd {quote(str(COMPLEXA_ROOT))} && "
+        "grep -q seed_binder_pdb_path src/proteinfoundation/datasets/gen_dataset.py && "
+        "grep -q _seed_binder_list src/proteinfoundation/datasets/gen_dataset.py && "
+        "grep -q warm_start_initial_state src/proteinfoundation/proteina.py && "
+        "grep -q warm_start_checkpoints src/proteinfoundation/search/beam_search.py && "
+        "echo 'Proteina warm-start hooks: present in forked source'"
+    )
+
+
 image = (
     modal.Image.from_registry("nvcr.io/nvidia/pytorch:24.08-py3")
     .apt_install("git", "rsync", "curl", "libxrender1", "libxext6")
     .run_commands(
-        "git clone --depth 1 --branch dev https://github.com/NVIDIA-Digital-Bio/Proteina-Complexa "
-        f"{COMPLEXA_ROOT}",
+        _clone_complexa_command(),
+        _require_warm_start_hooks_command(),
         f"cd {COMPLEXA_ROOT} && bash env/build_uv_env.sh --root /workspace/",
     )
     .pip_install("fastapi==0.115.12")
@@ -50,22 +73,5 @@ image = (
         }
     )
     .workdir(str(COMPLEXA_ROOT))
-    .add_local_file(
-        str(WARM_START_PATCH_PATH),
-        remote_path=str(WARM_START_PATCH_REMOTE_PATH),
-        copy=True,
-    )
-    .run_commands(
-        "cd {root} && "
-        "if git apply --reverse --check {patch} >/dev/null 2>&1; then "
-        "echo 'Proteina warm-start patch: already-applied'; "
-        "elif grep -q seed_binder_pdb_path src/proteinfoundation/datasets/gen_dataset.py "
-        "&& grep -q _seed_binder_list src/proteinfoundation/datasets/gen_dataset.py "
-        "&& grep -q warm_start_initial_state src/proteinfoundation/proteina.py "
-        "&& grep -q warm_start_checkpoints src/proteinfoundation/search/beam_search.py; then "
-        "echo 'Proteina warm-start patch: native'; "
-        "else git apply {patch}; "
-        "fi".format(root=COMPLEXA_ROOT, patch=WARM_START_PATCH_REMOTE_PATH)
-    )
     .add_local_python_source("proteina_complexa")
 )

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import gzip
+import tempfile
 import unittest
+from pathlib import Path
 
+from proteina_complexa.http_smoke_payload import build_http_smoke_payload
+from proteina_complexa.preprocess_structure import preprocess_structure_summary
 from proteina_complexa.preprocessing import preprocess_cif_text, sanitize_name
 
 
@@ -55,6 +60,54 @@ class PreprocessingTests(unittest.TestCase):
 
     def test_sanitize_name(self) -> None:
         self.assertEqual(sanitize_name("6m0j target.cif"), "target_6m0j_target_cif")
+
+    def test_preprocess_structure_summary_preserves_script_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cif_path = tmp_path / "102L.cif"
+            output_dir = tmp_path / "preprocessed"
+            cif_path.write_text(SAMPLE_CIF)
+
+            summary = preprocess_structure_summary(
+                cif_path,
+                target_name="target_102L",
+                target_input="A1-2",
+                output_dir=output_dir,
+            )
+
+            self.assertEqual(summary["target_name"], "target_102L")
+            self.assertEqual(summary["length"], 3)
+            self.assertEqual(summary["target_input"], "A1-2")
+            self.assertIn("++generation.task_name=target_102L", summary["hydra_overrides"])
+            self.assertTrue(Path(summary["outputs"]["json"]).is_file())
+            self.assertTrue(Path(summary["outputs"]["fasta"]).is_file())
+
+    def test_http_smoke_payload_reads_target_and_gzipped_seed_binders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target_path = tmp_path / "target.cif"
+            seed_path = tmp_path / "seed.cif.gz"
+            target_path.write_text(SAMPLE_CIF)
+            with gzip.open(seed_path, "wt") as handle:
+                handle.write(SAMPLE_CIF)
+
+            payload = build_http_smoke_payload(
+                target_cif=target_path,
+                seed_binders=[seed_path],
+                target_name="target_102L",
+                target_input="A1-162",
+                binder_length=[60, 120],
+                hotspot_residues=[],
+                seed_binder_chain="B",
+                seed_binder_noise_level=0.5,
+                run_name="target_102L_http_warm_test",
+            )
+
+        self.assertEqual(payload["action"], "smoke-cif")
+        self.assertEqual(payload["target"]["filename"], "target.cif")
+        self.assertEqual(payload["warm_start"][0]["filename"], "seed.cif")
+        self.assertEqual(payload["warm_start"][0]["chain"], "B")
+        self.assertIn("data_sample", payload["target"]["structure"])
 
 
 if __name__ == "__main__":
