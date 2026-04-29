@@ -55,6 +55,9 @@ yarn-error.log*
 .cache/
 .superpowers/
 .worktrees/
+tools/chai-1/chai_outputs/
 
 .env
 .env.local
+
+data
