@@ -276,7 +276,7 @@
 					"type": "text",
 					"primaryKey": false,
 					"notNull": true,
-					"default": "'gpt-5.5'"
+					"default": "'gpt-5.4'"
 				},
 				"agent_name": {
 					"name": "agent_name",

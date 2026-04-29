@@ -1,0 +1,1 @@
+ALTER TABLE "autopep_agent_run" ALTER COLUMN "model" SET DEFAULT 'gpt-5.5';

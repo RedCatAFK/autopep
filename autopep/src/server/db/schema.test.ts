@@ -88,20 +88,28 @@ describe("Autopep schema", () => {
 		);
 	});
 
-	it("ships the model default bump as a forward ALTER in 0004, not an in-place 0003 edit", () => {
+	it("ships the model default bump as a dedicated forward 0005 migration, not an in-place edit of an already-applied migration", () => {
 		const baseMigrationSql = readFileSync(
 			resolve(process.cwd(), "drizzle/0003_smooth_sasquatch.sql"),
 			"utf8",
 		);
-		const forwardMigrationSql = readFileSync(
+		const smokeEnumMigrationSql = readFileSync(
 			resolve(process.cwd(), "drizzle/0004_smoke_task_kinds.sql"),
+			"utf8",
+		);
+		const modelDefaultMigrationSql = readFileSync(
+			resolve(process.cwd(), "drizzle/0005_public_black_crow.sql"),
 			"utf8",
 		);
 
 		// 0003 must keep its original 'gpt-5.4' default — already-applied 0003
 		// will not retroactively pick up an in-place edit.
 		expect(baseMigrationSql).toContain("\"model\" text DEFAULT 'gpt-5.4'");
-		expect(forwardMigrationSql).toContain(
+		// 0004 was already applied to prod; it must contain only the smoke enum
+		// adds and must NOT carry the model default bump (which was added later).
+		expect(smokeEnumMigrationSql).not.toContain("ALTER COLUMN \"model\"");
+		// 0005 carries the forward ALTER that flips existing prod DBs to gpt-5.5.
+		expect(modelDefaultMigrationSql).toContain(
 			"ALTER TABLE \"autopep_agent_run\" ALTER COLUMN \"model\" SET DEFAULT 'gpt-5.5'",
 		);
 	});
