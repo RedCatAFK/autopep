@@ -131,7 +131,7 @@ export function MolstarStage({
 							<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,rgba(33,126,104,0.04),transparent_40%)]" />
 						</>
 					) : (
-						<div className="flex h-full items-center justify-center text-sm text-[#7a817a]">
+						<div className="flex h-full items-center justify-center text-[#7a817a] text-sm">
 							Select a candidate or open a structure file.
 						</div>
 					)}

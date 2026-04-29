@@ -209,7 +209,7 @@ export function MolstarViewer({
 			/>
 
 			{!url ? (
-				<div className="flex h-full items-center justify-center text-sm text-[#7a817a]">
+				<div className="flex h-full items-center justify-center text-[#7a817a] text-sm">
 					Select a candidate or open a structure file.
 				</div>
 			) : null}
