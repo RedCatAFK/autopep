@@ -87,17 +87,6 @@ export function ChatPanel({
 	return (
 		<aside className="flex min-h-0 flex-col border-[#e5e2d9] border-r bg-[#fbfaf6]">
 			<div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-				<header className="mb-5">
-					<p className="text-[#7a817a] text-xs uppercase">Agent Workspace</p>
-					<h2 className="mt-2 font-semibold text-[#17211e] text-xl">
-						Ask Autopep
-					</h2>
-					<p className="mt-2 text-[#68726c] text-sm leading-6">
-						Use the chat as the control surface. Runs, tools, artifacts, and
-						scores stay attached to the same ledger.
-					</p>
-				</header>
-
 				{hasMessages ? (
 					<div className="space-y-3">
 						{messages.map((message) => (
@@ -135,12 +124,6 @@ export function ChatPanel({
 				)}
 
 				<div className="mt-6">
-					<div className="mb-2 flex items-center justify-between gap-3">
-						<p className="font-medium text-[#3c4741] text-sm">Run Trace</p>
-						<p className="font-mono text-[#747b74] text-xs tabular-nums">
-							{events.length} event{events.length === 1 ? "" : "s"}
-						</p>
-					</div>
 					{events.length > 0 ? (
 						<div className="border-[#e5e2d9] border-t">
 							{events.map((event) => (

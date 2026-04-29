@@ -104,32 +104,24 @@ export function RecipeManager({
 
 	return (
 		<section className="px-4 py-4">
-			<div className="flex items-start justify-between gap-3">
-				<div>
-					<p className="text-[#7a817a] text-xs uppercase">Recipes</p>
-					<h2 className="mt-2 font-semibold text-[#17211e] text-lg">
-						Run instructions
-					</h2>
-				</div>
-				<button
-					aria-label="Create recipe"
-					className="flex size-9 items-center justify-center rounded-md border border-[#d7d4c9] bg-[#fffef9] text-[#40504a] transition-colors duration-200 hover:border-[#cbd736] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45"
-					disabled={isDisabled}
-					onClick={() => {
-						setIsCreating(true);
-						setActiveRecipeId(null);
-						setDraft({
-							bodyMarkdown: "",
-							description: null,
-							enabledByDefault: true,
-							name: "",
-						});
-					}}
-					type="button"
-				>
-					<Plus aria-hidden="true" size={18} />
-				</button>
-			</div>
+			<button
+				aria-label="Create recipe"
+				className="inline-flex size-7 items-center justify-center rounded-md text-[#40504a] transition-colors duration-200 hover:bg-[#f0efe8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45"
+				disabled={isDisabled}
+				onClick={() => {
+					setIsCreating(true);
+					setActiveRecipeId(null);
+					setDraft({
+						bodyMarkdown: "",
+						description: null,
+						enabledByDefault: true,
+						name: "",
+					});
+				}}
+				type="button"
+			>
+				<Plus aria-hidden="true" size={18} />
+			</button>
 
 			<div className="mt-4 flex flex-wrap gap-1.5">
 				{recipes.length === 0 ? (

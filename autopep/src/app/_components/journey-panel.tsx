@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, CircleNotch, TreeStructure } from "@phosphor-icons/react";
+import { Check, CircleNotch } from "@phosphor-icons/react";
 
 type Score = {
 	candidateId: string;
@@ -35,7 +35,6 @@ export function JourneyPanel({
 	artifacts,
 	candidateScores,
 	candidates,
-	objective,
 }: JourneyPanelProps) {
 	const scoreByCandidate = new Map<string, Score[]>();
 	for (const score of candidateScores) {
@@ -50,22 +49,7 @@ export function JourneyPanel({
 
 	return (
 		<section className="border-[#e5e2d9] border-b px-4 py-4">
-			<div className="flex items-start justify-between gap-3">
-				<div className="min-w-0">
-					<p className="text-[#7a817a] text-xs uppercase">Design Journey</p>
-					<h2 className="mt-2 font-semibold text-[#17211e] text-lg">
-						One-loop screen
-					</h2>
-					<p className="mt-2 line-clamp-2 text-[#68726c] text-xs leading-5">
-						{objective}
-					</p>
-				</div>
-				<div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-[#d7d4c9] bg-[#fffef9] text-[#40504a]">
-					<TreeStructure aria-hidden="true" size={18} />
-				</div>
-			</div>
-
-			<div className="mt-4 space-y-2">
+			<div className="space-y-2">
 				{milestones.map((milestone, index) => {
 					const done =
 						index < 3
