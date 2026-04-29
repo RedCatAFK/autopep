@@ -1,50 +1,109 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import type { ChatPanelSendInput } from "@/app/_components/chat-panel";
+import type { ProteinSelection } from "@/app/_components/molstar-stage";
+import type { RecipeInput } from "@/app/_components/recipe-manager";
 import { api } from "@/trpc/react";
 import {
 	type WorkspaceArtifact,
 	type WorkspaceCandidate,
+	type WorkspaceCandidateScore,
 	type WorkspaceChatMessage,
 	type WorkspaceEvent,
 	WorkspaceShell,
 } from "./workspace-shell";
 
-const MolstarViewer = dynamic(
-	() => import("./molstar-viewer").then((mod) => mod.MolstarViewer),
-	{ ssr: false },
-);
-
 const spikeGoal = "Design a protein binder for SARS-CoV-2 spike RBD";
 
 export function AutopepWorkspace() {
 	const utils = api.useUtils();
-	const [chatMessages, setChatMessages] = useState<WorkspaceChatMessage[]>([
-		{
-			id: "welcome",
-			role: "assistant",
-			text: "Ask about run status, ranked PDB structures, bioRxiv/PubMed evidence, or CIF readiness.",
-		},
-	]);
-	const workspace = api.workspace.getLatestWorkspace.useQuery(undefined, {
+	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
+		null,
+	);
+
+	const workspacesQuery = api.workspace.listWorkspaces.useQuery();
+	const latestWorkspace = api.workspace.getLatestWorkspace.useQuery(undefined, {
 		refetchInterval: (query) => {
 			const status = query.state.data?.activeRun?.status;
 			return status === "queued" || status === "running" ? 2000 : false;
 		},
 	});
+	const selectedWorkspace = api.workspace.getWorkspace.useQuery(
+		{
+			workspaceId: activeWorkspaceId ?? "00000000-0000-4000-8000-000000000000",
+		},
+		{
+			enabled: Boolean(activeWorkspaceId),
+			refetchInterval: (query) => {
+				const status = query.state.data?.activeRun?.status;
+				return status === "queued" || status === "running" ? 2000 : false;
+			},
+		},
+	);
 
-	const createRun = api.workspace.createProjectRun.useMutation({
-		onSuccess: async () => {
-			await utils.workspace.getLatestWorkspace.invalidate();
+	const payload = selectedWorkspace.data ?? latestWorkspace.data;
+
+	useEffect(() => {
+		if (!activeWorkspaceId && latestWorkspace.data?.workspace.id) {
+			setActiveWorkspaceId(latestWorkspace.data.workspace.id);
+		}
+	}, [activeWorkspaceId, latestWorkspace.data?.workspace.id]);
+
+	const invalidateWorkspace = async (workspaceId?: string | null) => {
+		await Promise.all([
+			utils.workspace.listWorkspaces.invalidate(),
+			utils.workspace.getLatestWorkspace.invalidate(),
+			workspaceId
+				? utils.workspace.getWorkspace.invalidate({ workspaceId })
+				: Promise.resolve(),
+		]);
+	};
+
+	const createWorkspace = api.workspace.createWorkspace.useMutation({
+		onSuccess: async (result) => {
+			setActiveWorkspaceId(result.workspace.id);
+			await invalidateWorkspace(result.workspace.id);
 		},
 	});
-	const answerQuestion = api.workspace.answerQuestion.useMutation();
+	const archiveWorkspace = api.workspace.archiveWorkspace.useMutation({
+		onSuccess: async () => {
+			setActiveWorkspaceId(null);
+			await invalidateWorkspace();
+		},
+	});
+	const sendMessage = api.workspace.sendMessage.useMutation({
+		onSuccess: async (result) => {
+			setActiveWorkspaceId(result.workspace.id);
+			await invalidateWorkspace(result.workspace.id);
+		},
+	});
+	const createContextReference =
+		api.workspace.createContextReference.useMutation({
+			onSuccess: async (_reference, variables) => {
+				await invalidateWorkspace(variables.workspaceId);
+			},
+		});
+	const createRecipe = api.workspace.createRecipe.useMutation({
+		onSuccess: async (_result, variables) => {
+			await invalidateWorkspace(variables.workspaceId);
+		},
+	});
+	const updateRecipe = api.workspace.updateRecipe.useMutation({
+		onSuccess: async (_result, variables) => {
+			await invalidateWorkspace(variables.workspaceId);
+		},
+	});
+	const archiveRecipe = api.workspace.archiveRecipe.useMutation({
+		onSuccess: async () => {
+			await invalidateWorkspace(activeWorkspaceId);
+		},
+	});
 
 	const candidates = useMemo<WorkspaceCandidate[]>(
 		() =>
-			(workspace.data?.candidates ?? []).map((candidate) => ({
+			(payload?.candidates ?? []).map((candidate) => ({
 				citationJson: candidate.citationJson,
 				id: candidate.id,
 				method: candidate.method,
@@ -57,35 +116,86 @@ export function AutopepWorkspace() {
 				selectionRationale: candidate.selectionRationale,
 				title: candidate.title,
 			})),
-		[workspace.data?.candidates],
+		[payload?.candidates],
 	);
 
 	const events = useMemo<WorkspaceEvent[]>(
 		() =>
-			(workspace.data?.events ?? []).map((event) => ({
+			(payload?.events ?? []).map((event) => ({
 				detail: event.detail,
+				displayJson: event.displayJson,
 				id: event.id,
 				payloadJson: event.payloadJson,
+				rawJson: event.rawJson,
 				sequence: event.sequence,
+				summary: event.summary,
 				title: event.title,
 				type: event.type,
 			})),
-		[workspace.data?.events],
+		[payload?.events],
 	);
 
 	const artifacts = useMemo<WorkspaceArtifact[]>(
 		() =>
-			(workspace.data?.artifacts ?? []).map((artifact) => ({
+			(payload?.artifacts ?? []).map((artifact) => ({
 				byteSize: artifact.byteSize,
 				candidateId: artifact.candidateId,
 				fileName: artifact.fileName,
 				id: artifact.id,
+				kind: artifact.kind,
+				name: artifact.name,
 				signedUrl: artifact.signedUrl,
 				sourceUrl: artifact.sourceUrl,
 				type: artifact.type,
 			})),
-		[workspace.data?.artifacts],
+		[payload?.artifacts],
 	);
+
+	const candidateScores = useMemo<WorkspaceCandidateScore[]>(
+		() =>
+			(payload?.candidateScores ?? []).map((score) => ({
+				candidateId: score.candidateId,
+				label: score.label,
+				scorer: score.scorer,
+				unit: score.unit,
+				value: score.value,
+			})),
+		[payload?.candidateScores],
+	);
+
+	const messages = useMemo<WorkspaceChatMessage[]>(
+		() =>
+			(payload?.messages ?? []).map((message) => ({
+				content: message.content,
+				id: message.id,
+				role: message.role as "assistant" | "system" | "user",
+			})),
+		[payload?.messages],
+	);
+
+	const recipes = useMemo(
+		() =>
+			(payload?.recipes ?? [])
+				.filter((recipe) => !recipe.archivedAt)
+				.map((recipe) => ({
+					bodyMarkdown: recipe.bodyMarkdown,
+					description: recipe.description,
+					enabledByDefault: recipe.enabledByDefault,
+					id: recipe.id,
+					name: recipe.name,
+				})),
+		[payload?.recipes],
+	);
+
+	const contextReferences = useMemo(
+		() =>
+			(payload?.contextReferences ?? []).map((reference) => ({
+				id: reference.id,
+				label: reference.label,
+			})),
+		[payload?.contextReferences],
+	);
+
 	const artifactRows = artifacts;
 	const findCifArtifact = (candidateId?: string) =>
 		artifactRows.find(
@@ -96,7 +206,7 @@ export function AutopepWorkspace() {
 		artifactRows.find(
 			(artifact) =>
 				(!candidateId || artifact.candidateId === candidateId) &&
-				artifact.type === "source_cif",
+				(artifact.type === "source_cif" || artifact.kind === "mmcif"),
 		) ??
 		null;
 	const selectedCandidate =
@@ -108,106 +218,105 @@ export function AutopepWorkspace() {
 		null;
 	const selectedArtifact =
 		findCifArtifact(selectedCandidate?.id) ?? findCifArtifact();
-	const targetName =
-		workspace.data?.targetEntities[0]?.name ??
-		inferTargetName(workspace.data?.activeRun?.prompt) ??
-		"SARS-CoV-2 spike RBD";
-	const projectGoal = workspace.data?.project.goal ?? spikeGoal;
+	const projectGoal = payload?.project.goal || spikeGoal;
+	const currentWorkspaceId = activeWorkspaceId ?? payload?.workspace.id ?? null;
+
+	const sendWorkspaceMessage = (input: ChatPanelSendInput) => {
+		sendMessage.mutate({
+			contextRefs: input.contextRefs,
+			prompt: input.prompt,
+			recipeRefs: input.recipeRefs,
+			workspaceId: currentWorkspaceId ?? undefined,
+		});
+	};
+
+	const createWorkspaceFromRail = () => {
+		createWorkspace.mutate({
+			description: "New Autopep workspace",
+			name: "Untitled workspace",
+		});
+	};
+
+	const createRecipeForWorkspace = (input: RecipeInput) => {
+		if (!currentWorkspaceId) {
+			return;
+		}
+		createRecipe.mutate({ ...input, workspaceId: currentWorkspaceId });
+	};
+
+	const updateRecipeForWorkspace = (
+		input: RecipeInput & { recipeId: string },
+	) => {
+		if (!currentWorkspaceId) {
+			return;
+		}
+		updateRecipe.mutate({ ...input, workspaceId: currentWorkspaceId });
+	};
+
+	const archiveRecipeForWorkspace = (recipeId: string) => {
+		archiveRecipe.mutate({ recipeId });
+	};
+
+	const createProteinSelectionReference = (selection: ProteinSelection) => {
+		if (!currentWorkspaceId) {
+			return;
+		}
+		createContextReference.mutate({
+			artifactId: selection.artifactId,
+			candidateId: selection.candidateId,
+			kind: "protein_selection",
+			label: selection.label,
+			selector: selection.selector,
+			workspaceId: currentWorkspaceId,
+		});
+	};
 
 	return (
 		<WorkspaceShell
-			artifactLabel={selectedArtifact?.fileName ?? "No CIF artifact yet"}
+			activeRunStatus={payload?.activeRun?.status ?? null}
+			activeWorkspaceId={currentWorkspaceId}
 			artifacts={artifacts}
+			candidateScores={candidateScores}
 			candidates={candidates}
-			chatMessages={chatMessages}
+			chatMessages={messages}
+			contextReferences={contextReferences}
 			events={events}
-			isAnsweringQuestion={answerQuestion.isPending}
-			isCreatingRun={createRun.isPending}
-			isLoadingWorkspace={workspace.isLoading || workspace.isFetching}
-			onAskQuestion={(question) => {
-				const userMessage: WorkspaceChatMessage = {
-					id: `user-${Date.now()}`,
-					role: "user",
-					text: question,
-				};
-				setChatMessages((messages) => [...messages, userMessage]);
-				answerQuestion.mutate(
-					{
-						projectId: workspace.data?.project.id,
-						question,
-					},
-					{
-						onError: (error) => {
-							setChatMessages((messages) => [
-								...messages,
-								{
-									id: `assistant-error-${Date.now()}`,
-									role: "assistant",
-									text: error.message,
-								},
-							]);
-						},
-						onSuccess: (result) => {
-							setChatMessages((messages) => [
-								...messages,
-								{
-									id: `assistant-${Date.now()}`,
-									role: "assistant",
-									text: result.answer,
-								},
-							]);
-						},
-					},
-				);
-			}}
+			isChatDisabled={!currentWorkspaceId}
+			isLoadingWorkspace={
+				latestWorkspace.isLoading ||
+				selectedWorkspace.isLoading ||
+				latestWorkspace.isFetching ||
+				selectedWorkspace.isFetching
+			}
+			isRecipeDisabled={!currentWorkspaceId}
+			isSavingRecipe={
+				createRecipe.isPending ||
+				updateRecipe.isPending ||
+				archiveRecipe.isPending
+			}
+			isSendingMessage={sendMessage.isPending}
+			onArchiveRecipe={archiveRecipeForWorkspace}
+			onArchiveWorkspace={(workspaceId) =>
+				archiveWorkspace.mutate({ workspaceId })
+			}
+			onCreateRecipe={createRecipeForWorkspace}
+			onCreateWorkspace={createWorkspaceFromRail}
+			onProteinSelection={createProteinSelectionReference}
 			onRefresh={() => {
-				void workspace.refetch();
+				void invalidateWorkspace(currentWorkspaceId);
 			}}
-			onStartGoal={(goal, options) => {
-				createRun.mutate({
-					goal,
-					name: inferProjectName(goal),
-					topK: options?.topK ?? 5,
-				});
-			}}
+			onSelectWorkspace={setActiveWorkspaceId}
+			onSendMessage={sendWorkspaceMessage}
+			onUpdateRecipe={updateRecipeForWorkspace}
 			projectGoal={projectGoal}
-			runStatus={workspace.data?.activeRun?.status ?? null}
+			recipes={recipes}
 			selectedArtifact={selectedArtifact ?? null}
 			selectedCandidate={selectedCandidate}
-			targetName={targetName}
-		>
-			<MolstarViewer
-				label={selectedArtifact?.fileName ?? "Awaiting CIF"}
-				url={selectedArtifact?.sourceUrl ?? selectedArtifact?.signedUrl ?? null}
-			/>
-		</WorkspaceShell>
+			workspaces={(workspacesQuery.data ?? []).map((workspace) => ({
+				description: workspace.description,
+				id: workspace.id,
+				name: workspace.name,
+			}))}
+		/>
 	);
-}
-
-function inferTargetName(prompt?: string | null) {
-	if (!prompt) {
-		return null;
-	}
-
-	const normalized = prompt.toLowerCase();
-	if (normalized.includes("3cl")) {
-		return "3CL-protease";
-	}
-	if (normalized.includes("spike") || normalized.includes("rbd")) {
-		return "SARS-CoV-2 spike RBD";
-	}
-
-	return prompt.length > 46 ? `${prompt.slice(0, 43)}...` : prompt;
-}
-
-function inferProjectName(goal: string) {
-	const normalized = goal.toLowerCase();
-	if (normalized.includes("3cl") || normalized.includes("protease")) {
-		return "3CL-protease binder";
-	}
-	if (normalized.includes("spike") || normalized.includes("rbd")) {
-		return "Spike RBD binder";
-	}
-
-	return goal.length > 80 ? `${goal.slice(0, 77)}...` : goal;
 }

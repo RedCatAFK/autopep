@@ -150,7 +150,10 @@ export const getWorkspacePayload = async ({
 				})
 			: Promise.resolve([]),
 		db.query.recipes.findMany({
-			where: eq(recipes.workspaceId, workspace.id),
+			where: and(
+				eq(recipes.workspaceId, workspace.id),
+				isNull(recipes.archivedAt),
+			),
 			orderBy: [asc(recipes.name)],
 		}),
 		db.query.contextReferences.findMany({

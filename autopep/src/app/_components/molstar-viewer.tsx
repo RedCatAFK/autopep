@@ -8,7 +8,15 @@ import { useEffect, useRef, useState } from "react";
 import { proteinTargetPreview } from "@/app/_components/protein-preview-image";
 
 type MolstarViewerProps = {
+	artifactId?: string | null;
+	candidateId?: string | null;
 	label: string;
+	onProteinSelection?: (selection: {
+		artifactId: string;
+		candidateId: string | null;
+		label: string;
+		selector: Record<string, unknown>;
+	}) => void;
 	url: string | null;
 };
 
@@ -23,16 +31,42 @@ const fitViewer = (plugin: PluginUIContext | null) => {
 	plugin.managers.camera.reset(undefined, 0);
 };
 
-export function MolstarViewer({ label, url }: MolstarViewerProps) {
+export function MolstarViewer({
+	artifactId = null,
+	candidateId = null,
+	label,
+	onProteinSelection,
+	url,
+}: MolstarViewerProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const pluginRef = useRef<PluginUIContext | null>(null);
+	const selectionRef = useRef({
+		artifactId,
+		candidateId,
+		label,
+		onProteinSelection,
+	});
+	const selectionSubscriptionRef = useRef<{ unsubscribe: () => void } | null>(
+		null,
+	);
 	const loadIdRef = useRef(0);
 	const loadQueueRef = useRef<Promise<void>>(Promise.resolve());
 	const [error, setError] = useState<string | null>(null);
 	const [isLoading, setIsLoading] = useState(false);
 
 	useEffect(() => {
+		selectionRef.current = {
+			artifactId,
+			candidateId,
+			label,
+			onProteinSelection,
+		};
+	}, [artifactId, candidateId, label, onProteinSelection]);
+
+	useEffect(() => {
 		return () => {
+			selectionSubscriptionRef.current?.unsubscribe();
+			selectionSubscriptionRef.current = null;
 			pluginRef.current?.dispose();
 			pluginRef.current = null;
 		};
@@ -75,7 +109,37 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 
 			try {
 				const { Asset } = await import("molstar/lib/mol-util/assets");
-				const { plugin } = await getPlugin(containerRef.current, pluginRef);
+				const { created, plugin } = await getPlugin(
+					containerRef.current,
+					pluginRef,
+				);
+				if (created) {
+					selectionSubscriptionRef.current =
+						plugin.behaviors.interaction.click.subscribe((event) => {
+							const {
+								artifactId: currentArtifactId,
+								candidateId: currentCandidateId,
+								label: currentLabel,
+								onProteinSelection: currentOnProteinSelection,
+							} = selectionRef.current;
+							const loci = event.current?.loci;
+							if (!loci || !currentArtifactId || !currentOnProteinSelection) {
+								return;
+							}
+
+							const selector = serializeLoci(loci);
+							if (selector.kind === "empty-loci") {
+								return;
+							}
+
+							currentOnProteinSelection({
+								artifactId: currentArtifactId,
+								candidateId: currentCandidateId,
+								label: formatSelectionLabel(currentLabel, selector),
+								selector,
+							});
+						});
+				}
 
 				if (!isCurrentLoad()) {
 					return;
@@ -148,13 +212,13 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 			/>
 
 			{!url ? (
-				<div className="absolute inset-0 flex items-center justify-center px-8">
-					<div className="relative grid w-full max-w-[560px] place-items-center">
-						<div className="stage-orbit stage-orbit-a" />
-						<div className="stage-orbit stage-orbit-b" />
+				<div className="relative flex h-full min-h-[430px] items-center justify-center px-8 lg:min-h-0">
+					<div className="relative flex w-full max-w-[560px] flex-col items-center justify-center">
+						<div className="stage-orbit stage-orbit-a hidden md:block" />
+						<div className="stage-orbit stage-orbit-b hidden md:block" />
 						<Image
 							alt="Generated target protein preview"
-							className="relative z-[1] h-auto w-full max-w-[430px] rounded-[32px] object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
+							className="relative z-[1] h-auto w-full max-w-[430px] rounded-md object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
 							priority
 							sizes="(max-width: 768px) 82vw, 430px"
 							src={proteinTargetPreview}
@@ -205,6 +269,47 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 			) : null}
 		</div>
 	);
+}
+
+function serializeLoci(loci: unknown): Record<string, unknown> {
+	const seen = new WeakSet<object>();
+	try {
+		const raw = JSON.parse(
+			JSON.stringify(loci, (_key, value) => {
+				if (typeof value === "bigint") {
+					return value.toString();
+				}
+				if (value && typeof value === "object") {
+					if (seen.has(value)) {
+						return "[Circular]";
+					}
+					seen.add(value);
+				}
+				return value;
+			}),
+		) as Record<string, unknown>;
+
+		return {
+			kind: typeof raw.kind === "string" ? raw.kind : "molstar_loci",
+			raw,
+		};
+	} catch (cause) {
+		return {
+			error: cause instanceof Error ? cause.message : String(cause),
+			kind: "molstar_loci",
+		};
+	}
+}
+
+function formatSelectionLabel(
+	artifactLabel: string,
+	selector: Record<string, unknown>,
+) {
+	if (typeof selector.kind === "string" && selector.kind !== "molstar_loci") {
+		return `${artifactLabel} ${selector.kind.replaceAll("-", " ")}`;
+	}
+
+	return `${artifactLabel} selection`;
 }
 
 async function getPlugin(

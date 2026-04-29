@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { publicTaskKindSchema } from "@/server/agent/contracts";
@@ -15,7 +15,10 @@ import {
 	type agentEvents,
 	agentRuns,
 	type artifacts,
+	contextReferences,
 	type proteinCandidates,
+	recipes,
+	recipeVersions,
 	workspaces,
 } from "@/server/db/schema";
 import {
@@ -45,10 +48,33 @@ const runEventsInput = z.object({
 	runId: z.string().uuid(),
 });
 
+const createContextReferenceInput = z.object({
+	artifactId: z.string().uuid().nullable(),
+	candidateId: z.string().uuid().nullable(),
+	kind: z.enum([
+		"protein_selection",
+		"artifact",
+		"candidate",
+		"literature",
+		"note",
+	]),
+	label: z.string().min(1).max(160),
+	selector: z.record(z.unknown()).default({}),
+	workspaceId: z.string().uuid(),
+});
+
 const createProjectRunInput = z.object({
 	goal: z.string().min(3),
 	name: z.string().min(1).max(120).optional(),
 	topK: z.number().int().min(1).max(10).default(5),
+});
+
+const recipeInput = z.object({
+	bodyMarkdown: z.string().min(1).max(20_000),
+	description: z.string().max(1000).nullable().optional(),
+	enabledByDefault: z.boolean().default(false),
+	name: z.string().min(1).max(120),
+	workspaceId: z.string().uuid(),
 });
 
 const answerQuestionInput = z.object({
@@ -303,6 +329,189 @@ export const workspaceRouter = createTRPCRouter({
 			}
 
 			return workspace;
+		}),
+
+	createContextReference: protectedProcedure
+		.input(createContextReferenceInput)
+		.mutation(async ({ ctx, input }) => {
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, input.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+					isNull(workspaces.archivedAt),
+				),
+			});
+
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Workspace not found.",
+				});
+			}
+
+			const [reference] = await ctx.db
+				.insert(contextReferences)
+				.values({
+					artifactId: input.artifactId,
+					candidateId: input.candidateId,
+					createdById: ctx.session.user.id,
+					kind: input.kind,
+					label: input.label,
+					selectorJson: input.selector,
+					workspaceId: input.workspaceId,
+				})
+				.returning();
+
+			if (!reference) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Failed to create context reference.",
+				});
+			}
+
+			return reference;
+		}),
+
+	listRecipes: protectedProcedure
+		.input(workspaceIdInput)
+		.query(async ({ ctx, input }) => {
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, input.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+					isNull(workspaces.archivedAt),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Workspace not found.",
+				});
+			}
+
+			return ctx.db.query.recipes.findMany({
+				where: and(
+					eq(recipes.workspaceId, input.workspaceId),
+					eq(recipes.ownerId, ctx.session.user.id),
+					isNull(recipes.archivedAt),
+				),
+				orderBy: [asc(recipes.name)],
+			});
+		}),
+
+	createRecipe: protectedProcedure
+		.input(recipeInput)
+		.mutation(async ({ ctx, input }) => {
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, input.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+					isNull(workspaces.archivedAt),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Workspace not found.",
+				});
+			}
+
+			const [recipe] = await ctx.db
+				.insert(recipes)
+				.values({
+					bodyMarkdown: input.bodyMarkdown,
+					description: input.description ?? null,
+					enabledByDefault: input.enabledByDefault,
+					name: input.name,
+					ownerId: ctx.session.user.id,
+					workspaceId: input.workspaceId,
+				})
+				.returning();
+			if (!recipe) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Failed to create recipe.",
+				});
+			}
+
+			const [version] = await ctx.db
+				.insert(recipeVersions)
+				.values({
+					bodyMarkdown: input.bodyMarkdown,
+					createdById: ctx.session.user.id,
+					recipeId: recipe.id,
+					version: 1,
+				})
+				.returning();
+
+			return { recipe, version };
+		}),
+
+	updateRecipe: protectedProcedure
+		.input(recipeInput.extend({ recipeId: z.string().uuid() }))
+		.mutation(async ({ ctx, input }) => {
+			const [recipe] = await ctx.db
+				.update(recipes)
+				.set({
+					bodyMarkdown: input.bodyMarkdown,
+					description: input.description ?? null,
+					enabledByDefault: input.enabledByDefault,
+					name: input.name,
+				})
+				.where(
+					and(
+						eq(recipes.id, input.recipeId),
+						eq(recipes.ownerId, ctx.session.user.id),
+						eq(recipes.workspaceId, input.workspaceId),
+						isNull(recipes.archivedAt),
+					),
+				)
+				.returning();
+			if (!recipe) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Recipe not found.",
+				});
+			}
+
+			const latest = await ctx.db.query.recipeVersions.findFirst({
+				where: eq(recipeVersions.recipeId, recipe.id),
+				orderBy: [desc(recipeVersions.version)],
+			});
+			const [version] = await ctx.db
+				.insert(recipeVersions)
+				.values({
+					bodyMarkdown: input.bodyMarkdown,
+					createdById: ctx.session.user.id,
+					recipeId: recipe.id,
+					version: (latest?.version ?? 0) + 1,
+				})
+				.returning();
+
+			return { recipe, version };
+		}),
+
+	archiveRecipe: protectedProcedure
+		.input(z.object({ recipeId: z.string().uuid() }))
+		.mutation(async ({ ctx, input }) => {
+			const [recipe] = await ctx.db
+				.update(recipes)
+				.set({ archivedAt: new Date() })
+				.where(
+					and(
+						eq(recipes.id, input.recipeId),
+						eq(recipes.ownerId, ctx.session.user.id),
+					),
+				)
+				.returning();
+			if (!recipe) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Recipe not found.",
+				});
+			}
+
+			return recipe;
 		}),
 
 	getWorkspace: protectedProcedure

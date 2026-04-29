@@ -4,6 +4,7 @@ import {
 	agentEventTypeSchema,
 	artifactKindSchema,
 	candidateScoreSchema,
+	contextReferenceSchema,
 	endpointModelNameSchema,
 	publicTaskKindSchema,
 	runStatusSchema,
@@ -122,6 +123,21 @@ describe("Autopep runtime contracts", () => {
 		expect(scoreLabelSchema.parse("insufficient_data")).toBe(
 			"insufficient_data",
 		);
+	});
+
+	it("accepts residue-range selections produced by Mol*", () => {
+		expect(
+			contextReferenceSchema.parse({
+				artifactId: "11111111-1111-4111-8111-111111111111",
+				candidateId: "22222222-2222-4222-8222-222222222222",
+				kind: "protein_selection",
+				label: "6M0J chain A residues 41-145",
+				selector: {
+					authAsymId: "A",
+					residueRanges: [{ end: 145, start: 41 }],
+				},
+			}),
+		).toMatchObject({ kind: "protein_selection" });
 	});
 
 	it("keeps structure artifacts broad enough for source, generated, folded, and scored outputs", () => {

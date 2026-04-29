@@ -146,14 +146,19 @@ describe("workspace router procedures", () => {
 		expect(Object.keys(workspaceRouter._def.procedures)).toEqual(
 			expect.arrayContaining([
 				"archiveWorkspace",
+				"archiveRecipe",
+				"createContextReference",
 				"createProjectRun",
+				"createRecipe",
 				"createWorkspace",
 				"getLatestWorkspace",
 				"getRunEvents",
 				"getWorkspace",
+				"listRecipes",
 				"listWorkspaces",
 				"renameWorkspace",
 				"sendMessage",
+				"updateRecipe",
 			]),
 		);
 	});
@@ -306,6 +311,116 @@ describe("workspace router procedures", () => {
 				workspaceId: "22222222-2222-4222-8222-222222222222",
 			},
 			ownerId: "user-1",
+		});
+	});
+
+	it("creates a protein selection context reference in an owned workspace", async () => {
+		const workspace = {
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const reference = {
+			artifactId: "11111111-1111-4111-8111-111111111111",
+			candidateId: "33333333-3333-4333-8333-333333333333",
+			createdById: "user-1",
+			id: "55555555-5555-4555-8555-555555555555",
+			kind: "protein_selection",
+			label: "6M0J chain A residues 41-145",
+			selectorJson: {
+				authAsymId: "A",
+				residueRanges: [{ end: 145, start: 41 }],
+			},
+			workspaceId: workspace.id,
+		};
+		const referenceInsert = insertReturning(reference);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const caller = createWorkspaceCaller({
+			insert: vi.fn().mockReturnValueOnce(referenceInsert),
+			query: {
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		});
+
+		await expect(
+			caller.createContextReference({
+				artifactId: reference.artifactId,
+				candidateId: reference.candidateId,
+				kind: "protein_selection",
+				label: reference.label,
+				selector: reference.selectorJson,
+				workspaceId: workspace.id,
+			}),
+		).resolves.toEqual(reference);
+
+		expect(referenceInsert.values).toHaveBeenCalledWith({
+			artifactId: reference.artifactId,
+			candidateId: reference.candidateId,
+			createdById: "user-1",
+			kind: "protein_selection",
+			label: reference.label,
+			selectorJson: reference.selectorJson,
+			workspaceId: workspace.id,
+		});
+		const where = workspaceFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(where, workspaces.id)).toBe(true);
+		expect(expressionReferences(where, workspaces.ownerId)).toBe(true);
+	});
+
+	it("creates a recipe and first version for an owned workspace", async () => {
+		const workspace = {
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const recipe = {
+			bodyMarkdown: "Search comparable structures first.",
+			description: null,
+			enabledByDefault: true,
+			id: "66666666-6666-4666-8666-666666666666",
+			name: "Literature-first generation",
+			ownerId: "user-1",
+			workspaceId: workspace.id,
+		};
+		const version = {
+			bodyMarkdown: recipe.bodyMarkdown,
+			createdById: "user-1",
+			id: "77777777-7777-4777-8777-777777777777",
+			recipeId: recipe.id,
+			version: 1,
+		};
+		const recipeInsert = insertReturning(recipe);
+		const versionInsert = insertReturning(version);
+		const caller = createWorkspaceCaller({
+			insert: vi
+				.fn()
+				.mockReturnValueOnce(recipeInsert)
+				.mockReturnValueOnce(versionInsert),
+			query: {
+				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
+			},
+		});
+
+		await expect(
+			caller.createRecipe({
+				bodyMarkdown: recipe.bodyMarkdown,
+				enabledByDefault: true,
+				name: recipe.name,
+				workspaceId: workspace.id,
+			}),
+		).resolves.toEqual({ recipe, version });
+
+		expect(recipeInsert.values).toHaveBeenCalledWith({
+			bodyMarkdown: recipe.bodyMarkdown,
+			description: null,
+			enabledByDefault: true,
+			name: recipe.name,
+			ownerId: "user-1",
+			workspaceId: workspace.id,
+		});
+		expect(versionInsert.values).toHaveBeenCalledWith({
+			bodyMarkdown: recipe.bodyMarkdown,
+			createdById: "user-1",
+			recipeId: recipe.id,
+			version: 1,
 		});
 	});
 
