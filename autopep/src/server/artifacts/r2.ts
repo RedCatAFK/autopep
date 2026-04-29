@@ -1,5 +1,7 @@
 import {
+	DeleteObjectCommand,
 	GetObjectCommand,
+	HeadObjectCommand,
 	PutObjectCommand,
 	type PutObjectCommandInput,
 	S3Client,
@@ -13,7 +15,11 @@ type SignedUrlOptions = {
 	expiresIn: number;
 };
 
-type ArtifactStoreCommand = GetObjectCommand | PutObjectCommand;
+type ArtifactStoreCommand =
+	| DeleteObjectCommand
+	| GetObjectCommand
+	| HeadObjectCommand
+	| PutObjectCommand;
 
 type ArtifactStoreClient = {
 	send(command: ArtifactStoreCommand): Promise<unknown>;
@@ -21,7 +27,7 @@ type ArtifactStoreClient = {
 
 type ArtifactStorePresigner = (
 	client: ArtifactStoreClient,
-	command: GetObjectCommand,
+	command: GetObjectCommand | PutObjectCommand,
 	options: SignedUrlOptions,
 ) => Promise<string>;
 
@@ -43,6 +49,16 @@ type GetReadUrlInput = {
 	expiresInSeconds?: number;
 };
 
+type GetUploadUrlInput = {
+	key: string;
+	contentType: string;
+	expiresInSeconds?: number;
+};
+
+type ObjectKeyInput = {
+	key: string;
+};
+
 type ReadObjectTextInput = {
 	key: string;
 };
@@ -52,6 +68,27 @@ type TransformableBody = {
 };
 
 const defaultReadUrlExpirySeconds = 900;
+const defaultUploadUrlExpirySeconds = 900;
+
+const isMissingObjectError = (error: unknown) => {
+	if (!error || typeof error !== "object") {
+		return false;
+	}
+
+	const candidate = error as {
+		name?: unknown;
+		Code?: unknown;
+		$metadata?: { httpStatusCode?: unknown };
+	};
+	if (candidate.name === "NotFound" || candidate.Code === "NotFound") {
+		return true;
+	}
+	if (candidate.name === "NoSuchKey" || candidate.Code === "NoSuchKey") {
+		return true;
+	}
+
+	return candidate.$metadata?.httpStatusCode === 404;
+};
 
 const encodeObjectKey = (key: string) =>
 	key.split("/").map(encodeURIComponent).join("/");
@@ -118,6 +155,44 @@ export const createR2ArtifactStore = ({
 				Key: key,
 			}),
 			{ expiresIn: expiresInSeconds },
+		);
+	},
+	getUploadUrl: async ({
+		key,
+		contentType,
+		expiresInSeconds = defaultUploadUrlExpirySeconds,
+	}: GetUploadUrlInput) =>
+		presigner(
+			client,
+			new PutObjectCommand({
+				Bucket: bucket,
+				ContentType: contentType,
+				Key: key,
+			}),
+			{ expiresIn: expiresInSeconds },
+		),
+	objectExists: async ({ key }: ObjectKeyInput): Promise<boolean> => {
+		try {
+			await client.send(
+				new HeadObjectCommand({
+					Bucket: bucket,
+					Key: key,
+				}),
+			);
+			return true;
+		} catch (error) {
+			if (isMissingObjectError(error)) {
+				return false;
+			}
+			throw error;
+		}
+	},
+	deleteObject: async ({ key }: ObjectKeyInput) => {
+		await client.send(
+			new DeleteObjectCommand({
+				Bucket: bucket,
+				Key: key,
+			}),
 		);
 	},
 	readObjectText: async ({ key }: ReadObjectTextInput) => {

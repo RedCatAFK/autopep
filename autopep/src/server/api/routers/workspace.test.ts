@@ -5,12 +5,31 @@ import {
 	createProjectRunWithLaunch,
 } from "@/server/agent/project-run-creator";
 import { createCallerFactory } from "@/server/api/trpc";
-import { agentEvents, agentRuns, workspaces } from "@/server/db/schema";
+import { r2ArtifactStore } from "@/server/artifacts/r2";
+import {
+	agentEvents,
+	agentRuns,
+	artifacts,
+	workspaces,
+} from "@/server/db/schema";
 import { getWorkspacePayload, workspaceRouter } from "./workspace";
 
 vi.mock("@/server/agent/project-run-creator", () => ({
 	createMessageRunWithLaunch: vi.fn(),
 	createProjectRunWithLaunch: vi.fn(),
+}));
+
+vi.mock("@/server/artifacts/r2", () => ({
+	r2ArtifactStore: {
+		deleteObject: vi.fn(),
+		getReadUrl: vi.fn().mockResolvedValue("https://signed.example/read-url"),
+		getUploadUrl: vi
+			.fn()
+			.mockResolvedValue("https://signed.example/upload-url"),
+		objectExists: vi.fn().mockResolvedValue(true),
+		readObjectText: vi.fn(),
+		upload: vi.fn(),
+	},
 }));
 
 const expressionReferences = (
@@ -124,6 +143,11 @@ const insertReturning = (row: unknown) => {
 	return { returning, values };
 };
 
+const deleteCapturing = () => {
+	const where = vi.fn().mockResolvedValue(undefined);
+	return { where };
+};
+
 const updateReturning = (row: unknown) => {
 	const returning = vi.fn().mockResolvedValue([row]);
 	const where = vi.fn((condition: unknown) => {
@@ -147,10 +171,13 @@ describe("workspace router procedures", () => {
 			expect.arrayContaining([
 				"archiveWorkspace",
 				"archiveRecipe",
+				"confirmAttachment",
+				"createAttachment",
 				"createContextReference",
 				"createProjectRun",
 				"createRecipe",
 				"createWorkspace",
+				"deleteAttachment",
 				"getLatestWorkspace",
 				"getRunEvents",
 				"getWorkspace",
@@ -952,6 +979,238 @@ describe("workspace router procedures", () => {
 		await expect(
 			caller.mintRunStreamToken({ runId }),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	it("createAttachment inserts a pending artifact and returns a presigned upload URL", async () => {
+		vi.mocked(r2ArtifactStore.getUploadUrl).mockClear();
+		vi.mocked(r2ArtifactStore.getUploadUrl).mockResolvedValueOnce(
+			"https://signed.example/put-url",
+		);
+		const workspace = {
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const artifactRow = {
+			contentType: "application/pdf",
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			kind: "attachment" as const,
+			name: "Spec sheet.PDF",
+			sizeBytes: 12345,
+			storageKey: "irrelevant",
+			workspaceId: workspace.id,
+		};
+		const artifactInsert = insertReturning(artifactRow);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const caller = createWorkspaceCaller({
+			insert: vi.fn().mockReturnValueOnce(artifactInsert),
+			query: {
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		});
+
+		const result = await caller.createAttachment({
+			byteSize: 12345,
+			contentType: "application/pdf",
+			fileName: "Spec sheet.PDF",
+			workspaceId: workspace.id,
+		});
+
+		expect(result.uploadUrl).toBe("https://signed.example/put-url");
+		expect(result.artifactId).toBe(artifactRow.id);
+		expect(result.storageKey).toMatch(
+			/^projects\/22222222-2222-4222-8222-222222222222\/attachments\/[0-9a-f-]+\/spec-sheet\.pdf$/,
+		);
+
+		const insertedValues = (
+			artifactInsert.values.mock.calls as unknown as Array<
+				[Record<string, unknown>]
+			>
+		)[0]?.[0];
+		expect(insertedValues).toMatchObject({
+			contentType: "application/pdf",
+			kind: "attachment",
+			name: "Spec sheet.PDF",
+			sizeBytes: 12345,
+			storageProvider: "r2",
+			workspaceId: workspace.id,
+		});
+		expect(insertedValues?.metadataJson).toMatchObject({
+			originalFileName: "Spec sheet.PDF",
+			uploadStatus: "pending",
+		});
+
+		expect(r2ArtifactStore.getUploadUrl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contentType: "application/pdf",
+				expiresInSeconds: 15 * 60,
+			}),
+		);
+
+		const where = workspaceFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(where, workspaces.id)).toBe(true);
+		expect(expressionReferences(where, workspaces.ownerId)).toBe(true);
+		expect(expressionReferences(where, workspaces.archivedAt)).toBe(true);
+	});
+
+	it("createAttachment rejects byteSize over 25 MB via input validation", async () => {
+		const caller = createWorkspaceCaller({});
+
+		await expect(
+			caller.createAttachment({
+				byteSize: 25 * 1024 * 1024 + 1,
+				contentType: "application/pdf",
+				fileName: "huge.pdf",
+				workspaceId: "22222222-2222-4222-8222-222222222222",
+			}),
+		).rejects.toThrow();
+	});
+
+	it("confirmAttachment rejects when caller does not own the workspace", async () => {
+		vi.mocked(r2ArtifactStore.objectExists).mockClear();
+		const artifactRow = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			kind: "attachment" as const,
+			name: "Spec.pdf",
+			storageKey:
+				"projects/22222222-2222-4222-8222-222222222222/attachments/aaa/spec.pdf",
+			workspaceId: "22222222-2222-4222-8222-222222222222",
+		};
+		const artifactFindFirst = vi.fn().mockResolvedValue(artifactRow);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(null);
+		const insert = vi.fn();
+		const caller = createWorkspaceCaller({
+			insert,
+			query: {
+				artifacts: { findFirst: artifactFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		});
+
+		await expect(
+			caller.confirmAttachment({ artifactId: artifactRow.id }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(insert).not.toHaveBeenCalled();
+		expect(r2ArtifactStore.objectExists).not.toHaveBeenCalled();
+	});
+
+	it("confirmAttachment inserts an artifact context reference after a successful HEAD check", async () => {
+		vi.mocked(r2ArtifactStore.objectExists).mockClear();
+		vi.mocked(r2ArtifactStore.objectExists).mockResolvedValueOnce(true);
+		const workspace = {
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const artifactRow = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			kind: "attachment" as const,
+			name: "Spec.pdf",
+			storageKey:
+				"projects/22222222-2222-4222-8222-222222222222/attachments/aaa/spec.pdf",
+			workspaceId: workspace.id,
+		};
+		const reference = {
+			artifactId: artifactRow.id,
+			id: "55555555-5555-4555-8555-555555555555",
+		};
+		const referenceInsert = insertReturning(reference);
+		const artifactFindFirst = vi.fn().mockResolvedValue(artifactRow);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const caller = createWorkspaceCaller({
+			insert: vi.fn().mockReturnValueOnce(referenceInsert),
+			query: {
+				artifacts: { findFirst: artifactFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		});
+
+		await expect(
+			caller.confirmAttachment({ artifactId: artifactRow.id }),
+		).resolves.toEqual({
+			contextReferenceId: reference.id,
+			ok: true,
+		});
+
+		expect(r2ArtifactStore.objectExists).toHaveBeenCalledWith({
+			key: artifactRow.storageKey,
+		});
+		expect(referenceInsert.values).toHaveBeenCalledWith({
+			artifactId: artifactRow.id,
+			candidateId: null,
+			createdById: "user-1",
+			kind: "artifact",
+			label: artifactRow.name,
+			selectorJson: {},
+			workspaceId: artifactRow.workspaceId,
+		});
+	});
+
+	it("deleteAttachment rejects when artifact is not an attachment", async () => {
+		vi.mocked(r2ArtifactStore.deleteObject).mockClear();
+		const artifactRow = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			kind: "cif" as const,
+			name: "structure.cif",
+			storageKey: "projects/22222222-2222-4222-8222-222222222222/cif",
+			workspaceId: "22222222-2222-4222-8222-222222222222",
+		};
+		const artifactFindFirst = vi.fn().mockResolvedValue(artifactRow);
+		const workspaceFindFirst = vi.fn();
+		const deleteFn = vi.fn();
+		const caller = createWorkspaceCaller({
+			delete: deleteFn,
+			query: {
+				artifacts: { findFirst: artifactFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		});
+
+		await expect(
+			caller.deleteAttachment({ artifactId: artifactRow.id }),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+		expect(workspaceFindFirst).not.toHaveBeenCalled();
+		expect(r2ArtifactStore.deleteObject).not.toHaveBeenCalled();
+		expect(deleteFn).not.toHaveBeenCalled();
+	});
+
+	it("deleteAttachment removes the R2 object and the artifact row when authorized", async () => {
+		vi.mocked(r2ArtifactStore.deleteObject).mockClear();
+		vi.mocked(r2ArtifactStore.deleteObject).mockResolvedValueOnce(undefined);
+		const workspace = {
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const artifactRow = {
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			kind: "attachment" as const,
+			name: "Spec.pdf",
+			storageKey:
+				"projects/22222222-2222-4222-8222-222222222222/attachments/aaa/spec.pdf",
+			workspaceId: workspace.id,
+		};
+		const artifactFindFirst = vi.fn().mockResolvedValue(artifactRow);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const deleteCall = deleteCapturing();
+		const deleteFn = vi.fn(() => deleteCall);
+		const caller = createWorkspaceCaller({
+			delete: deleteFn,
+			query: {
+				artifacts: { findFirst: artifactFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		});
+
+		await expect(
+			caller.deleteAttachment({ artifactId: artifactRow.id }),
+		).resolves.toEqual({ ok: true });
+
+		expect(r2ArtifactStore.deleteObject).toHaveBeenCalledWith({
+			key: artifactRow.storageKey,
+		});
+		expect(deleteFn).toHaveBeenCalledWith(artifacts);
+		const deleteWhere = deleteCall.where.mock.calls[0]?.[0];
+		expect(expressionReferences(deleteWhere, artifacts.id)).toBe(true);
 	});
 });
 

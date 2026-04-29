@@ -16,7 +16,7 @@ import type { db as appDb } from "@/server/db";
 import {
 	agentEvents,
 	agentRuns,
-	type artifacts,
+	artifacts,
 	contextReferences,
 	type messages as messagesTable,
 	type proteinCandidates,
@@ -85,6 +85,28 @@ const answerQuestionInput = z.object({
 	question: z.string().min(1).max(1000),
 	workspaceId: z.string().uuid().optional(),
 });
+
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+const createAttachmentInput = z.object({
+	byteSize: z.number().int().min(1).max(MAX_ATTACHMENT_BYTES),
+	contentType: z.string().min(1).max(120),
+	fileName: z.string().min(1).max(255),
+	workspaceId: z.string().uuid(),
+});
+
+const attachmentIdInput = z.object({
+	artifactId: z.string().uuid(),
+});
+
+const sanitizeAttachmentFileName = (name: string) => {
+	const cleaned = name
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return cleaned.length > 0 ? cleaned : "file";
+};
 
 const sendMessageInput = z.object({
 	attachmentRefs: z.array(z.string().uuid()).default([]),
@@ -354,6 +376,158 @@ export const workspaceRouter = createTRPCRouter({
 			}
 
 			return workspace;
+		}),
+
+	createAttachment: protectedProcedure
+		.input(createAttachmentInput)
+		.mutation(async ({ ctx, input }) => {
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, input.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+					isNull(workspaces.archivedAt),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Workspace not found.",
+				});
+			}
+
+			const attachmentId = crypto.randomUUID();
+			const sanitized = sanitizeAttachmentFileName(input.fileName);
+			const storageKey = `projects/${workspace.id}/attachments/${attachmentId}/${sanitized}`;
+
+			const [artifact] = await ctx.db
+				.insert(artifacts)
+				.values({
+					id: attachmentId,
+					contentType: input.contentType,
+					kind: "attachment",
+					metadataJson: {
+						originalFileName: input.fileName,
+						uploadStatus: "pending",
+					},
+					name: input.fileName,
+					runId: null,
+					sizeBytes: input.byteSize,
+					sourceArtifactId: null,
+					storageKey,
+					storageProvider: "r2",
+					workspaceId: input.workspaceId,
+				})
+				.returning();
+
+			if (!artifact) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Failed to create attachment artifact.",
+				});
+			}
+
+			const uploadUrl = await r2ArtifactStore.getUploadUrl({
+				contentType: input.contentType,
+				expiresInSeconds: 15 * 60,
+				key: storageKey,
+			});
+
+			return {
+				artifactId: artifact.id,
+				storageKey,
+				uploadUrl,
+			};
+		}),
+
+	confirmAttachment: protectedProcedure
+		.input(attachmentIdInput)
+		.mutation(async ({ ctx, input }) => {
+			const artifact = await ctx.db.query.artifacts.findFirst({
+				where: eq(artifacts.id, input.artifactId),
+			});
+			if (!artifact || artifact.kind !== "attachment") {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Attachment not found.",
+				});
+			}
+
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, artifact.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Attachment not found.",
+				});
+			}
+
+			const exists = await r2ArtifactStore.objectExists({
+				key: artifact.storageKey,
+			});
+			if (!exists) {
+				throw new TRPCError({
+					code: "PRECONDITION_FAILED",
+					message: "Attachment object has not been uploaded.",
+				});
+			}
+
+			const [reference] = await ctx.db
+				.insert(contextReferences)
+				.values({
+					artifactId: artifact.id,
+					candidateId: null,
+					createdById: ctx.session.user.id,
+					kind: "artifact",
+					label: artifact.name,
+					selectorJson: {},
+					workspaceId: artifact.workspaceId,
+				})
+				.returning();
+
+			if (!reference) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Failed to register attachment reference.",
+				});
+			}
+
+			return { contextReferenceId: reference.id, ok: true as const };
+		}),
+
+	deleteAttachment: protectedProcedure
+		.input(attachmentIdInput)
+		.mutation(async ({ ctx, input }) => {
+			const artifact = await ctx.db.query.artifacts.findFirst({
+				where: eq(artifacts.id, input.artifactId),
+			});
+			if (!artifact || artifact.kind !== "attachment") {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Attachment not found.",
+				});
+			}
+
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, artifact.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+				),
+			});
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Attachment not found.",
+				});
+			}
+
+			await r2ArtifactStore.deleteObject({ key: artifact.storageKey });
+			await ctx.db.delete(artifacts).where(eq(artifacts.id, artifact.id));
+
+			return { ok: true as const };
 		}),
 
 	createContextReference: protectedProcedure
