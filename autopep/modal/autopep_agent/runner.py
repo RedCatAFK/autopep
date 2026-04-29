@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+import modal
 from agents import Agent, RunConfig, Runner
 
 try:  # OpenAI Agents SDK sandbox APIs are version-sensitive.
@@ -53,6 +54,57 @@ from autopep_agent.streaming import normalize_stream_event
 SANDBOX_APP_NAME = "autopep-agent-runtime"
 SANDBOX_TIMEOUT_SECONDS = 60 * 60
 SMOKE_TASK_KINDS = {"smoke_chat", "smoke_tool", "smoke_sandbox"}
+
+
+def _token_queue_name(run_id: str) -> str:
+    return f"autopep-tokens-{run_id}"
+
+
+async def _push_token_delta(run_id: str, text: str) -> None:
+    """Push a streaming assistant-token delta onto the per-run Modal Queue.
+
+    Best-effort: the SSE consumer (run_stream endpoint) may not be connected,
+    or Modal may be unreachable during local tests. Failures are swallowed so
+    streaming side-channel issues never break the main run.
+    """
+    try:
+        queue = modal.Queue.from_name(_token_queue_name(run_id), create_if_missing=True)
+        await queue.put.aio({"type": "delta", "text": text})
+    except Exception:
+        pass
+
+
+async def _push_token_done(run_id: str) -> None:
+    """Push a `done` sentinel onto the per-run Modal Queue. Best-effort."""
+    try:
+        queue = modal.Queue.from_name(_token_queue_name(run_id), create_if_missing=True)
+        await queue.put.aio({"type": "done"})
+    except Exception:
+        pass
+
+
+def _extract_raw_response_payload(event: Any) -> tuple[str | None, Any]:
+    """Return ``(data_type, data)`` for a ``raw_response_event`` if applicable.
+
+    Handles both attribute-style SDK objects and dict-style events. Returns
+    ``(None, None)`` for any non-raw-response event.
+    """
+    event_type = getattr(event, "type", None)
+    if event_type is None and isinstance(event, dict):
+        event_type = event.get("type")
+    if event_type != "raw_response_event":
+        return None, None
+
+    data = getattr(event, "data", None)
+    if data is None and isinstance(event, dict):
+        data = event.get("data")
+    if data is None:
+        return None, None
+
+    data_type = getattr(data, "type", None)
+    if data_type is None and isinstance(data, dict):
+        data_type = data.get("type")
+    return data_type, data
 
 
 @dataclass(frozen=True)
@@ -242,6 +294,20 @@ async def _append_normalized_stream_events(
     writer: EventWriter,
 ) -> None:
     async for event in _stream_events(streamed_run):
+        # Side-channel: forward raw token deltas and the completion sentinel
+        # to the per-run Modal Queue so the run_stream SSE endpoint can tail
+        # them. normalize_stream_event already filters raw_response_event from
+        # the durable ledger, so this is the only place that can see them.
+        data_type, data = _extract_raw_response_payload(event)
+        if data_type == "response.output_text.delta":
+            delta = getattr(data, "delta", None)
+            if delta is None and isinstance(data, dict):
+                delta = data.get("delta", "")
+            if delta:
+                await _push_token_delta(run_id, str(delta))
+        elif data_type == "response.completed":
+            await _push_token_done(run_id)
+
         normalized = normalize_stream_event(event)
         if normalized is None:
             continue

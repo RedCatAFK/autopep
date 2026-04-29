@@ -17,6 +17,7 @@ RUNTIME_SECRET_NAME = "autopep-runtime"
 WEBHOOK_SECRET_NAME = "autopep-webhook"
 AGENT_TIMEOUT_SECONDS = 60 * 60
 START_RUN_TIMEOUT_SECONDS = 120
+RUN_STREAM_TIMEOUT_SECONDS = AGENT_TIMEOUT_SECONDS
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 UUID_RE = re.compile(
@@ -130,3 +131,72 @@ async def start_run(request: Request) -> Any:
         },
         status_code=202,
     )
+
+
+@app.function(
+    image=control_image,
+    secrets=[webhook_secret],
+    timeout=RUN_STREAM_TIMEOUT_SECONDS,
+)
+@modal.fastapi_endpoint(method="GET", docs=False, label="run-stream")
+async def run_stream(request: Request) -> Any:
+    """Tail a per-run Modal Queue and forward token deltas as SSE.
+
+    Auth here is a temporary shared-secret check against
+    AUTOPEP_MODAL_WEBHOOK_SECRET. Task 2.6 will replace this with a signed
+    JWT minted by the Next.js server. Until then, callers pass the secret
+    via the `token` query parameter (EventSource cannot set Authorization
+    headers).
+    """
+    import json
+    import queue as _queue
+
+    from fastapi.responses import StreamingResponse
+
+    run_id = request.query_params.get("runId", "")
+    token = request.query_params.get("token", "")
+    if not run_id or not token:
+        raise _http_error(status_code=400, detail="runId and token are required.")
+
+    expected = os.environ.get("AUTOPEP_MODAL_WEBHOOK_SECRET", "")
+    if not expected or token != expected:
+        raise _http_error(status_code=401, detail="Unauthorized.")
+
+    if not UUID_RE.match(run_id):
+        raise _http_error(status_code=422, detail="runId must be a UUID.")
+
+    token_queue = modal.Queue.from_name(
+        f"autopep-tokens-{run_id}",
+        create_if_missing=True,
+    )
+
+    async def gen():
+        # Initial keep-alive so the client confirms the connection is live.
+        yield ": connected\n\n"
+        while True:
+            try:
+                msg = await token_queue.get.aio(timeout=15)
+            except (_queue.Empty, TimeoutError):
+                # No tokens within the polling window: emit a heartbeat to
+                # keep proxies / EventSource readers from timing out.
+                yield ": keep-alive\n\n"
+                continue
+            except Exception:
+                # Any other transport-level hiccup: heartbeat and retry.
+                yield ": keep-alive\n\n"
+                continue
+
+            if msg is None:
+                yield ": keep-alive\n\n"
+                continue
+            if not isinstance(msg, dict):
+                continue
+            msg_type = msg.get("type")
+            if msg_type == "done":
+                yield "event: done\ndata: {}\n\n"
+                return
+            if msg_type == "delta":
+                payload = json.dumps({"text": msg.get("text", "")})
+                yield f"event: delta\ndata: {payload}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
