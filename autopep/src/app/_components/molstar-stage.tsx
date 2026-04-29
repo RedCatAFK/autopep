@@ -78,18 +78,7 @@ export function MolstarStage({
 			className="relative flex min-h-[520px] min-w-0 flex-col overflow-hidden bg-[#f8f7f2] lg:min-h-0"
 			ref={stageRef}
 		>
-			<header className="flex flex-wrap items-start justify-between gap-4 px-5 pt-5 pb-3 md:px-6">
-				<div className="min-w-0">
-					<p className="text-[#7a817a] text-xs uppercase">Molecular Stage</p>
-					<h2 className="mt-1 truncate font-semibold text-[#17211e] text-xl">
-						{candidate?.title ?? "Start with a prepared structure"}
-					</h2>
-					<p className="mt-1 max-w-2xl text-[#68726c] text-sm leading-6">
-						{artifact
-							? `Loaded artifact: ${artifact.name}`
-							: "Autopep will place the selected CIF here when the run produces a target artifact."}
-					</p>
-				</div>
+			<header className="flex flex-wrap items-start justify-end gap-4 px-5 pt-5 pb-3 md:px-6">
 				<div className="flex items-center gap-1 rounded-md border border-[#e1ded4] bg-[#fffef9] p-1">
 					<StageAction
 						icon={<ArrowsOutSimple aria-hidden="true" size={18} />}
@@ -130,14 +119,22 @@ export function MolstarStage({
 
 			<div className="relative min-h-[430px] flex-1 px-4 pb-5 md:px-6 md:pb-6 lg:min-h-0">
 				<div className="relative h-full min-h-[430px] overflow-hidden rounded-lg border border-[#e2dfd5] bg-[#fffef9] shadow-[0_20px_80px_-62px_rgba(25,39,33,0.9)] lg:min-h-0">
-					<Viewer
-						artifactId={artifact?.id ?? null}
-						candidateId={candidate?.id ?? null}
-						label={label}
-						onProteinSelection={handleSelection}
-						url={artifact?.url ?? null}
-					/>
-					<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,rgba(33,126,104,0.04),transparent_40%)]" />
+					{artifact ? (
+						<>
+							<Viewer
+								artifactId={artifact.id}
+								candidateId={candidate?.id ?? null}
+								label={label}
+								onProteinSelection={handleSelection}
+								url={artifact.url}
+							/>
+							<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,rgba(33,126,104,0.04),transparent_40%)]" />
+						</>
+					) : (
+						<div className="flex h-full items-center justify-center text-sm text-[#7a817a]">
+							Select a candidate or open a structure file.
+						</div>
+					)}
 				</div>
 
 				{selection ? (
