@@ -1,4 +1,11 @@
-import type { ArtifactType } from "./contracts";
+// Legacy DB bridge until artifact persistence migrates to ArtifactKind.
+type LegacyArtifactType =
+	| "source_cif"
+	| "prepared_cif"
+	| "fasta"
+	| "raw_search_json"
+	| "report"
+	| "other";
 
 type CompletionCandidate = {
 	id: string;
@@ -9,7 +16,7 @@ type CompletionCandidate = {
 type CompletionArtifact = {
 	id: string;
 	candidateId: string | null;
-	type: ArtifactType;
+	type: LegacyArtifactType;
 };
 
 type RunCompletionInput = {
@@ -30,7 +37,10 @@ type RunCompletionResult =
 				| "No proteina-ready CIF artifact is linked to the selected candidate.";
 	  };
 
-const cifArtifactTypes = new Set<ArtifactType>(["prepared_cif", "source_cif"]);
+const cifArtifactTypes = new Set<LegacyArtifactType>([
+	"prepared_cif",
+	"source_cif",
+]);
 
 export const validateRunCompletion = ({
 	candidates,

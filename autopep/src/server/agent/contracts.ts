@@ -1,58 +1,120 @@
 import { z } from "zod";
 
-export const agentEventTypeSchema = z.enum([
-	"codex_agent_started",
-	"codex_agent_finished",
-	"codex_agent_fallback",
-	"normalizing_target",
-	"searching_structures",
-	"searching_literature",
-	"searching_biorxiv",
-	"ranking_candidates",
-	"downloading_cif",
-	"preparing_cif",
-	"uploading_artifact",
-	"ready_for_proteina",
-	"source_failed",
-	"run_start_skipped",
-	"run_failed",
+export const runStatusSchema = z.enum([
+	"queued",
+	"running",
+	"paused",
+	"completed",
+	"failed",
+	"cancelled",
 ]);
 
-export const artifactTypeSchema = z.enum([
-	"source_cif",
-	"prepared_cif",
+export const taskKindSchema = z.enum([
+	"chat",
+	"research",
+	"structure_search",
+	"prepare_structure",
+	"mutate_structure",
+	"branch_design",
+]);
+
+export const agentEventTypeSchema = z.enum([
+	"run_started",
+	"assistant_message_started",
+	"assistant_token_delta",
+	"assistant_message_completed",
+	"reasoning_step",
+	"tool_call_started",
+	"tool_call_delta",
+	"tool_call_completed",
+	"tool_call_failed",
+	"sandbox_command_started",
+	"sandbox_stdout_delta",
+	"sandbox_stderr_delta",
+	"sandbox_command_completed",
+	"artifact_created",
+	"candidate_ranked",
+	"approval_requested",
+	"agent_changed",
+	"run_paused",
+	"run_failed",
+	"run_cancelled",
+	"run_completed",
+]);
+
+export const artifactKindSchema = z.enum([
+	"cif",
+	"mmcif",
+	"pdb",
 	"fasta",
-	"raw_search_json",
-	"report",
+	"sequence",
+	"pdb_metadata",
+	"literature_snapshot",
+	"biopython_script",
+	"proteina_result",
+	"chai_result",
+	"mutated_structure",
+	"score_report",
+	"log",
+	"image",
 	"other",
 ]);
 
-export const targetEntitySchema = z.object({
-	name: z.string(),
-	aliases: z.array(z.string()).default([]),
-	organism: z.string().nullable().default(null),
-	uniprotId: z.string().nullable().default(null),
-	role: z.string().nullable().default(null),
-	rationale: z.string().nullable().default(null),
+export const endpointModelNameSchema = z.enum([
+	"proteina_complexa",
+	"chai_1",
+	"protein_interaction_scoring",
+	"future_scorer",
+]);
+
+export const scoreLabelSchema = z.enum([
+	"likely_binder",
+	"possible_binder",
+	"unlikely_binder",
+	"insufficient_data",
+]);
+
+export const scoreStatusSchema = z.enum([
+	"ok",
+	"partial",
+	"failed",
+	"unavailable",
+]);
+
+export const scoreScorerSchema = z.enum([
+	"dscript",
+	"prodigy",
+	"protein_interaction_aggregate",
+	"future_scorer",
+]);
+
+export const contextReferenceSchema = z.object({
+	artifactId: z.string().uuid().nullable(),
+	candidateId: z.string().uuid().nullable(),
+	kind: z.enum([
+		"protein_selection",
+		"artifact",
+		"candidate",
+		"literature",
+		"note",
+	]),
+	label: z.string().min(1),
+	selector: z.record(z.unknown()).default({}),
 });
 
-export const rankedCandidateSchema = z.object({
-	rcsbId: z.string(),
-	assemblyId: z.string().nullable().default(null),
-	title: z.string(),
-	method: z.string().nullable().default(null),
-	resolutionAngstrom: z.number().nullable().default(null),
-	organism: z.string().nullable().default(null),
-	chainIds: z.array(z.string()).default([]),
-	ligandIds: z.array(z.string()).default([]),
-	citation: z.record(z.unknown()).default({}),
-	relevanceScore: z.number().min(0).max(1),
-	confidence: z.number().min(0).max(1).default(0),
-	selectionRationale: z.string(),
-	proteinaReady: z.boolean().default(false),
+export const candidateScoreSchema = z.object({
+	candidateId: z.string().uuid(),
+	label: scoreLabelSchema.nullable(),
+	scorer: scoreScorerSchema,
+	status: scoreStatusSchema,
+	unit: z.string().nullable(),
+	value: z.number().nullable(),
+	values: z.record(z.unknown()).default({}),
 });
 
 export type AgentEventType = z.infer<typeof agentEventTypeSchema>;
-export type ArtifactType = z.infer<typeof artifactTypeSchema>;
-export type TargetEntity = z.infer<typeof targetEntitySchema>;
-export type RankedCandidate = z.infer<typeof rankedCandidateSchema>;
+export type ArtifactKind = z.infer<typeof artifactKindSchema>;
+export type CandidateScore = z.infer<typeof candidateScoreSchema>;
+export type ContextReference = z.infer<typeof contextReferenceSchema>;
+export type EndpointModelName = z.infer<typeof endpointModelNameSchema>;
+export type RunStatus = z.infer<typeof runStatusSchema>;

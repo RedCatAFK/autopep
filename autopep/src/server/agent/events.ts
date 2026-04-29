@@ -4,10 +4,26 @@ import type { db as appDb } from "@/server/db";
 import { agentEvents } from "@/server/db/schema";
 import type { AgentEventType } from "./contracts";
 
+type LegacyAgentEventType =
+	| "codex_agent_started"
+	| "codex_agent_finished"
+	| "codex_agent_fallback"
+	| "normalizing_target"
+	| "searching_structures"
+	| "searching_literature"
+	| "searching_biorxiv"
+	| "ranking_candidates"
+	| "downloading_cif"
+	| "preparing_cif"
+	| "uploading_artifact"
+	| "ready_for_proteina"
+	| "source_failed"
+	| "run_start_skipped";
+
 type AppendRunEventInput = {
 	db: typeof appDb;
 	runId: string;
-	type: AgentEventType;
+	type: AgentEventType | LegacyAgentEventType;
 	title: string;
 	detail?: string | null;
 	payload?: Record<string, unknown>;
