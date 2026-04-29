@@ -13,8 +13,10 @@ type SignedUrlOptions = {
 	expiresIn: number;
 };
 
+type ArtifactStoreCommand = GetObjectCommand | PutObjectCommand;
+
 type ArtifactStoreClient = {
-	send(command: PutObjectCommand): Promise<unknown>;
+	send(command: ArtifactStoreCommand): Promise<unknown>;
 };
 
 type ArtifactStorePresigner = (
@@ -41,6 +43,14 @@ type GetReadUrlInput = {
 	expiresInSeconds?: number;
 };
 
+type ReadObjectTextInput = {
+	key: string;
+};
+
+type TransformableBody = {
+	transformToString: () => Promise<unknown>;
+};
+
 const defaultReadUrlExpirySeconds = 900;
 
 const encodeObjectKey = (key: string) =>
@@ -48,6 +58,21 @@ const encodeObjectKey = (key: string) =>
 
 const buildPublicReadUrl = (baseUrl: string, key: string) =>
 	`${baseUrl.replace(/\/+$/u, "")}/${encodeObjectKey(key)}`;
+
+const getObjectBody = (response: unknown) =>
+	response && typeof response === "object" && "Body" in response
+		? response.Body
+		: undefined;
+
+const isTransformableBody = (body: unknown): body is TransformableBody => {
+	if (!body || typeof body !== "object") {
+		return false;
+	}
+
+	const transformToString = (body as { transformToString?: unknown })
+		.transformToString;
+	return typeof transformToString === "function";
+};
 
 const defaultPresigner: ArtifactStorePresigner = (client, command, options) =>
 	getSignedUrl(client as S3Client, command, options);
@@ -94,6 +119,40 @@ export const createR2ArtifactStore = ({
 			}),
 			{ expiresIn: expiresInSeconds },
 		);
+	},
+	readObjectText: async ({ key }: ReadObjectTextInput) => {
+		const response = await client.send(
+			new GetObjectCommand({
+				Bucket: bucket,
+				Key: key,
+			}),
+		);
+		const body = getObjectBody(response);
+
+		if (!body) {
+			throw new Error(
+				`Unable to read R2 object "${key}": response body is missing.`,
+			);
+		}
+
+		if (!isTransformableBody(body)) {
+			throw new Error(
+				`Unable to read R2 object "${key}": response body cannot be converted to text.`,
+			);
+		}
+
+		try {
+			const text = await body.transformToString();
+			if (typeof text !== "string") {
+				throw new TypeError("R2 body transform did not return text.");
+			}
+			return text;
+		} catch (error) {
+			throw new Error(
+				`Unable to read R2 object "${key}": response body cannot be converted to text.`,
+				{ cause: error },
+			);
+		}
 	},
 });
 
