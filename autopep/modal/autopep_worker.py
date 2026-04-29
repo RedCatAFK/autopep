@@ -188,10 +188,16 @@ async def start_run(request: Request) -> Any:
         raise _http_error(status_code=422, detail="Expected a JSON object.")
 
     run_id = _require_uuid(payload, "runId")
-    project_id = _require_uuid(payload, "projectId")
+    workspace_id = payload.get("workspaceId")
+    if not isinstance(workspace_id, str):
+        workspace_id = payload.get("projectId")
+    if not isinstance(workspace_id, str) or not UUID_RE.match(workspace_id):
+        raise _http_error(status_code=422, detail="workspaceId must be a UUID.")
+    if "threadId" in payload:
+        _require_uuid(payload, "threadId")
     function_call = launch_autopep_sandbox.spawn(
         run_id=run_id,
-        project_id=project_id,
+        project_id=workspace_id,
     )
     return JSONResponse(
         content={

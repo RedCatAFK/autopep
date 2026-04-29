@@ -1,8 +1,37 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 
 import { launchCreatedRun } from "@/server/agent/run-launcher";
 import type { db as appDb } from "@/server/db";
 import { agentRuns, messages, threads, workspaces } from "@/server/db/schema";
+import { createWorkspaceWithThread } from "@/server/workspaces/repository";
+
+type AgentRunInsert = typeof agentRuns.$inferInsert;
+type TaskKind = NonNullable<AgentRunInsert["taskKind"]>;
+
+type CreateMessageRunInput = {
+	attachmentRefs?: string[];
+	contextRefs?: string[];
+	description?: string | null;
+	name?: string;
+	prompt: string;
+	recipeRefs?: string[];
+	sdkStateJson?: Record<string, unknown>;
+	taskKind?: TaskKind;
+	threadId?: string;
+	workspaceId?: string;
+};
+
+type WorkspaceBundle = {
+	thread: typeof threads.$inferSelect;
+	workspace: typeof workspaces.$inferSelect;
+};
+
+type CreateMessageRunWithLaunchInput = {
+	db: typeof appDb;
+	input: CreateMessageRunInput;
+	launchRun?: typeof launchCreatedRun;
+	ownerId: string;
+};
 
 type CreateProjectRunInput = {
 	goal: string;
@@ -17,84 +46,194 @@ type CreateProjectRunWithLaunchInput = {
 	ownerId: string;
 };
 
+type DbWithOptionalTransaction = typeof appDb & {
+	transaction?: <T>(callback: (tx: typeof appDb) => Promise<T>) => Promise<T>;
+};
+
+const inferWorkspaceName = (prompt: string) => {
+	const firstLine = prompt.trim().split(/\r?\n/u)[0]?.trim();
+	const name = firstLine || "Untitled workspace";
+	return name.length > 120 ? name.slice(0, 120) : name;
+};
+
+const createThreadForWorkspace = async ({
+	db,
+	workspace,
+}: {
+	db: typeof appDb;
+	workspace: typeof workspaces.$inferSelect;
+}) => {
+	const [thread] = await db
+		.insert(threads)
+		.values({ title: "Main thread", workspaceId: workspace.id })
+		.returning();
+
+	if (!thread) {
+		throw new Error("Failed to create thread.");
+	}
+
+	const [updatedWorkspace] = await db
+		.update(workspaces)
+		.set({ activeThreadId: thread.id })
+		.where(eq(workspaces.id, workspace.id))
+		.returning();
+
+	return {
+		thread,
+		workspace: updatedWorkspace ?? workspace,
+	};
+};
+
+const ensureOwnedWorkspace = async ({
+	db,
+	ownerId,
+	threadId,
+	workspaceId,
+}: {
+	db: typeof appDb;
+	ownerId: string;
+	threadId?: string;
+	workspaceId: string;
+}): Promise<WorkspaceBundle> => {
+	const workspace = await db.query.workspaces.findFirst({
+		where: and(
+			eq(workspaces.id, workspaceId),
+			eq(workspaces.ownerId, ownerId),
+			isNull(workspaces.archivedAt),
+		),
+	});
+
+	if (!workspace) {
+		throw new Error("Workspace not found.");
+	}
+
+	const preferredThreadId = threadId ?? workspace.activeThreadId;
+	const thread = preferredThreadId
+		? await db.query.threads.findFirst({
+				where: and(
+					eq(threads.id, preferredThreadId),
+					eq(threads.workspaceId, workspace.id),
+				),
+			})
+		: await db.query.threads.findFirst({
+				where: eq(threads.workspaceId, workspace.id),
+				orderBy: [desc(threads.updatedAt)],
+			});
+
+	if (thread) {
+		return { thread, workspace };
+	}
+
+	return createThreadForWorkspace({ db, workspace });
+};
+
+export const createMessageRunWithLaunch = async ({
+	db,
+	input,
+	launchRun = launchCreatedRun,
+	ownerId,
+}: CreateMessageRunWithLaunchInput) => {
+	const createRows = async (writeDb: typeof appDb) => {
+		const workspaceBundle = input.workspaceId
+			? await ensureOwnedWorkspace({
+					db: writeDb,
+					ownerId,
+					threadId: input.threadId,
+					workspaceId: input.workspaceId,
+				})
+			: await createWorkspaceWithThread({
+					db: writeDb,
+					description: input.description ?? null,
+					name: input.name ?? inferWorkspaceName(input.prompt),
+					ownerId,
+				});
+
+		const [run] = await writeDb
+			.insert(agentRuns)
+			.values({
+				createdById: ownerId,
+				prompt: input.prompt,
+				rootRunId: null,
+				sdkStateJson: input.sdkStateJson ?? {},
+				status: "queued",
+				taskKind: input.taskKind ?? "chat",
+				threadId: workspaceBundle.thread.id,
+				workspaceId: workspaceBundle.workspace.id,
+			})
+			.returning();
+
+		if (!run) {
+			throw new Error("Failed to create agent run.");
+		}
+
+		const [message] = await writeDb
+			.insert(messages)
+			.values({
+				attachmentRefsJson: input.attachmentRefs ?? [],
+				content: input.prompt,
+				contextRefsJson: input.contextRefs ?? [],
+				recipeRefsJson: input.recipeRefs ?? [],
+				role: "user",
+				runId: run.id,
+				threadId: workspaceBundle.thread.id,
+			})
+			.returning();
+
+		if (!message) {
+			throw new Error("Failed to create user message.");
+		}
+
+		return {
+			message,
+			run,
+			thread: workspaceBundle.thread,
+			workspace: workspaceBundle.workspace,
+		};
+	};
+
+	const dbWithTransaction = db as DbWithOptionalTransaction;
+	const created = dbWithTransaction.transaction
+		? await dbWithTransaction.transaction(async (tx) =>
+				createRows(tx as unknown as typeof appDb),
+			)
+		: await createRows(db);
+
+	const launch = await launchRun({
+		db,
+		runId: created.run.id,
+		threadId: created.thread.id,
+		workspaceId: created.workspace.id,
+	});
+
+	return {
+		message: created.message,
+		run: launch.run ?? created.run,
+		thread: created.thread,
+		workspace: created.workspace,
+	};
+};
+
 export const createProjectRunWithLaunch = async ({
 	db,
 	input,
 	launchRun = launchCreatedRun,
 	ownerId,
 }: CreateProjectRunWithLaunchInput) => {
-	const [workspace] = await db
-		.insert(workspaces)
-		.values({
-			ownerId,
-			name: input.name ?? input.goal.slice(0, 120),
+	const result = await createMessageRunWithLaunch({
+		db,
+		input: {
 			description: input.goal,
-		})
-		.returning();
-
-	if (!workspace) {
-		throw new Error("Failed to create workspace");
-	}
-
-	const [thread] = await db
-		.insert(threads)
-		.values({
-			title: input.name ?? input.goal.slice(0, 120),
-			workspaceId: workspace.id,
-		})
-		.returning();
-
-	if (!thread) {
-		throw new Error("Failed to create thread");
-	}
-
-	await db
-		.update(workspaces)
-		.set({ activeThreadId: thread.id })
-		.where(eq(workspaces.id, workspace.id));
-
-	const [run] = await db
-		.insert(agentRuns)
-		.values({
-			createdById: ownerId,
+			name: input.name,
 			prompt: input.goal,
 			sdkStateJson: { requestedTopK: input.topK },
-			status: "queued",
 			taskKind: "structure_search",
-			threadId: thread.id,
-			workspaceId: workspace.id,
-		})
-		.returning();
-
-	if (!run) {
-		throw new Error("Failed to create agent run");
-	}
-
-	const [message] = await db
-		.insert(messages)
-		.values({
-			content: input.goal,
-			role: "user",
-			runId: run.id,
-			threadId: thread.id,
-		})
-		.returning();
-
-	if (!message) {
-		throw new Error("Failed to create message");
-	}
-
-	const launch = await launchRun({
-		db,
-		projectId: workspace.id,
-		runId: run.id,
+		},
+		launchRun,
+		ownerId,
 	});
 
 	return {
-		message,
-		project: workspace,
-		run: launch.run ?? run,
-		thread,
-		workspace,
+		...result,
+		project: result.workspace,
 	};
 };

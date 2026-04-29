@@ -9,9 +9,10 @@ import { agentRuns } from "@/server/db/schema";
 type LaunchCreatedRunInput = {
 	appendRunEvent?: typeof appendRunEvent;
 	db: typeof appDb;
-	projectId: string;
 	runId: string;
 	startModalRun?: typeof startModalRun;
+	threadId: string;
+	workspaceId: string;
 };
 
 const summarizeError = (error: unknown) =>
@@ -20,16 +21,17 @@ const summarizeError = (error: unknown) =>
 export const launchCreatedRun = async ({
 	appendRunEvent: appendEvent = appendRunEvent,
 	db,
-	projectId,
 	runId,
 	startModalRun: startRun = startModalRun,
+	threadId,
+	workspaceId,
 }: LaunchCreatedRunInput) => {
 	if (env.AUTOPEP_RUNNER_BACKEND === "local") {
 		return { backend: "local" as const, launched: false as const };
 	}
 
 	try {
-		await startRun({ projectId, runId });
+		await startRun({ runId, threadId, workspaceId });
 		return { backend: "modal" as const, launched: true as const };
 	} catch (error) {
 		const errorSummary = summarizeError(error);

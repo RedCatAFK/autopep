@@ -1,30 +1,48 @@
-import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { createProjectRunWithLaunch } from "@/server/agent/project-run-creator";
+import { taskKindSchema } from "@/server/agent/contracts";
+import {
+	createMessageRunWithLaunch,
+	createProjectRunWithLaunch,
+} from "@/server/agent/project-run-creator";
 import { answerWorkspaceQuestion } from "@/server/agent/workspace-answer";
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
 import { r2ArtifactStore } from "@/server/artifacts/r2";
 import type { db as appDb } from "@/server/db";
 import {
-	agentEvents,
+	type agentEvents,
 	agentRuns,
-	artifacts,
-	candidateScores,
-	proteinCandidates,
-	threads,
+	type artifacts,
+	type proteinCandidates,
 	workspaces,
 } from "@/server/db/schema";
+import {
+	createWorkspaceWithThread,
+	getWorkspacePayload as getRepositoryWorkspacePayload,
+	getRunEventsAfter,
+	listWorkspacesForOwner,
+} from "@/server/workspaces/repository";
 
 type Db = typeof appDb;
 
-const projectIdInput = z.object({
-	projectId: z.string().uuid(),
+const workspaceIdInput = z.object({
+	workspaceId: z.string().uuid(),
 });
 
+const compatibleWorkspaceIdInput = z
+	.object({
+		projectId: z.string().uuid().optional(),
+		workspaceId: z.string().uuid().optional(),
+	})
+	.refine((input) => input.workspaceId ?? input.projectId, {
+		message: "workspaceId is required.",
+	});
+
 const runEventsInput = z.object({
-	runId: z.string().uuid(),
 	afterSequence: z.number().int().min(0).default(0),
+	runId: z.string().uuid(),
 });
 
 const createProjectRunInput = z.object({
@@ -36,6 +54,17 @@ const createProjectRunInput = z.object({
 const answerQuestionInput = z.object({
 	projectId: z.string().uuid().optional(),
 	question: z.string().min(1).max(1000),
+	workspaceId: z.string().uuid().optional(),
+});
+
+const sendMessageInput = z.object({
+	attachmentRefs: z.array(z.string().uuid()).default([]),
+	contextRefs: z.array(z.string().uuid()).default([]),
+	prompt: z.string().min(1).max(12000),
+	projectId: z.string().uuid().optional(),
+	recipeRefs: z.array(z.string().uuid()).default([]),
+	taskKind: taskKindSchema.default("chat"),
+	workspaceId: z.string().uuid().optional(),
 });
 
 const getRecord = (value: unknown): Record<string, unknown> =>
@@ -51,6 +80,20 @@ const getNumber = (value: unknown): number | null =>
 
 const getBoolean = (value: unknown): boolean =>
 	typeof value === "boolean" ? value : false;
+
+const resolveWorkspaceId = (input: {
+	projectId?: string;
+	workspaceId?: string;
+}) => {
+	const workspaceId = input.workspaceId ?? input.projectId;
+	if (!workspaceId) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "workspaceId is required.",
+		});
+	}
+	return workspaceId;
+};
 
 const inferTargetName = (prompt: string) => {
 	const normalized = prompt.toLowerCase();
@@ -134,145 +177,143 @@ const mapArtifact = async (artifact: typeof artifacts.$inferSelect) => {
 const getLatestWorkspaceForOwner = async (db: Db, ownerId: string) =>
 	db.query.workspaces.findFirst({
 		where: and(eq(workspaces.ownerId, ownerId), isNull(workspaces.archivedAt)),
-		orderBy: [desc(workspaces.createdAt)],
+		orderBy: [desc(workspaces.updatedAt)],
 	});
 
-export const getWorkspacePayload = async (
-	db: Db,
-	projectId: string,
-	ownerId: string,
-) => {
-	const workspace = await db.query.workspaces.findFirst({
-		where: and(
-			eq(workspaces.id, projectId),
-			eq(workspaces.ownerId, ownerId),
-			isNull(workspaces.archivedAt),
-		),
+const getWorkspaceCompatibilityPayload = async ({
+	db,
+	ownerId,
+	workspaceId,
+}: {
+	db: Db;
+	ownerId: string;
+	workspaceId: string;
+}) => {
+	const payload = await getRepositoryWorkspacePayload({
+		db,
+		ownerId,
+		workspaceId,
 	});
 
-	if (!workspace) {
+	if (!payload) {
 		return null;
 	}
 
-	const threadRows = await db.query.threads.findMany({
-		where: eq(threads.workspaceId, workspace.id),
-		orderBy: [desc(threads.updatedAt)],
-	});
-	const activeThread =
-		threadRows.find((thread) => thread.id === workspace.activeThreadId) ??
-		threadRows[0] ??
-		null;
-	const runs = activeThread
-		? await db.query.agentRuns.findMany({
-				where: and(
-					eq(agentRuns.workspaceId, workspace.id),
-					eq(agentRuns.threadId, activeThread.id),
-				),
-				orderBy: [desc(agentRuns.createdAt)],
-				limit: 10,
-			})
+	const project = mapWorkspaceToProject(payload.workspace, payload.activeRun);
+	const targetEntities = payload.activeRun
+		? [
+				{
+					name: inferTargetName(payload.activeRun.prompt),
+					organism: payload.activeRun.prompt
+						.toLowerCase()
+						.includes("sars-cov-2")
+						? "SARS-CoV-2"
+						: null,
+				},
+			]
 		: [];
 
-	const activeRun = runs[0] ?? null;
-	const project = mapWorkspaceToProject(workspace, activeRun);
-
-	if (!activeRun) {
-		return {
-			activeRun,
-			activeThread,
-			artifacts: [],
-			candidateScores: [],
-			candidates: [],
-			events: [],
-			project,
-			runs,
-			targetEntities: [],
-			threads: threadRows,
-			workspace,
-		};
-	}
-
-	const [eventRows, candidateRows, artifactRows, scoreRows] = await Promise.all(
-		[
-			db.query.agentEvents.findMany({
-				where: eq(agentEvents.runId, activeRun.id),
-				orderBy: [asc(agentEvents.sequence)],
-			}),
-			db.query.proteinCandidates.findMany({
-				where: eq(proteinCandidates.runId, activeRun.id),
-				orderBy: [asc(proteinCandidates.rank)],
-			}),
-			db.query.artifacts.findMany({
-				where: eq(artifacts.runId, activeRun.id),
-				orderBy: [desc(artifacts.createdAt)],
-			}),
-			db.query.candidateScores.findMany({
-				where: eq(candidateScores.runId, activeRun.id),
-				orderBy: [asc(candidateScores.createdAt)],
-			}),
-		],
-	);
-
-	const targetEntities = [
-		{
-			name: inferTargetName(activeRun.prompt),
-			organism: activeRun.prompt.toLowerCase().includes("sars-cov-2")
-				? "SARS-CoV-2"
-				: null,
-		},
-	];
-
 	return {
-		activeRun,
-		activeThread,
-		artifacts: await Promise.all(artifactRows.map(mapArtifact)),
-		candidateScores: scoreRows,
-		candidates: candidateRows.map(mapCandidate),
-		events: eventRows.map(mapEvent),
+		...payload,
+		artifacts: await Promise.all(payload.artifacts.map(mapArtifact)),
+		candidateScores: payload.candidateScores,
+		candidates: payload.candidates.map(mapCandidate),
+		events: payload.events.map(mapEvent),
 		project,
-		runs,
 		targetEntities,
-		threads: threadRows,
-		workspace,
 	};
 };
 
+export const getWorkspacePayload = (
+	db: Db,
+	projectId: string,
+	ownerId: string,
+) =>
+	getWorkspaceCompatibilityPayload({
+		db,
+		ownerId,
+		workspaceId: projectId,
+	});
+
 export const workspaceRouter = createTRPCRouter({
-	answerQuestion: protectedProcedure
-		.input(answerQuestionInput)
-		.mutation(async ({ ctx, input }) => {
-			const ownerId = ctx.session.user.id;
-			const workspace = input.projectId
-				? await ctx.db.query.workspaces.findFirst({
-						where: and(
-							eq(workspaces.id, input.projectId),
-							eq(workspaces.ownerId, ownerId),
-							isNull(workspaces.archivedAt),
-						),
-					})
-				: await getLatestWorkspaceForOwner(ctx.db, ownerId);
-			const workspacePayload = workspace
-				? await getWorkspacePayload(ctx.db, workspace.id, ownerId)
-				: null;
+	listWorkspaces: protectedProcedure.query(async ({ ctx }) =>
+		listWorkspacesForOwner(ctx.db, ctx.session.user.id),
+	),
 
-			return {
-				answer: answerWorkspaceQuestion({
-					question: input.question,
-					workspace: workspacePayload,
-				}),
-			};
-		}),
-
-	createProjectRun: protectedProcedure
-		.input(createProjectRunInput)
-		.mutation(async ({ ctx, input }) => {
-			const ownerId = ctx.session.user.id;
-			return createProjectRunWithLaunch({
+	createWorkspace: protectedProcedure
+		.input(
+			z.object({
+				description: z.string().max(1000).nullable().optional(),
+				name: z.string().min(1).max(120),
+			}),
+		)
+		.mutation(async ({ ctx, input }) =>
+			createWorkspaceWithThread({
 				db: ctx.db,
-				input,
-				ownerId,
-			});
+				description: input.description ?? null,
+				name: input.name,
+				ownerId: ctx.session.user.id,
+			}),
+		),
+
+	renameWorkspace: protectedProcedure
+		.input(workspaceIdInput.extend({ name: z.string().min(1).max(120) }))
+		.mutation(async ({ ctx, input }) => {
+			const [workspace] = await ctx.db
+				.update(workspaces)
+				.set({ name: input.name })
+				.where(
+					and(
+						eq(workspaces.id, input.workspaceId),
+						eq(workspaces.ownerId, ctx.session.user.id),
+						isNull(workspaces.archivedAt),
+					),
+				)
+				.returning();
+
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Workspace not found.",
+				});
+			}
+
+			return workspace;
 		}),
+
+	archiveWorkspace: protectedProcedure
+		.input(workspaceIdInput)
+		.mutation(async ({ ctx, input }) => {
+			const [workspace] = await ctx.db
+				.update(workspaces)
+				.set({ archivedAt: new Date() })
+				.where(
+					and(
+						eq(workspaces.id, input.workspaceId),
+						eq(workspaces.ownerId, ctx.session.user.id),
+					),
+				)
+				.returning();
+
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Workspace not found.",
+				});
+			}
+
+			return workspace;
+		}),
+
+	getWorkspace: protectedProcedure
+		.input(compatibleWorkspaceIdInput)
+		.query(async ({ ctx, input }) =>
+			getWorkspaceCompatibilityPayload({
+				db: ctx.db,
+				ownerId: ctx.session.user.id,
+				workspaceId: resolveWorkspaceId(input),
+			}),
+		),
 
 	getLatestWorkspace: protectedProcedure.query(async ({ ctx }) => {
 		const workspace = await getLatestWorkspaceForOwner(
@@ -284,13 +325,24 @@ export const workspaceRouter = createTRPCRouter({
 			return null;
 		}
 
-		return getWorkspacePayload(ctx.db, workspace.id, ctx.session.user.id);
+		return getWorkspaceCompatibilityPayload({
+			db: ctx.db,
+			ownerId: ctx.session.user.id,
+			workspaceId: workspace.id,
+		});
 	}),
 
-	getWorkspace: protectedProcedure
-		.input(projectIdInput)
-		.query(async ({ ctx, input }) =>
-			getWorkspacePayload(ctx.db, input.projectId, ctx.session.user.id),
+	sendMessage: protectedProcedure
+		.input(sendMessageInput)
+		.mutation(async ({ ctx, input }) =>
+			createMessageRunWithLaunch({
+				db: ctx.db,
+				input: {
+					...input,
+					workspaceId: input.workspaceId ?? input.projectId,
+				},
+				ownerId: ctx.session.user.id,
+			}),
 		),
 
 	getRunEvents: protectedProcedure
@@ -312,14 +364,55 @@ export const workspaceRouter = createTRPCRouter({
 				return [];
 			}
 
-			const events = await ctx.db.query.agentEvents.findMany({
-				where: and(
-					eq(agentEvents.runId, input.runId),
-					gt(agentEvents.sequence, input.afterSequence),
-				),
-				orderBy: [asc(agentEvents.sequence)],
+			const events = await getRunEventsAfter({
+				afterSequence: input.afterSequence,
+				db: ctx.db,
+				runId: input.runId,
 			});
 
 			return events.map(mapEvent);
 		}),
+
+	answerQuestion: protectedProcedure
+		.input(answerQuestionInput)
+		.mutation(async ({ ctx, input }) => {
+			const ownerId = ctx.session.user.id;
+			const requestedWorkspaceId = input.workspaceId ?? input.projectId;
+			const workspace = requestedWorkspaceId
+				? await getWorkspaceCompatibilityPayload({
+						db: ctx.db,
+						ownerId,
+						workspaceId: requestedWorkspaceId,
+					})
+				: null;
+			const latestWorkspace = requestedWorkspaceId
+				? null
+				: await getLatestWorkspaceForOwner(ctx.db, ownerId);
+			const workspacePayload =
+				workspace ??
+				(latestWorkspace
+					? await getWorkspaceCompatibilityPayload({
+							db: ctx.db,
+							ownerId,
+							workspaceId: latestWorkspace.id,
+						})
+					: null);
+
+			return {
+				answer: answerWorkspaceQuestion({
+					question: input.question,
+					workspace: workspacePayload,
+				}),
+			};
+		}),
+
+	createProjectRun: protectedProcedure
+		.input(createProjectRunInput)
+		.mutation(async ({ ctx, input }) =>
+			createProjectRunWithLaunch({
+				db: ctx.db,
+				input,
+				ownerId: ctx.session.user.id,
+			}),
+		),
 });

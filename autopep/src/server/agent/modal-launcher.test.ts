@@ -26,9 +26,9 @@ describe("startModalRun", () => {
 		vi.resetModules();
 	});
 
-	it("sends the run payload to Modal with bearer auth", async () => {
+	it("sends workspace, thread, and run identifiers to Modal with bearer auth", async () => {
 		const fetchImpl = vi.fn().mockResolvedValue(
-			new Response(JSON.stringify({ accepted: true }), {
+			new Response(JSON.stringify({ accepted: true, functionCallId: "fc-1" }), {
 				headers: { "content-type": "application/json" },
 				status: 202,
 			}),
@@ -37,16 +37,18 @@ describe("startModalRun", () => {
 
 		await startModalRun({
 			fetchImpl,
-			projectId: "22222222-2222-4222-8222-222222222222",
 			runId: "11111111-1111-4111-8111-111111111111",
+			threadId: "33333333-3333-4333-8333-333333333333",
+			workspaceId: "22222222-2222-4222-8222-222222222222",
 		});
 
 		expect(fetchImpl).toHaveBeenCalledWith(
 			"https://autopep--start-run.modal.run",
 			expect.objectContaining({
 				body: JSON.stringify({
-					projectId: "22222222-2222-4222-8222-222222222222",
 					runId: "11111111-1111-4111-8111-111111111111",
+					threadId: "33333333-3333-4333-8333-333333333333",
+					workspaceId: "22222222-2222-4222-8222-222222222222",
 				}),
 				headers: expect.objectContaining({
 					authorization: "Bearer secret-token",
@@ -69,8 +71,9 @@ describe("startModalRun", () => {
 		await expect(
 			startModalRun({
 				fetchImpl,
-				projectId: "22222222-2222-4222-8222-222222222222",
 				runId: "11111111-1111-4111-8111-111111111111",
+				threadId: "33333333-3333-4333-8333-333333333333",
+				workspaceId: "22222222-2222-4222-8222-222222222222",
 			}),
 		).rejects.toThrow("Modal launcher failed with 401 Unauthorized: bad token");
 	});

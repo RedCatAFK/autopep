@@ -2,14 +2,16 @@ import { env } from "@/env";
 
 type StartModalRunInput = {
 	fetchImpl?: typeof fetch;
-	projectId: string;
 	runId: string;
+	threadId: string;
+	workspaceId: string;
 };
 
 export const startModalRun = async ({
 	fetchImpl = fetch,
-	projectId,
 	runId,
+	threadId,
+	workspaceId,
 }: StartModalRunInput) => {
 	if (!env.AUTOPEP_MODAL_START_URL) {
 		throw new Error(
@@ -24,7 +26,7 @@ export const startModalRun = async ({
 	}
 
 	const response = await fetchImpl(env.AUTOPEP_MODAL_START_URL, {
-		body: JSON.stringify({ projectId, runId }),
+		body: JSON.stringify({ runId, threadId, workspaceId }),
 		headers: {
 			authorization: `Bearer ${env.AUTOPEP_MODAL_WEBHOOK_SECRET}`,
 			"content-type": "application/json",
