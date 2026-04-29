@@ -806,7 +806,7 @@ describe("workspace router procedures", () => {
 		const filteredEvents = allEvents.filter((event) => event.sequence > 3);
 
 		const orderBy = vi.fn().mockResolvedValue(filteredEvents);
-		const where = vi.fn(() => ({ orderBy }));
+		const where = vi.fn((_condition: unknown) => ({ orderBy }));
 		const from = vi.fn(() => ({ where }));
 		const runFindFirst = vi.fn().mockResolvedValue(run);
 		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
