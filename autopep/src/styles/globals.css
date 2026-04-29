@@ -61,55 +61,6 @@ textarea {
 	transform-origin: left;
 }
 
-.stage-orbit {
-	position: absolute;
-	border: 1px dashed rgb(124 131 122 / 38%);
-	border-radius: 999px;
-	pointer-events: none;
-}
-
-.stage-orbit::before,
-.stage-orbit::after {
-	position: absolute;
-	width: 12px;
-	height: 12px;
-	border-radius: 999px;
-	background: #dfe94c;
-	content: "";
-}
-
-.stage-orbit-a {
-	width: min(74vw, 520px);
-	height: 230px;
-	transform: rotate(-18deg);
-}
-
-.stage-orbit-a::before {
-	top: -6px;
-	left: 54%;
-}
-
-.stage-orbit-a::after {
-	right: 10%;
-	bottom: 16px;
-}
-
-.stage-orbit-b {
-	width: min(62vw, 430px);
-	height: 310px;
-	transform: rotate(22deg);
-}
-
-.stage-orbit-b::before {
-	top: 40px;
-	left: 8%;
-}
-
-.stage-orbit-b::after {
-	right: 20%;
-	bottom: 6px;
-}
-
 @keyframes molstar-loading {
 	0% {
 		transform: translateX(-100%) scaleX(0.7);

@@ -1,11 +1,8 @@
 "use client";
 
-import { Atom, WarningCircle } from "@phosphor-icons/react";
+import { WarningCircle } from "@phosphor-icons/react";
 import type { PluginUIContext } from "molstar/lib/mol-plugin-ui/context";
-import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-
-import { proteinTargetPreview } from "@/app/_components/protein-preview-image";
 
 type MolstarViewerProps = {
 	artifactId?: string | null;
@@ -212,30 +209,8 @@ export function MolstarViewer({
 			/>
 
 			{!url ? (
-				<div className="relative flex h-full min-h-[430px] items-center justify-center px-8 lg:min-h-0">
-					<div className="relative flex w-full max-w-[560px] flex-col items-center justify-center">
-						<div className="stage-orbit stage-orbit-a hidden md:block" />
-						<div className="stage-orbit stage-orbit-b hidden md:block" />
-						<Image
-							alt="Generated target protein preview"
-							className="relative z-[1] h-auto w-full max-w-[430px] rounded-md object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
-							priority
-							sizes="(max-width: 768px) 82vw, 430px"
-							src={proteinTargetPreview}
-						/>
-						<div className="mt-8 max-w-xs text-center">
-							<div className="mx-auto flex size-11 items-center justify-center rounded-lg border border-[#d6dec0] bg-[#edf45c] text-[#133f34]">
-								<Atom size={22} weight="duotone" />
-							</div>
-							<p className="mt-4 font-semibold text-[#18332e]">
-								Target structure will load here
-							</p>
-							<p className="mt-2 text-[#6f746d] text-sm leading-6">
-								Start a retrieval run and Autopep will place the selected CIF on
-								the molecular stage.
-							</p>
-						</div>
-					</div>
+				<div className="flex h-full items-center justify-center text-sm text-[#7a817a]">
+					Select a candidate or open a structure file.
 				</div>
 			) : null}
 
