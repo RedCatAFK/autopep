@@ -2,6 +2,7 @@
 
 import { Archive, Flask, Plus } from "@phosphor-icons/react";
 
+import { HoverTooltip } from "./hover-tooltip";
 import { WorkspaceAvatar } from "./workspace-avatar";
 
 export type RailWorkspace = {
@@ -48,19 +49,20 @@ export function WorkspaceRail({
 						const active = workspace.id === activeWorkspaceId;
 						return (
 							<div className="group relative shrink-0" key={workspace.id}>
-								<button
-									aria-label={`Open ${workspace.name}`}
-									className="flex size-10 items-center justify-center rounded-md transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
-									onClick={() => onSelectWorkspace(workspace.id)}
-									title={workspace.name}
-									type="button"
-								>
-									<WorkspaceAvatar
-										active={active}
-										id={workspace.id}
-										name={workspace.name}
-									/>
-								</button>
+								<HoverTooltip label={workspace.name}>
+									<button
+										aria-label={`Open ${workspace.name}`}
+										className="flex size-10 items-center justify-center rounded-md transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
+										onClick={() => onSelectWorkspace(workspace.id)}
+										type="button"
+									>
+										<WorkspaceAvatar
+											active={active}
+											id={workspace.id}
+											name={workspace.name}
+										/>
+									</button>
+								</HoverTooltip>
 								{active ? (
 									<button
 										aria-label={`Archive ${workspace.name}`}
