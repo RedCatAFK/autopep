@@ -444,7 +444,7 @@ export const agentRuns = createAutopepTable(
 		status: agentRunStatus("status").default("queued").notNull(),
 		taskKind: agentTaskKind("task_kind").default("chat").notNull(),
 		prompt: text("prompt").notNull(),
-		model: text("model").notNull().default("gpt-5.4"),
+		model: text("model").notNull().default("gpt-5.5"),
 		agentName: text("agent_name").notNull().default("Autopep"),
 		modalCallId: text("modal_call_id"),
 		sandboxSessionStateJson: jsonb("sandbox_session_state_json").$type<Record<string, unknown>>().default(sql`'{}'::jsonb`).notNull(),
@@ -1441,6 +1441,13 @@ git commit -m "feat: add artifact service read support"
 
 ## Task 6: Python Worker Package And Modal Launcher
 
+**Model selection policy (applies to every task that picks a model):**
+
+- Real demo runs (the 3CL-protease workflow, anything user-facing, anything that has to actually reason about biology): use `gpt-5.5`. This is the latest model and the production default.
+- Cheap roundtrip/smoke runs that only need to prove plumbing works (Task 11.5, future CI smokes): use a `gpt-5.x-mini` variant — for example `gpt-5.5-mini`. **Do not use Anthropic Haiku or any non-OpenAI model** — the worker is built around the OpenAI Agents SDK and Haiku will not work.
+
+`OPENAI_DEFAULT_MODEL` may override the default. Smoke harnesses should pass an explicit model rather than relying on the default so a misconfigured env var cannot silently turn a real run into a mini run or vice versa.
+
 **Files:**
 - Replace: `autopep/modal/autopep_worker.py`
 - Create: `autopep/modal/requirements.txt`
@@ -1544,7 +1551,7 @@ class WorkerConfig:
     scoring_url: str
     scoring_api_key: str
     openai_api_key: str
-    default_model: str = "gpt-5.4"
+    default_model: str = "gpt-5.5"
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -1561,7 +1568,7 @@ class WorkerConfig:
             scoring_url=_required_env("MODAL_PROTEIN_INTERACTION_SCORING_URL").rstrip("/"),
             scoring_api_key=_required_env("MODAL_PROTEIN_INTERACTION_SCORING_API_KEY"),
             openai_api_key=_required_env("OPENAI_API_KEY"),
-            default_model=os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-5.4"),
+            default_model=os.environ.get("OPENAI_DEFAULT_MODEL", "gpt-5.5"),
         )
 ```
 
@@ -2644,6 +2651,233 @@ git add autopep/modal/autopep_agent/db.py autopep/modal/autopep_agent/runner.py 
 git commit -m "feat: persist generated candidates and scores"
 ```
 
+## Task 11.5: Integration Smoke Roundtrip
+
+This task is integration verification, not unit testing. It proves that TS launcher → Modal worker → OpenAI Agents SDK → Neon → polling endpoint actually round-trip with no biology, no frontend, and no inference endpoints involved. Three layered smokes isolate which integration surface is broken when one fails.
+
+Run this before starting Task 12. Re-run before Task 15 to catch any regressions introduced by frontend work. Each smoke runs against `gpt-5.5-mini` (or any current `gpt-5.x-mini`) and should cost a fraction of a cent.
+
+**Files:**
+- Create: `autopep/modal/autopep_agent/smoke_agent.py`
+- Modify: `autopep/modal/autopep_agent/runner.py`
+- Create: `autopep/modal/tests/test_smoke_runner.py`
+- Create: `autopep/scripts/smoke-roundtrip.ts`
+- Modify: `autopep/.env.example`
+- Modify: `autopep/README.md`
+
+- [ ] **Step 1: Provision an isolated smoke environment**
+
+Use a Neon branch and a separate Modal app so smoke runs cannot touch production state.
+
+```bash
+# Neon branch off main, ~3s, free under branching plan
+neon branches create --name autopep-smoke --parent main
+export AUTOPEP_SMOKE_DATABASE_URL="$(neon connection-string autopep-smoke)"
+cd autopep
+DATABASE_URL=$AUTOPEP_SMOKE_DATABASE_URL bun run db:migrate
+
+# Separate Modal app — distinct start-run URL and webhook secret
+modal config set-environment smoke
+APP_NAME=autopep-agent-smoke modal deploy modal/autopep_worker.py
+```
+
+Capture the deployed `start-run` URL into `AUTOPEP_SMOKE_MODAL_START_URL` and the webhook secret into `AUTOPEP_SMOKE_MODAL_WEBHOOK_SECRET`. Do not reuse production secrets.
+
+- [ ] **Step 2: Implement the smoke agent**
+
+The smoke agent has three modes selected by `task_kind`. None of them touch biology tools, RCSB, PubMed, or any Modal inference endpoint.
+
+```py
+# autopep/modal/autopep_agent/smoke_agent.py
+from __future__ import annotations
+
+from agents import Agent, function_tool
+
+
+@function_tool
+def smoke_now() -> str:
+    """Return the literal string 'now-ok' so smoke_tool can verify tool plumbing."""
+    return "now-ok"
+
+
+SMOKE_MODEL = "gpt-5.5-mini"  # cheap variant; see Task 6 model selection policy. Never haiku.
+
+
+def build_ping_agent(model: str = SMOKE_MODEL) -> Agent:
+    return Agent(
+        name="autopep-smoke-ping",
+        model=model,
+        instructions="Reply with the literal text 'pong' and nothing else.",
+    )
+
+
+def build_tool_agent(model: str = SMOKE_MODEL) -> Agent:
+    return Agent(
+        name="autopep-smoke-tool",
+        model=model,
+        instructions=(
+            "Call the smoke_now tool exactly once, then reply with its return value verbatim."
+        ),
+        tools=[smoke_now],
+    )
+
+
+# build_sandbox_agent should return a SandboxAgent configured with
+# ModalSandboxClient that runs `echo sandbox-ok` and exits. It exercises
+# the sandbox_command_started, sandbox_stdout_delta, and
+# sandbox_command_completed event paths added in Task 8.
+```
+
+- [ ] **Step 3: Route smoke task kinds in the runner**
+
+Extend `execute_run` to dispatch `task_kind` values prefixed with `smoke_` to the smoke agent. These task kinds are accepted only when `AUTOPEP_ALLOW_SMOKE_RUNS=1`. Never expose them through the tRPC router.
+
+```py
+# autopep/modal/autopep_agent/runner.py
+SMOKE_TASK_KINDS = {"smoke_chat", "smoke_tool", "smoke_sandbox"}
+
+
+async def execute_run(*, workspace_id: str, thread_id: str, run_id: str) -> None:
+    run = await db.load_run(run_id)
+    if run.task_kind in SMOKE_TASK_KINDS:
+        if os.environ.get("AUTOPEP_ALLOW_SMOKE_RUNS") != "1":
+            raise RuntimeError("Smoke task kinds are disabled in this environment.")
+        await _execute_smoke_run(run)
+        return
+    await _execute_mvp_run(run)
+```
+
+`_execute_smoke_run` builds the right agent based on `run.task_kind`, calls `Runner.run_streamed(...)`, and feeds events through the same normalizer + DB writer used for real runs. No code path is duplicated — this is the same plumbing, with a smaller agent attached.
+
+- [ ] **Step 4: Implement the TS smoke harness**
+
+The harness creates a workspace, thread, and message+run with the chosen `task_kind`, fires the smoke Modal `start-run`, and polls for terminal status.
+
+```ts
+// autopep/scripts/smoke-roundtrip.ts
+// Run: bun run autopep/scripts/smoke-roundtrip.ts smoke_chat
+import { eq } from "drizzle-orm";
+
+import { db } from "@/server/db";
+import { agentEvents, agentRuns } from "@/server/db/schema";
+import { createMessageRunWithLaunch } from "@/server/agent/project-run-creator";
+
+const TASK_KIND = process.argv[2] as "smoke_chat" | "smoke_tool" | "smoke_sandbox";
+const DEADLINE_MS = 90_000;
+const POLL_MS = 1500;
+
+if (!TASK_KIND || !TASK_KIND.startsWith("smoke_")) {
+  throw new Error("Usage: smoke-roundtrip.ts <smoke_chat|smoke_tool|smoke_sandbox>");
+}
+
+const { runId } = await createMessageRunWithLaunch({
+  contextRefs: [],
+  db,
+  ownerId: process.env.AUTOPEP_SMOKE_OWNER_ID!,
+  prompt: "ping",
+  recipeRefs: [],
+  taskKind: TASK_KIND,
+  threadId: process.env.AUTOPEP_SMOKE_THREAD_ID!,
+  workspaceId: process.env.AUTOPEP_SMOKE_WORKSPACE_ID!,
+});
+
+const start = Date.now();
+let run;
+while (Date.now() - start < DEADLINE_MS) {
+  [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId));
+  if (run.status === "completed" || run.status === "failed") break;
+  await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+}
+
+const events = await db
+  .select()
+  .from(agentEvents)
+  .where(eq(agentEvents.runId, runId))
+  .orderBy(agentEvents.sequence);
+
+const types = new Set(events.map((event) => event.type));
+const required = ["run_started", "assistant_message_completed", "run_completed"];
+if (TASK_KIND === "smoke_tool") required.push("tool_call_completed");
+if (TASK_KIND === "smoke_sandbox") required.push("sandbox_command_completed");
+
+const missing = required.filter((type) => !types.has(type));
+const sequenceContiguous = events.every(
+  (event, index) => event.sequence === index + 1,
+);
+
+if (run?.status !== "completed" || missing.length > 0 || !sequenceContiguous) {
+  console.error({
+    durationMs: Date.now() - start,
+    eventCount: events.length,
+    missing,
+    runStatus: run?.status,
+    sequenceContiguous,
+  });
+  process.exit(1);
+}
+
+console.log(
+  `✓ ${TASK_KIND} roundtrip in ${Date.now() - start}ms with ${events.length} events`,
+);
+```
+
+- [ ] **Step 5: Run smoke A — chat ping/pong**
+
+```bash
+cd autopep
+bun run scripts/smoke-roundtrip.ts smoke_chat
+```
+
+Expected: completes in under 15 seconds with at least 5 events, including `run_started`, `assistant_message_started`, at least one `assistant_token_delta`, `assistant_message_completed`, and `run_completed`. Sequence integers are contiguous starting at 1. `agent_runs.last_response_id` and `agent_runs.finished_at` are non-null.
+
+This step alone catches: wrong default model name, Modal secret resolution failures, OpenAI key plumbing, SDK stream event shape drift, webhook bearer auth handshake, and event sequence collisions.
+
+- [ ] **Step 6: Run smoke B — tool call**
+
+```bash
+cd autopep
+bun run scripts/smoke-roundtrip.ts smoke_tool
+```
+
+Expected: completes in under 25 seconds with at least 7 events, adding `tool_call_started` and `tool_call_completed` to the chat baseline. The smoke tool returned `now-ok` exactly once.
+
+This step catches `run_item_stream_event` mapping bugs in the normalizer added in Task 8.
+
+- [ ] **Step 7: Run smoke C — sandbox echo**
+
+```bash
+cd autopep
+bun run scripts/smoke-roundtrip.ts smoke_sandbox
+```
+
+Expected: completes in under 40 seconds with at least 9 events, adding `sandbox_command_started`, `sandbox_stdout_delta` (at least one with `sandbox-ok`), and `sandbox_command_completed`.
+
+This step is the first time `ModalSandboxClient` runs against a real Modal sandbox. It catches sandbox image bring-up failures, stdout streaming deadlocks, and snapshot/resume regressions.
+
+- [ ] **Step 8: Document the runbook and env vars**
+
+Add to `autopep/.env.example`:
+
+```
+# Integration smoke (Task 11.5). Disabled in production.
+AUTOPEP_ALLOW_SMOKE_RUNS=""
+AUTOPEP_SMOKE_DATABASE_URL=""
+AUTOPEP_SMOKE_MODAL_START_URL=""
+AUTOPEP_SMOKE_MODAL_WEBHOOK_SECRET=""
+AUTOPEP_SMOKE_OWNER_ID=""
+AUTOPEP_SMOKE_WORKSPACE_ID=""
+AUTOPEP_SMOKE_THREAD_ID=""
+```
+
+Add a short `## Smoke runbook` section to `autopep/README.md` covering: when to run (after Task 11, before Task 15, on every Modal worker change in CI behind `RUN_SMOKE=1`), the three layered smokes, and the cost envelope.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add autopep/modal/autopep_agent/smoke_agent.py autopep/modal/autopep_agent/runner.py autopep/modal/tests/test_smoke_runner.py autopep/scripts/smoke-roundtrip.ts autopep/.env.example autopep/README.md
+git commit -m "test: add integration smoke roundtrip"
+```
+
 ## Task 12: Unified Chat Panel And Trace Cards
 
 **Files:**
@@ -3286,26 +3520,24 @@ git add autopep/src/app/_components/journey-panel.tsx autopep/src/app/_component
 git commit -m "feat: compose autopep mvp workspace shell"
 ```
 
-## Task 15: End-To-End Verification
+## Task 15: Deployed Production End-To-End Verification
+
+**Production stance.** Autopep currently has zero users. It is explicitly fine to break production while developing this MVP — apply destructive migrations directly to production Neon, redeploy Modal whenever needed, force-deploy to Vercel, and roll forward. Do not invent staging environments, blue/green deploys, or backwards-compatibility shims to protect "users" who do not exist. Fix-forward is the correct posture for every step in this task.
+
+**Account scoping.** Three Modal-hosted inference APIs (Proteina-Complexa, Chai-1, protein interaction scoring) live in a separate Modal account that this task cannot deploy or modify. They are reached purely via HTTPS using their `MODAL_*_URL` and `MODAL_*_API_KEY` pairs. The `autopep-agent-worker` Modal app is in the autopep-controllable account and is the only Modal deployment this task touches.
+
+**Available tooling.** This task assumes the agent has the Neon MCP plugin, the Cloudflare MCP plugin, the Modal CLI logged into the autopep account, and either the Vercel CLI or Vercel MCP. Use the plugins to verify deployed state — do not rely on hopeful curl-and-grep alone.
+
+This task is a **headless backend end-to-end** validation. The browser-use UI smoke is optional and only added at the end, because the demo's reliability depends on the backend pipeline (TS → Modal → SDK → endpoints → Neon/R2), not on Mol* or the Tailwind tree.
 
 **Files:**
 - Modify: `autopep/README.md`
 - Modify: `autopep/.env.example`
+- Create: `autopep/scripts/deployed-e2e-3clpro.ts`
 
-- [ ] **Step 1: Apply the destructive database migration locally**
+- [ ] **Step 1: Pre-flight local checks**
 
-Run:
-
-```bash
-cd autopep
-bun run db:migrate
-```
-
-Expected: migrations apply successfully and Better Auth tables remain present.
-
-- [ ] **Step 2: Run the full local checks**
-
-Run:
+Stop early if these fail. There is no point deploying broken code even when production is breakable.
 
 ```bash
 cd autopep
@@ -3315,65 +3547,225 @@ bun run test
 PYTHONPATH=modal python3 -m pytest modal/tests -q
 ```
 
-Expected: all checks pass.
-
-- [ ] **Step 3: Verify deployed inference endpoint health**
-
-Run:
+Re-run the three Task 11.5 smokes against the smoke environment and confirm they still pass:
 
 ```bash
+bun run scripts/smoke-roundtrip.ts smoke_chat
+bun run scripts/smoke-roundtrip.ts smoke_tool
+bun run scripts/smoke-roundtrip.ts smoke_sandbox
+```
+
+Expected: all four checks plus all three smokes pass.
+
+- [ ] **Step 2: Apply the destructive migration to production Neon**
+
+Use the Neon MCP plugin to inspect and confirm production state at every step. Do not skip the verification reads — the migration is destructive and silently incorrect schemas have caused incidents before.
+
+```bash
+# 1. Identify the production project + branch via the Neon MCP plugin.
+#    list_projects, then describe_branch on the production branch.
+
+# 2. Capture the pre-migration table list for the diff record.
+#    get_database_tables(project_id, branch_id) — paste the result into the commit message body.
+
+# 3. Apply migrations against production DATABASE_URL.
+DATABASE_URL=$AUTOPEP_PROD_DATABASE_URL bun run db:migrate
+
+# 4. Verify the post-migration schema with the Neon MCP plugin:
+#    describe_table_schema for autopep_workspace, autopep_thread, autopep_message,
+#    autopep_agent_run, autopep_agent_event, autopep_artifact,
+#    autopep_protein_candidate, autopep_model_inference, autopep_candidate_score,
+#    autopep_context_reference, autopep_recipe, autopep_recipe_version,
+#    autopep_run_recipe.
+#    Also describe_table_schema for "user", "session", "account", "verification"
+#    to confirm Better Auth tables survived.
+```
+
+Expected: 13 autopep tables exist with the columns specified in Task 2; 4 Better Auth tables remain unchanged. If anything is wrong, inspect with the Neon MCP plugin and correct directly — do not write a recovery migration unless schema drift is the only path forward.
+
+- [ ] **Step 3: Verify Cloudflare R2 bucket and credentials**
+
+Use the Cloudflare MCP plugin to confirm the production R2 bucket exists, is in the expected account, and that the `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` pair has read+write+delete on that bucket. Then exercise the path with a real upload:
+
+```bash
+# Through the Cloudflare MCP plugin: verify the bucket, list objects (should be empty
+# or contain prior dev artifacts), and confirm the worker's IAM token scopes.
+
+# Round-trip a tiny artifact through the production storage adapter to prove the
+# Task 5 R2 client works against the real bucket:
+cd autopep
+bun run --silent -e '
+  import { r2ArtifactStore } from "@/server/artifacts/r2";
+  const key = `health-checks/${Date.now()}.txt`;
+  await r2ArtifactStore.put({ key, body: Buffer.from("ok"), contentType: "text/plain" });
+  console.log(await r2ArtifactStore.signedReadUrl({ key, ttlSeconds: 60 }));
+'
+```
+
+Expected: the `put` succeeds and the signed URL fetches `ok`. Delete the test key afterwards via the Cloudflare MCP plugin.
+
+- [ ] **Step 4: Deploy the autopep worker to Modal and verify inference endpoint health**
+
+```bash
+cd autopep
+
+# Confirm we are on the autopep Modal account, not the inference account:
+modal token current
+
+# Deploy the worker.
+modal deploy modal/autopep_worker.py
+
+# Capture the new start-run URL printed by Modal. Update AUTOPEP_MODAL_START_URL
+# everywhere it is set: local .env, Vercel project env, and any Modal Secret that
+# embeds it.
+
+# Confirm the deployed worker boots: hit the /health route exposed by the FastAPI
+# app, or trigger a no-op Modal function call via `modal run` if the deployment
+# does not expose /health.
+
+# Confirm the three inference endpoints (in the OTHER, inaccessible Modal account)
+# are reachable from this network:
 curl -fsS -H "X-API-Key: $MODAL_PROTEINA_API_KEY" "$MODAL_PROTEINA_URL/health"
 curl -fsS -H "X-API-Key: $MODAL_CHAI_API_KEY" "$MODAL_CHAI_URL/health"
 curl -fsS -H "X-API-Key: $MODAL_PROTEIN_INTERACTION_SCORING_API_KEY" "$MODAL_PROTEIN_INTERACTION_SCORING_URL/health"
 ```
 
-Expected: each endpoint returns JSON with healthy status.
+Expected: deployment succeeds, the worker `/health` (or no-op call) returns ok, and all three inference endpoints respond healthy. If an inference endpoint is down, this task is blocked — the inference account is not in scope to fix here, raise it out-of-band.
 
-- [ ] **Step 4: Deploy worker to Modal**
+- [ ] **Step 5: Push env vars to Vercel and deploy the frontend**
 
-Run:
+```bash
+# Required Vercel env vars for production. Set each via `vercel env add` or the
+# Vercel MCP plugin. Do not let mismatched values silently leak into production.
+#
+#   DATABASE_URL                                  -> production Neon URL
+#   BETTER_AUTH_SECRET                            -> existing prod secret
+#   BETTER_AUTH_URL                               -> production app URL
+#   OPENAI_API_KEY                                -> autopep-account OpenAI key
+#   OPENAI_DEFAULT_MODEL                          -> gpt-5.5
+#   AUTOPEP_RUNNER_BACKEND                        -> modal
+#   AUTOPEP_MODAL_START_URL                       -> from Step 4
+#   AUTOPEP_MODAL_WEBHOOK_SECRET                  -> from Modal Secret
+#   R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET
+#   MODAL_PROTEINA_URL / MODAL_PROTEINA_API_KEY
+#   MODAL_CHAI_URL / MODAL_CHAI_API_KEY
+#   MODAL_PROTEIN_INTERACTION_SCORING_URL / MODAL_PROTEIN_INTERACTION_SCORING_API_KEY
+
+vercel deploy --prod
+
+# After deploy: pull the live env back to confirm the deployed function actually
+# sees what was set. The Vercel UI lies sometimes; the runtime is the truth.
+vercel env pull .env.production.snapshot
+diff <(grep -E '^[A-Z_]+=' .env.production.expected | sort) \
+     <(grep -E '^[A-Z_]+=' .env.production.snapshot | sort) || true
+rm -f .env.production.snapshot
+```
+
+Expected: a successful production deploy whose preview URL serves the workspace shell. No env variable is missing or mismatched. If the deploy errors during build, fix forward and redeploy. There is no rollback strategy — there is nobody to roll back for.
+
+- [ ] **Step 6: Run the headless backend E2E against the deployed stack**
+
+This is the real validation. Drive the demo prompt end-to-end against production Vercel + production Modal + production Neon + production R2 with `gpt-5.5`. No browser involved.
+
+Create `autopep/scripts/deployed-e2e-3clpro.ts`:
+
+```ts
+// Run: AUTOPEP_PROD_API_BASE=https://<vercel-prod-url> \
+//      AUTOPEP_PROD_SESSION_COOKIE='<value>' \
+//      bun run autopep/scripts/deployed-e2e-3clpro.ts
+//
+// Drives the production Autopep API the same way the Next frontend would, but
+// without any browser. Creates a workspace, sends the 3CL-protease prompt, polls
+// agent_events through the public read API, and asserts the MVP loop completed
+// with at least one ranked candidate and one candidate_score row.
+
+const BASE = requireEnv("AUTOPEP_PROD_API_BASE");
+const COOKIE = requireEnv("AUTOPEP_PROD_SESSION_COOKIE");
+const PROMPT = "Generate a protein that binds to 3CL-protease.";
+const DEADLINE_MS = 30 * 60 * 1000; // 30 minutes — Proteina + Chai + scoring is real work.
+const POLL_MS = 5_000;
+
+const workspace = await trpc("workspace.createWorkspace", {
+  name: "Deployed E2E — 3CLpro",
+});
+const { run } = await trpc("workspace.sendMessage", {
+  workspaceId: workspace.id,
+  threadId: workspace.activeThreadId,
+  prompt: PROMPT,
+  taskKind: "research", // route to the real MVP agent, not a smoke kind
+  recipeRefs: [],
+  contextRefs: [],
+});
+
+// Poll cursor-based events until the run reaches a terminal status.
+let cursor = 0;
+const seenTypes = new Set<string>();
+const start = Date.now();
+let runRow: { status: string; errorSummary: string | null } = { status: "queued", errorSummary: null };
+while (Date.now() - start < DEADLINE_MS) {
+  const page = await trpc("workspace.getRunEvents", { runId: run.id, afterSequence: cursor });
+  for (const event of page.events) {
+    cursor = event.sequence;
+    seenTypes.add(event.type);
+    console.log(`[seq=${event.sequence}] ${event.type}: ${event.title}`);
+  }
+  runRow = await trpc("workspace.getRun", { runId: run.id });
+  if (runRow.status === "completed" || runRow.status === "failed" || runRow.status === "cancelled") break;
+  await sleep(POLL_MS);
+}
+
+const required = [
+  "run_started",
+  "tool_call_completed",       // at least one biology tool fired
+  "artifact_created",          // at least one artifact landed in R2
+  "candidate_ranked",          // candidates persisted
+  "run_completed",
+];
+const missing = required.filter((type) => !seenTypes.has(type));
+
+if (runRow.status !== "completed" || missing.length > 0) {
+  console.error({ runStatus: runRow.status, errorSummary: runRow.errorSummary, missing });
+  process.exit(1);
+}
+
+// Spot-check Neon directly via the Neon MCP plugin to confirm row counts:
+//   - autopep_artifact has at least one row for this run_id (target CIF)
+//   - autopep_protein_candidate has at least one row for this run_id
+//   - autopep_model_inference has rows for proteina_complexa, chai_1,
+//     protein_interaction_scoring
+//   - autopep_candidate_score has at least one aggregate row with a non-null label
+console.log("✓ Deployed E2E completed");
+```
+
+Then run it:
 
 ```bash
 cd autopep
-modal deploy modal/autopep_worker.py
+AUTOPEP_PROD_API_BASE=https://<vercel-prod-url> \
+AUTOPEP_PROD_SESSION_COOKIE='<value>' \
+bun run scripts/deployed-e2e-3clpro.ts
 ```
 
-Expected: Modal prints the `start-run` endpoint URL. Update `AUTOPEP_MODAL_START_URL` in `.env` and Vercel if the label URL changed.
+Expected: the run reaches `completed`, all five required event types appear at least once, and the Neon MCP spot-checks confirm artifacts, candidates, model_inferences, and candidate_scores rows. If the run fails, read the preserved events + `error_summary`, fix the underlying issue (in TS, in the worker, in env, wherever), redeploy whatever is needed, and re-run. Do not ship Task 15 without one fully successful run.
 
-- [ ] **Step 5: Run the browser workflow with `@browser-use`**
+- [ ] **Step 7: Optional browser smoke + README + final commit**
 
-Use the in-app browser plugin against the local dev server:
+Once Step 6 passes, do a single browser-use pass against the deployed Vercel URL to confirm the UI renders the same flow:
 
-```bash
-cd autopep
-bun run dev
-```
-
-Browser workflow:
-
-1. Open `http://localhost:3000`.
-2. Sign in with a development account.
-3. Create or open a workspace.
+1. Open the Vercel production URL.
+2. Sign in.
+3. Open the workspace created in Step 6 (or a new one).
 4. Send `Generate a protein that binds to 3CL-protease`.
-5. Confirm chat events stream through polling: run start, literature/PDB steps, Proteina, Chai, scoring, completion.
-6. Confirm Mol* loads a target or generated structure artifact.
-7. Click a protein region and confirm a context chip appears in the chat composer.
-8. Confirm the right panel shows the MVP stop marker and score leaves.
+5. Confirm chat events render through polling, Mol* loads a structure, the journey panel shows score leaves.
 
-Expected: the workflow reaches a completed run or a failed run with preserved partial events and raw details.
+This is corroboration, not the source of truth. If Step 6 passes and the browser smoke shows a UI rendering glitch, treat it as a UI bug, not an E2E failure.
 
-- [ ] **Step 6: Update README**
-
-Add a compact section:
-
-```md
-## Autopep MVP Runtime
-
-The app uses Next.js for authenticated workspace UI and a Modal-hosted Python OpenAI Agents SDK worker for long-running agent execution. Vercel only creates messages/runs and starts Modal. The worker writes events, artifacts, candidates, model inferences, and scores to Neon/R2.
+Update `autopep/README.md` with a `## Autopep MVP Runtime` section listing required runtime secrets and a `## Production runbook` section pointing at this task's steps, the Task 11.5 smokes, and the Neon/Cloudflare MCP plugins as the canonical inspection tools.
 
 Required runtime secrets:
 
 - `OPENAI_API_KEY`
+- `OPENAI_DEFAULT_MODEL` (default `gpt-5.5`)
 - `DATABASE_URL`
 - `R2_ACCOUNT_ID`
 - `R2_ACCESS_KEY_ID`
@@ -3387,18 +3779,18 @@ Required runtime secrets:
 - `MODAL_CHAI_API_KEY`
 - `MODAL_PROTEIN_INTERACTION_SCORING_URL`
 - `MODAL_PROTEIN_INTERACTION_SCORING_API_KEY`
-```
 
-- [ ] **Step 7: Final commit**
+Final commit:
 
 ```bash
-git add autopep/README.md autopep/.env.example
-git commit -m "docs: document autopep mvp runtime"
+git add autopep/README.md autopep/.env.example autopep/scripts/deployed-e2e-3clpro.ts
+git commit -m "docs: document autopep mvp runtime and deployed e2e"
 ```
 
 ## Self-Review Checklist
 
-- Spec coverage: Tasks 1-4 cover contracts, schema, workspaces, messages, runs, events, and polling. Tasks 5-11 cover artifacts, Python Agents SDK runtime, Modal sandbox setup, Life Science Research context, Proteina, Chai, scoring, and one-loop persistence. Tasks 12-14 cover unified chat, larger Mol* stage, context chips, compact journey, candidate tree, workspace navigation, and recipes. Task 15 covers local checks, Modal deployment, and browser-use acceptance.
+- Spec coverage: Tasks 1-4 cover contracts, schema, workspaces, messages, runs, events, and polling. Tasks 5-11 cover artifacts, Python Agents SDK runtime, Modal sandbox setup, Life Science Research context, Proteina, Chai, scoring, and one-loop persistence. Task 11.5 covers integration smoke roundtrips against a Neon branch and a smoke Modal app to surface integration drift before any frontend work. Tasks 12-14 cover unified chat, larger Mol* stage, context chips, compact journey, candidate tree, workspace navigation, and recipes. Task 15 covers a deployed production end-to-end pass: destructive migration to production Neon (with Neon MCP verification), Cloudflare R2 verification (with the Cloudflare MCP plugin), Modal worker deploy, Vercel env + production deploy, and a headless backend E2E driving the 3CL-protease prompt against the deployed stack with `gpt-5.5`. Production breakage is acceptable while there are no users.
+- Model selection: Real demo runs use `gpt-5.5`. Smoke and CI runs use a `gpt-5.x-mini` (e.g. `gpt-5.5-mini`). Anthropic Haiku and other non-OpenAI models are not compatible with the worker.
 - MVP boundary: The plan stops after one scored generation/folding batch and only preserves lineage for Phase 2 branching.
 - Test stance: Default local tests mock OpenAI, Modal inference endpoints, RCSB, PubMed, bioRxiv, R2, and browser flows. Real endpoint calls are verification steps only.
 - Security stance: Modal/OpenAI/R2 credentials remain server/worker-only. Browser code receives signed/public artifact URLs and database-backed display payloads only.
