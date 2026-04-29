@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,14 +9,14 @@ from fastapi import Request
 import modal
 
 
-APP_NAME = "autopep-sandbox-worker"
+APP_NAME = "autopep-agent-worker"
 APP_DIR = "/app"
 WORKSPACE_DIR = "/autopep-workspaces"
 WORKSPACE_VOLUME_NAME = "autopep-workspaces"
 RUNTIME_SECRET_NAME = "autopep-runtime"
 WEBHOOK_SECRET_NAME = "autopep-webhook"
-SANDBOX_TIMEOUT_SECONDS = 60 * 60
-SANDBOX_IDLE_TIMEOUT_SECONDS = 5 * 60
+AGENT_TIMEOUT_SECONDS = 60 * 60
+START_RUN_TIMEOUT_SECONDS = 120
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 UUID_RE = re.compile(
@@ -37,46 +35,15 @@ control_image = modal.Image.debian_slim(python_version="3.12").pip_install(
     "fastapi[standard]",
 )
 
-sandbox_image = (
+worker_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install(
-        "bash",
-        "ca-certificates",
-        "curl",
-        "git",
-        "nodejs",
-        "npm",
-        "unzip",
-    )
-    .pip_install("fastapi[standard]", "requests")
-    .run_commands(
-        "curl -fsSL https://bun.sh/install | bash",
-        "ln -sf /root/.bun/bin/bun /usr/local/bin/bun",
-        "bun install -g @openai/codex",
-        "ln -sf /root/.bun/bin/codex /usr/local/bin/codex",
-        "git clone --depth=1 https://github.com/openai/plugins.git /tmp/openai-plugins",
-        "mkdir -p /opt/life-science-research",
-        "cp -R /tmp/openai-plugins/plugins/life-science-research/. /opt/life-science-research/",
-        "mkdir -p /root/.codex/plugins/cache/openai-curated/life-science-research/6807e4de",
-        "cp -R /opt/life-science-research/. /root/.codex/plugins/cache/openai-curated/life-science-research/6807e4de/",
-        "rm -rf /tmp/openai-plugins",
-    )
+    .pip_install_from_requirements("modal/requirements.txt")
     .add_local_dir(
-        REPO_ROOT,
-        remote_path=APP_DIR,
+        str(REPO_ROOT / "modal" / "autopep_agent"),
+        remote_path=f"{APP_DIR}/autopep_agent",
         copy=True,
-        ignore=[
-            ".env",
-            ".env.*",
-            ".git",
-            ".next",
-            ".turbo",
-            ".worktrees",
-            "node_modules",
-        ],
     )
     .workdir(APP_DIR)
-    .run_commands("bun install --frozen-lockfile")
 )
 
 
@@ -107,97 +74,54 @@ def _require_uuid(payload: dict[str, Any], key: str) -> str:
     return value
 
 
-def _sandbox_command(run_id: str, project_id: str) -> str:
-    codex_prompt = (
-        "You are the Autopep target-structure retrieval worker. "
-        "Read AUTOPEP_HARNESS_INPUT for projectId, runId, prompt, and topK. "
-        "Use the life-science-research plugin mounted at /opt/life-science-research, "
-        "with the same plugin mirrored under /root/.codex/plugins/cache/openai-curated/life-science-research/6807e4de. "
-        "search RCSB/PubMed literature as needed, select top relevant structures, "
-        "persist progress/candidates/artifacts to Neon, upload CIF artifacts to R2, "
-        "and finish only when at least one CIF artifact is ready for downstream Proteina use."
-    )
-    default_codex_command = (
-        'mkdir -p /root/.codex && '
-        'if [ -n "${OPENAI_API_KEY:-}" ]; then '
-        'printenv OPENAI_API_KEY | codex login --with-api-key >/tmp/codex-login.log 2>&1 || '
-        '{ sed -E "s/(sk-[A-Za-z0-9_-]+)/<redacted>/g" /tmp/codex-login.log >&2; exit 1; }; '
-        "fi && "
-        'codex exec -c preferred_auth_method=\\"apikey\\" '
-        '--model "${AUTOPEP_CODEX_MODEL:-gpt-5.5}" '
-        "--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
-        '--cd /app "$AUTOPEP_CODEX_TASK_PROMPT"'
-    )
+@app.function(
+    image=worker_image,
+    secrets=[runtime_secret],
+    timeout=AGENT_TIMEOUT_SECONDS,
+    volumes={WORKSPACE_DIR: workspace_volume},
+    cpu=1,
+    memory=2048,
+)
+def run_autopep_agent(workspace_id: str, thread_id: str, run_id: str) -> None:
+    import asyncio
 
-    return "\n".join(
-        [
-            "set -euo pipefail",
-            f"mkdir -p {shlex.quote(WORKSPACE_DIR)}/{shlex.quote(project_id)}",
-            'export PATH="/root/.bun/bin:$PATH"',
-            f"export AUTOPEP_PROJECT_WORKSPACE={shlex.quote(WORKSPACE_DIR)}/{shlex.quote(project_id)}",
-            "export AUTOPEP_LIFE_SCIENCE_PLUGIN_PATH=/opt/life-science-research",
-            f"export AUTOPEP_CODEX_TASK_PROMPT={shlex.quote(codex_prompt)}",
-            'export AUTOPEP_AGENT_MODE="${AUTOPEP_AGENT_MODE:-codex}"',
-            'export AUTOPEP_CODEX_MODEL="${AUTOPEP_CODEX_MODEL:-gpt-5.5}"',
-            'if [ -z "${AUTOPEP_CODEX_COMMAND:-}" ]; then',
-            f"  export AUTOPEP_CODEX_COMMAND={shlex.quote(default_codex_command)}",
-            "fi",
-            f"bun run worker:cif --run-id {shlex.quote(run_id)}",
-            f"sync {shlex.quote(WORKSPACE_DIR)} || true",
-        ]
+    from autopep_agent.runner import execute_run
+
+    asyncio.run(
+        execute_run(
+            workspace_id=workspace_id,
+            thread_id=thread_id,
+            run_id=run_id,
+        )
     )
 
 
 @app.function(
-    image=sandbox_image,
-    secrets=[runtime_secret],
-    timeout=SANDBOX_TIMEOUT_SECONDS,
-    volumes={WORKSPACE_DIR: workspace_volume},
-    cpu=0.125,
-    memory=512,
+    image=control_image,
+    secrets=[webhook_secret],
+    timeout=START_RUN_TIMEOUT_SECONDS,
 )
-def launch_autopep_sandbox(run_id: str, project_id: str) -> str | None:
-    command = _sandbox_command(run_id=run_id, project_id=project_id)
-    process = subprocess.Popen(
-        ["bash", "-lc", command],
-        cwd=APP_DIR,
-        stderr=subprocess.STDOUT,
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-
-    if process.stdout:
-        for line in process.stdout:
-            print(line, end="", flush=True)
-
-    return_code = process.wait()
-    if return_code != 0:
-        raise RuntimeError(f"Autopep worker exited with code {return_code}.")
-
-    return run_id
-
-
-@app.function(image=control_image, secrets=[webhook_secret], timeout=120)
 @modal.fastapi_endpoint(method="POST", docs=False, label="start-run")
 async def start_run(request: Request) -> Any:
     from fastapi.responses import JSONResponse
 
     _require_bearer(request)
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise _http_error(status_code=400, detail="Invalid JSON.") from exc
+
     if not isinstance(payload, dict):
         raise _http_error(status_code=422, detail="Expected a JSON object.")
 
+    workspace_id = _require_uuid(payload, "workspaceId")
+    thread_id = _require_uuid(payload, "threadId")
     run_id = _require_uuid(payload, "runId")
-    workspace_id = payload.get("workspaceId")
-    if not isinstance(workspace_id, str):
-        workspace_id = payload.get("projectId")
-    if not isinstance(workspace_id, str) or not UUID_RE.match(workspace_id):
-        raise _http_error(status_code=422, detail="workspaceId must be a UUID.")
-    if "threadId" in payload:
-        _require_uuid(payload, "threadId")
-    function_call = launch_autopep_sandbox.spawn(
+
+    function_call = run_autopep_agent.spawn(
+        workspace_id=workspace_id,
+        thread_id=thread_id,
         run_id=run_id,
-        project_id=workspace_id,
     )
     return JSONResponse(
         content={

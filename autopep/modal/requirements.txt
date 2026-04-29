@@ -1,0 +1,8 @@
+fastapi[standard]
+modal
+openai-agents[modal]
+httpx
+psycopg[binary]
+boto3
+pydantic
+biopython
