@@ -43,6 +43,13 @@
       "when": 1777465818383,
       "tag": "0005_public_black_crow",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1777501713565,
+      "tag": "0006_sleepy_wildside",
+      "breakpoints": true
     }
   ]
 }

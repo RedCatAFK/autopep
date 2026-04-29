@@ -151,4 +151,8 @@ describe("Autopep runtime contracts", () => {
 			expect(artifactKindSchema.parse(kind)).toBe(kind);
 		}
 	});
+
+	it("accepts the attachment artifact kind", () => {
+		expect(() => artifactKindSchema.parse("attachment")).not.toThrow();
+	});
 });

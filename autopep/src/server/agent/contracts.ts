@@ -69,6 +69,7 @@ export const artifactKindSchema = z.enum([
 	"score_report",
 	"log",
 	"image",
+	"attachment",
 	"other",
 ]);
 

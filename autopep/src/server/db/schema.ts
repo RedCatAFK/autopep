@@ -136,6 +136,7 @@ export const artifactKind = pgEnum("artifact_kind", [
 	"score_report",
 	"log",
 	"image",
+	"attachment",
 	"other",
 ]);
 
@@ -160,6 +161,7 @@ export const workspaces = createAutopepTable(
 			.$onUpdate(() => new Date())
 			.notNull(),
 		archivedAt: timestamp("archived_at", { withTimezone: true }),
+		autoNamedAt: timestamp("auto_named_at", { withTimezone: true }),
 	},
 	(t) => [index("autopep_workspace_owner_idx").on(t.ownerId)],
 );
@@ -206,6 +208,10 @@ export const messages = createAutopepTable(
 		attachmentRefsJson: jsonb("attachment_refs_json")
 			.$type<string[]>()
 			.default(sql`'[]'::jsonb`)
+			.notNull(),
+		metadata: jsonb("metadata")
+			.$type<Record<string, unknown>>()
+			.default(sql`'{}'::jsonb`)
 			.notNull(),
 		createdAt: timestamp("created_at", { withTimezone: true })
 			.defaultNow()
