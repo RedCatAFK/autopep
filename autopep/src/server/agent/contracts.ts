@@ -1,9 +1,13 @@
 import { z } from "zod";
 
 export const agentEventTypeSchema = z.enum([
+	"codex_agent_started",
+	"codex_agent_finished",
+	"codex_agent_fallback",
 	"normalizing_target",
 	"searching_structures",
 	"searching_literature",
+	"searching_biorxiv",
 	"ranking_candidates",
 	"downloading_cif",
 	"preparing_cif",

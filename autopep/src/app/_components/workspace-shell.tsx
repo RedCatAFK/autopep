@@ -8,30 +8,46 @@ import {
 	BookOpen,
 	BoundingBox,
 	CaretRight,
+	ChatCircleText,
 	Check,
 	CircleNotch,
 	Cube,
 	DotsThreeVertical,
+	DownloadSimple,
 	Eye,
 	FileText,
 	FolderOpen,
+	FunnelSimple,
 	GearSix,
 	HandPalm,
 	HouseLine,
+	Info,
 	Lightning,
+	LinkSimple,
 	MagnifyingGlass,
 	Paperclip,
 	PaperPlaneTilt,
 	Question,
 	ShareNetwork,
 	SlidersHorizontal,
+	SortAscending,
 	Sparkle,
 	UserCircle,
+	X,
 } from "@phosphor-icons/react";
 import Image from "next/image";
-import { type FormEvent, type ReactNode, useEffect, useState } from "react";
+import {
+	type FormEvent,
+	type ReactNode,
+	useEffect,
+	useMemo,
+	useState,
+} from "react";
+
+import { proteinTargetPreview } from "@/app/_components/protein-preview-image";
 
 export type WorkspaceCandidate = {
+	citationJson: Record<string, unknown>;
 	id: string;
 	method: string | null;
 	organism: string | null;
@@ -47,22 +63,44 @@ export type WorkspaceCandidate = {
 export type WorkspaceEvent = {
 	detail: string | null;
 	id: string;
+	payloadJson: Record<string, unknown>;
 	sequence: number;
 	title: string;
 	type: string;
 };
 
+export type WorkspaceArtifact = {
+	byteSize: number;
+	candidateId: string | null;
+	fileName: string;
+	id: string;
+	signedUrl: string | null;
+	sourceUrl: string | null;
+	type: string;
+};
+
+export type WorkspaceChatMessage = {
+	id: string;
+	role: "assistant" | "user";
+	text: string;
+};
+
 type WorkspaceShellProps = {
 	artifactLabel: string;
+	artifacts: WorkspaceArtifact[];
 	candidates: WorkspaceCandidate[];
+	chatMessages: WorkspaceChatMessage[];
 	children: ReactNode;
 	events: WorkspaceEvent[];
+	isAnsweringQuestion: boolean;
 	isCreatingRun: boolean;
 	isLoadingWorkspace: boolean;
+	onAskQuestion: (question: string) => void;
 	onRefresh: () => void;
-	onStartGoal: (goal: string) => void;
+	onStartGoal: (goal: string, options?: { topK: number }) => void;
 	projectGoal: string;
 	runStatus: string | null;
+	selectedArtifact: WorkspaceArtifact | null;
 	selectedCandidate: WorkspaceCandidate | null;
 	targetName: string;
 };
@@ -94,6 +132,9 @@ const statusCopy: Record<string, { detail: string; label: string }> = {
 };
 
 const eventTypeLabels: Record<string, string> = {
+	codex_agent_fallback: "Agent fallback",
+	codex_agent_finished: "Codex finished",
+	codex_agent_started: "Codex running",
 	downloading_cif: "Downloading CIF",
 	normalizing_target: "Understanding target",
 	preparing_cif: "Preparing CIF",
@@ -101,25 +142,46 @@ const eventTypeLabels: Record<string, string> = {
 	ready_for_proteina: "Ready for Proteina",
 	run_start_skipped: "Run already active",
 	searching_literature: "Reading literature",
+	searching_biorxiv: "Searching bioRxiv",
 	searching_structures: "Finding structures",
 	uploading_artifact: "Saving artifact",
 };
 
 export function WorkspaceShell({
 	artifactLabel,
+	artifacts,
 	candidates,
+	chatMessages,
 	children,
 	events,
+	isAnsweringQuestion,
 	isCreatingRun,
 	isLoadingWorkspace,
+	onAskQuestion,
 	onRefresh,
 	onStartGoal,
 	projectGoal,
 	runStatus,
+	selectedArtifact,
 	selectedCandidate,
 	targetName,
 }: WorkspaceShellProps) {
 	const [draftGoal, setDraftGoal] = useState(projectGoal || spikeGoal);
+	const [attachedContext, setAttachedContext] = useState("");
+	const [candidateFilter, setCandidateFilter] = useState<
+		"all" | "ready" | "structure"
+	>("all");
+	const [candidateSort, setCandidateSort] = useState<
+		"rank" | "resolution" | "score"
+	>("rank");
+	const [isHelpOpen, setIsHelpOpen] = useState(false);
+	const [isOptionsOpen, setIsOptionsOpen] = useState(false);
+	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+	const [isContextOpen, setIsContextOpen] = useState(false);
+	const [questionDraft, setQuestionDraft] = useState("");
+	const [showAllEvents, setShowAllEvents] = useState(false);
+	const [stageTool, setStageTool] = useState("Select");
+	const [topK, setTopK] = useState(5);
 	const status = runStatus ? statusCopy[runStatus] : null;
 	const hasRun = Boolean(runStatus);
 	const isActive = runStatus === "queued" || runStatus === "running";
@@ -135,18 +197,77 @@ export function WorkspaceShell({
 	const selectedCandidateReady = Boolean(
 		selectedCandidate?.proteinaReady && hasArtifact,
 	);
-	const latestEvents = events.slice(-4).reverse();
+	const eventsToDisplay = showAllEvents ? events : events.slice(-5);
+	const latestEvents = eventsToDisplay.slice().reverse();
+	const artifactByCandidateId = useMemo(
+		() =>
+			new Map(
+				artifacts
+					.filter((artifact) => artifact.candidateId)
+					.map((artifact) => [artifact.candidateId, artifact]),
+			),
+		[artifacts],
+	);
+	const sortedCandidates = useMemo(() => {
+		const filtered = candidates.filter((candidate) => {
+			if (candidateFilter === "ready") {
+				return candidate.proteinaReady;
+			}
+			if (candidateFilter === "structure") {
+				return Boolean(candidate.method || candidate.resolutionAngstrom);
+			}
+
+			return true;
+		});
+
+		return filtered.slice().sort((left, right) => {
+			if (candidateSort === "score") {
+				return right.relevanceScore - left.relevanceScore;
+			}
+			if (candidateSort === "resolution") {
+				const leftResolution =
+					left.resolutionAngstrom ?? Number.POSITIVE_INFINITY;
+				const rightResolution =
+					right.resolutionAngstrom ?? Number.POSITIVE_INFINITY;
+				return leftResolution - rightResolution;
+			}
+
+			return left.rank - right.rank;
+		});
+	}, [candidateFilter, candidateSort, candidates]);
+	const selectedArtifactHref = selectedArtifact?.signedUrl ?? null;
 	const submitGoal = (goal: string) => {
 		const trimmedGoal = goal.trim();
 		if (trimmedGoal.length < 3 || isCreatingRun) {
 			return;
 		}
 
-		onStartGoal(trimmedGoal);
+		const goalWithContext = attachedContext.trim()
+			? `${trimmedGoal}\n\nContext:\n${attachedContext.trim()}`
+			: trimmedGoal;
+		onStartGoal(goalWithContext, { topK });
 	};
 	const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		submitGoal(draftGoal);
+	};
+	const handleQuestionSubmit = (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const trimmedQuestion = questionDraft.trim();
+		if (!trimmedQuestion || isAnsweringQuestion) {
+			return;
+		}
+
+		setQuestionDraft("");
+		onAskQuestion(trimmedQuestion);
+	};
+	const triggerViewerAction = (action: string) => {
+		setStageTool(action);
+		window.dispatchEvent(
+			new CustomEvent("autopep:viewer-action", {
+				detail: { action },
+			}),
+		);
 	};
 
 	useEffect(() => {
@@ -154,8 +275,8 @@ export function WorkspaceShell({
 	}, [projectGoal]);
 
 	return (
-		<main className="min-h-[100dvh] bg-[#f8f7f2] text-[#17211e]">
-			<header className="sticky top-0 z-20 flex h-16 items-center justify-between border-[#e5e2d9] border-b bg-[#fffef9]/95 px-4 backdrop-blur md:px-5">
+		<main className="min-h-[100dvh] bg-[#f8f7f2] text-[#17211e] lg:fixed lg:inset-0 lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
+			<header className="sticky top-0 z-20 flex h-16 items-center justify-between border-[#e5e2d9] border-b bg-[#fffef9]/95 px-4 backdrop-blur md:px-5 lg:shrink-0">
 				<div className="flex items-center gap-3">
 					<AutopepMark />
 					<p className="font-semibold text-[21px] tracking-[-0.02em]">
@@ -163,7 +284,11 @@ export function WorkspaceShell({
 					</p>
 				</div>
 				<div className="flex items-center gap-2">
-					<IconButton ariaLabel="Help" title="Help">
+					<IconButton
+						ariaLabel="Help"
+						onClick={() => setIsHelpOpen((isOpen) => !isOpen)}
+						title="Help"
+					>
 						<Question size={18} />
 					</IconButton>
 					<div className="flex size-9 items-center justify-center rounded-full border border-[#e5e2d9] bg-[#f6f4ee] font-medium text-[#2b332f] text-xs">
@@ -171,8 +296,32 @@ export function WorkspaceShell({
 					</div>
 				</div>
 			</header>
+			{isHelpOpen ? (
+				<div className="fixed top-[4.5rem] right-4 z-30 w-[min(360px,calc(100vw-2rem))] rounded-lg border border-[#d7d4c9] bg-[#fffef9] p-4 shadow-[0_24px_80px_-46px_rgba(25,39,33,0.75)]">
+					<div className="flex items-start justify-between gap-3">
+						<div className="flex items-center gap-2">
+							<Info size={18} />
+							<p className="font-semibold text-sm">Current scope</p>
+						</div>
+						<button
+							aria-label="Close help"
+							className="rounded-md p-1 text-[#5f6963] hover:bg-[#f0efe8]"
+							onClick={() => setIsHelpOpen(false)}
+							type="button"
+						>
+							<X size={16} />
+						</button>
+					</div>
+					<p className="mt-3 text-[#626c66] text-sm leading-6">
+						Autopep currently retrieves target structures, reviews PubMed and
+						bioRxiv-style preprints, downloads CIF files, and visualizes them in
+						Mol*. Binder generation and mutation tools are intentionally out of
+						scope.
+					</p>
+				</div>
+			) : null}
 
-			<div className="grid min-h-[calc(100dvh-4rem)] grid-cols-1 md:grid-cols-[72px_minmax(0,1fr)] lg:grid-cols-[72px_minmax(300px,360px)_minmax(0,1fr)_minmax(300px,340px)]">
+			<div className="grid min-h-[calc(100dvh-4rem)] grid-cols-1 md:grid-cols-[72px_minmax(0,1fr)] lg:min-h-0 lg:flex-1 lg:grid-cols-[72px_minmax(300px,360px)_minmax(0,1fr)_minmax(300px,340px)]">
 				<aside className="flex min-h-16 items-center justify-between border-[#e5e2d9] border-b bg-[#fbfaf6] px-3 md:min-h-0 md:flex-col md:border-r md:border-b-0 md:px-0 md:py-5">
 					<nav className="flex items-center gap-2 md:flex-col md:gap-4">
 						<RailButton active label="Home">
@@ -200,7 +349,7 @@ export function WorkspaceShell({
 					</button>
 				</aside>
 
-				<aside className="border-[#e5e2d9] border-b bg-[#fbfaf6] p-5 md:col-start-2 lg:col-start-auto lg:border-r lg:border-b-0">
+				<aside className="border-[#e5e2d9] border-b bg-[#fbfaf6] p-5 md:col-start-2 lg:col-start-auto lg:min-h-0 lg:overflow-y-auto lg:border-r lg:border-b-0">
 					<section>
 						<p className="font-semibold text-[17px] tracking-[-0.01em]">
 							What would you like to design?
@@ -229,6 +378,7 @@ export function WorkspaceShell({
 									<button
 										aria-label="Attach research context"
 										className="rounded-md p-1.5 transition hover:bg-[#f0f0e9]"
+										onClick={() => setIsContextOpen((isOpen) => !isOpen)}
 										type="button"
 									>
 										<Paperclip size={19} />
@@ -236,6 +386,7 @@ export function WorkspaceShell({
 									<button
 										aria-label="Prompt settings"
 										className="rounded-md p-1.5 transition hover:bg-[#f0f0e9]"
+										onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
 										type="button"
 									>
 										<SlidersHorizontal size={19} />
@@ -251,6 +402,45 @@ export function WorkspaceShell({
 									<PaperPlaneTilt size={22} weight="fill" />
 								</button>
 							</div>
+							{isContextOpen ? (
+								<div className="mt-4 border-[#ece9df] border-t pt-4">
+									<label
+										className="font-medium text-[#49524d] text-xs"
+										htmlFor="autopep-context"
+									>
+										Research context
+									</label>
+									<textarea
+										className="mt-2 min-h-20 w-full resize-none rounded-md border border-[#ddd9cf] bg-[#fbfaf6] px-3 py-2 text-[#34403b] text-sm leading-6 outline-none transition focus:border-[#cbd736]"
+										id="autopep-context"
+										onChange={(event) => setAttachedContext(event.target.value)}
+										placeholder="Optional constraints, organism, assay context, or known PDB IDs"
+										value={attachedContext}
+									/>
+								</div>
+							) : null}
+							{isSettingsOpen ? (
+								<div className="mt-4 border-[#ece9df] border-t pt-4">
+									<div className="flex items-center justify-between gap-3">
+										<label
+											className="font-medium text-[#49524d] text-xs"
+											htmlFor="autopep-top-k"
+										>
+											RCSB results
+										</label>
+										<p className="font-mono text-[#41504b] text-xs">{topK}</p>
+									</div>
+									<input
+										className="mt-3 w-full accent-[#0b715f]"
+										id="autopep-top-k"
+										max={10}
+										min={1}
+										onChange={(event) => setTopK(Number(event.target.value))}
+										type="range"
+										value={topK}
+									/>
+								</div>
+							) : null}
 						</form>
 
 						<div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1">
@@ -275,7 +465,7 @@ export function WorkspaceShell({
 
 					<section className="mt-7">
 						<div className="flex items-center gap-2">
-							<Sparkle size={17} weight="fill" />
+							<ChatCircleText size={17} weight="fill" />
 							<p className="font-medium text-sm">Autopep Assistant</p>
 						</div>
 						<div className="mt-4 rounded-lg border border-[#d7d4c9] bg-[#fffef9] p-4">
@@ -294,6 +484,47 @@ export function WorkspaceShell({
 									</p>
 								</div>
 							</div>
+							<div className="mt-4 max-h-52 space-y-2 overflow-y-auto pr-1">
+								{chatMessages.map((message) => (
+									<div
+										className={`rounded-lg px-3 py-2 text-sm leading-6 ${
+											message.role === "user"
+												? "ml-7 bg-[#edf4ed] text-[#24302b]"
+												: "mr-7 bg-[#f4f2ea] text-[#4e5953]"
+										}`}
+										key={message.id}
+									>
+										{message.text}
+									</div>
+								))}
+								{isAnsweringQuestion ? (
+									<div className="mr-7 rounded-lg bg-[#f4f2ea] px-3 py-2 text-[#4e5953] text-sm">
+										<CircleNotch className="inline animate-spin" size={14} />{" "}
+										Thinking
+									</div>
+								) : null}
+							</div>
+							<form className="mt-3 flex gap-2" onSubmit={handleQuestionSubmit}>
+								<label className="sr-only" htmlFor="autopep-question">
+									Ask Autopep
+								</label>
+								<input
+									className="min-w-0 flex-1 rounded-md border border-[#ddd9cf] bg-[#fbfaf6] px-3 py-2 text-[#303b37] text-sm outline-none transition placeholder:text-[#9ba39c] focus:border-[#cbd736]"
+									disabled={isAnsweringQuestion}
+									id="autopep-question"
+									onChange={(event) => setQuestionDraft(event.target.value)}
+									placeholder="Ask about PDB, bioRxiv, or CIF"
+									value={questionDraft}
+								/>
+								<button
+									aria-label="Ask Autopep"
+									className="flex size-10 shrink-0 items-center justify-center rounded-md bg-[#dfe94c] text-[#20342f] transition hover:bg-[#d4e337] disabled:cursor-not-allowed disabled:opacity-60"
+									disabled={!questionDraft.trim() || isAnsweringQuestion}
+									type="submit"
+								>
+									<PaperPlaneTilt size={18} weight="fill" />
+								</button>
+							</form>
 						</div>
 					</section>
 
@@ -357,8 +588,8 @@ export function WorkspaceShell({
 					</section>
 				</aside>
 
-				<section className="flex min-w-0 flex-col bg-[#f8f7f2] lg:border-[#e5e2d9] lg:border-r">
-					<div className="flex flex-wrap items-start justify-between gap-4 p-5 md:p-6">
+				<section className="flex min-w-0 flex-col bg-[#f8f7f2] lg:min-h-0 lg:overflow-hidden lg:border-[#e5e2d9] lg:border-r">
+					<div className="flex flex-wrap items-start justify-between gap-4 p-5 md:p-6 lg:shrink-0">
 						<div className="flex min-w-0 items-start gap-4">
 							<StatusBadge
 								active={isActive}
@@ -377,6 +608,18 @@ export function WorkspaceShell({
 							</div>
 						</div>
 						<div className="flex items-center gap-2 rounded-lg border border-[#e1ded4] bg-[#fffef9] p-1">
+							{selectedArtifactHref ? (
+								<a
+									aria-label="Download CIF"
+									className="flex size-8 items-center justify-center rounded-md text-[#394541] transition hover:bg-[#f0efe8] active:translate-y-[1px]"
+									href={selectedArtifactHref}
+									rel="noreferrer"
+									target="_blank"
+									title="Download CIF"
+								>
+									<DownloadSimple size={18} />
+								</a>
+							) : null}
 							<IconButton
 								ariaLabel="Refresh workspace"
 								onClick={onRefresh}
@@ -384,42 +627,95 @@ export function WorkspaceShell({
 							>
 								<ArrowClockwise size={18} />
 							</IconButton>
-							<IconButton ariaLabel="Fit viewer" title="Fit viewer">
+							<IconButton
+								ariaLabel="Fit viewer"
+								onClick={() => triggerViewerAction("Reset")}
+								title="Fit viewer"
+							>
 								<ArrowsOutSimple size={18} />
 							</IconButton>
-							<IconButton ariaLabel="More options" title="More options">
+							<IconButton
+								ariaLabel="More options"
+								onClick={() => setIsOptionsOpen((isOpen) => !isOpen)}
+								title="More options"
+							>
 								<DotsThreeVertical size={18} weight="bold" />
 							</IconButton>
 						</div>
 					</div>
+					{isOptionsOpen ? (
+						<div className="absolute top-[7.25rem] right-5 z-20 w-64 rounded-lg border border-[#d7d4c9] bg-[#fffef9] p-3 shadow-[0_24px_80px_-50px_rgba(25,39,33,0.75)]">
+							<p className="font-semibold text-[#27322f] text-sm">
+								Workspace actions
+							</p>
+							<div className="mt-3 space-y-2">
+								<ActionLink
+									disabled={!selectedCandidate}
+									href={
+										selectedCandidate
+											? `https://www.rcsb.org/structure/${selectedCandidate.rcsbId}`
+											: null
+									}
+									icon={<LinkSimple size={16} />}
+									label="Open RCSB entry"
+								/>
+								<ActionLink
+									disabled={!selectedArtifactHref}
+									href={selectedArtifactHref}
+									icon={<DownloadSimple size={16} />}
+									label="Download CIF"
+								/>
+							</div>
+						</div>
+					) : null}
 
-					<div className="relative min-h-[480px] flex-1 px-4 pb-5 md:px-6 md:pb-6">
-						<div className="relative h-full min-h-[480px] overflow-hidden rounded-lg border border-[#e2dfd5] bg-[#fffef9] shadow-[0_20px_80px_-62px_rgba(25,39,33,0.9)]">
+					<div className="relative min-h-[480px] flex-1 px-4 pb-5 md:px-6 md:pb-6 lg:min-h-0">
+						<div className="relative h-full min-h-[480px] overflow-hidden rounded-lg border border-[#e2dfd5] bg-[#fffef9] shadow-[0_20px_80px_-62px_rgba(25,39,33,0.9)] lg:min-h-0">
 							{children}
 							<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_45%,rgba(33,126,104,0.04),transparent_40%)]" />
 						</div>
 
 						<div className="absolute right-1/2 bottom-9 z-10 flex translate-x-1/2 items-center gap-1 rounded-lg border border-[#e1ded4] bg-[#fffef9]/95 p-1.5 shadow-[0_18px_60px_-38px_rgba(25,39,33,0.55)] backdrop-blur">
-							<StageTool active label="Select">
+							<StageTool
+								active={stageTool === "Select"}
+								label="Select"
+								onClick={() => triggerViewerAction("Select")}
+							>
 								<BoundingBox size={18} />
 							</StageTool>
-							<StageTool label="Pan">
+							<StageTool
+								active={stageTool === "Pan"}
+								label="Pan"
+								onClick={() => triggerViewerAction("Pan")}
+							>
 								<HandPalm size={18} />
 							</StageTool>
-							<StageTool label="Reset">
+							<StageTool
+								active={stageTool === "Reset"}
+								label="Reset"
+								onClick={() => triggerViewerAction("Reset")}
+							>
 								<ArrowClockwise size={18} />
 							</StageTool>
-							<StageTool label="View">
+							<StageTool
+								active={stageTool === "View"}
+								label="View"
+								onClick={() => triggerViewerAction("View")}
+							>
 								<Eye size={18} />
 							</StageTool>
-							<StageTool label="Annotate">
+							<StageTool
+								active={stageTool === "Annotate"}
+								label="Annotate"
+								onClick={() => triggerViewerAction("Annotate")}
+							>
 								<Sparkle size={18} />
 							</StageTool>
 						</div>
 					</div>
 				</section>
 
-				<aside className="border-[#e5e2d9] border-t bg-[#fbfaf6] p-5 md:col-start-2 lg:col-start-auto lg:border-t-0">
+				<aside className="border-[#e5e2d9] border-t bg-[#fbfaf6] p-5 md:col-start-2 lg:col-start-auto lg:min-h-0 lg:overflow-y-auto lg:border-t-0">
 					<div className="flex items-center justify-between gap-3">
 						<div>
 							<p className="font-semibold text-sm">Your design journey</p>
@@ -428,8 +724,10 @@ export function WorkspaceShell({
 							</p>
 						</div>
 						<button
-							aria-label="Continue to binder design"
-							className="flex size-9 items-center justify-center rounded-md border border-[#d7d4c9] bg-[#fffef9] transition hover:border-[#cbd736] active:translate-y-[1px]"
+							aria-label="Binder design is not available yet"
+							className="flex size-9 cursor-not-allowed items-center justify-center rounded-md border border-[#d7d4c9] bg-[#fffef9] opacity-50"
+							disabled
+							title="Binder design is a future milestone"
 							type="button"
 						>
 							<ArrowRight size={18} />
@@ -467,9 +765,9 @@ export function WorkspaceShell({
 						<JourneyStep
 							done={false}
 							index={4}
-							kicker="We create and refine binders"
-							state={designInputReady ? "active" : "idle"}
-							title="Design binder"
+							kicker="Sequence generation is out of scope"
+							state="idle"
+							title="Design binder (future)"
 							visual="handoff"
 						/>
 					</div>
@@ -480,13 +778,13 @@ export function WorkspaceShell({
 								<p className="font-medium text-[#53641e] text-xs">
 									Next up:{" "}
 									<span className="text-[#27322f]">
-										{designInputReady ? "Design binder" : "Prepare target"}
+										{designInputReady ? "Inspect target" : "Prepare target"}
 									</span>
 								</p>
 								<p className="mt-1 text-[#70785e] text-xs leading-5">
 									{designInputReady
-										? "The CIF is ready for sequence generation and scoring."
-										: "Once the target is ready, binder design can begin."}
+										? "The CIF is ready to visualize, download, and hand off."
+										: "Once the target is ready, inspection and export can begin."}
 								</p>
 							</div>
 							<div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-[#fffef9]">
@@ -496,17 +794,61 @@ export function WorkspaceShell({
 					</div>
 
 					<section className="mt-6">
-						<p className="font-semibold text-sm">Ranked structures</p>
+						<div className="flex items-center justify-between gap-3">
+							<p className="font-semibold text-sm">Ranked structures</p>
+							<div className="flex items-center gap-1">
+								<FunnelSimple size={15} />
+								<select
+									aria-label="Filter ranked structures"
+									className="rounded-md border border-[#dcd8cf] bg-[#fffef9] px-2 py-1 text-[#394541] text-xs outline-none"
+									onChange={(event) =>
+										setCandidateFilter(
+											event.target.value as "all" | "ready" | "structure",
+										)
+									}
+									value={candidateFilter}
+								>
+									<option value="all">All</option>
+									<option value="ready">CIF ready</option>
+									<option value="structure">Resolved</option>
+								</select>
+							</div>
+						</div>
+						<div className="mt-2 flex items-center gap-2 text-[#68716a] text-xs">
+							<SortAscending size={14} />
+							<select
+								aria-label="Sort ranked structures"
+								className="rounded-md border border-[#dcd8cf] bg-[#fffef9] px-2 py-1 text-[#394541] text-xs outline-none"
+								onChange={(event) =>
+									setCandidateSort(
+										event.target.value as "rank" | "resolution" | "score",
+									)
+								}
+								value={candidateSort}
+							>
+								<option value="rank">Rank</option>
+								<option value="score">Score</option>
+								<option value="resolution">Resolution</option>
+							</select>
+						</div>
 						<div className="mt-3 space-y-2">
 							{candidates.length === 0 ? (
 								<p className="rounded-lg border border-[#e2dfd5] bg-[#fffef9] p-3 text-[#69716b] text-sm leading-6">
 									Candidates will appear after Autopep ranks the RCSB results.
 								</p>
+							) : sortedCandidates.length === 0 ? (
+								<p className="rounded-lg border border-[#e2dfd5] bg-[#fffef9] p-3 text-[#69716b] text-sm leading-6">
+									No structures match the current filter.
+								</p>
 							) : (
-								candidates
-									.slice(0, 3)
+								sortedCandidates
+									.slice(0, 5)
 									.map((candidate) => (
-										<CandidateRow candidate={candidate} key={candidate.id} />
+										<CandidateRow
+											artifact={artifactByCandidateId.get(candidate.id) ?? null}
+											candidate={candidate}
+											key={candidate.id}
+										/>
 									))
 							)}
 						</div>
@@ -515,11 +857,23 @@ export function WorkspaceShell({
 					<section className="mt-6">
 						<div className="flex items-center justify-between gap-3">
 							<p className="font-semibold text-sm">Research trace</p>
+							<button
+								className="rounded-md border border-[#dcd8cf] bg-[#fffef9] px-2 py-1 font-medium text-[#58625d] text-xs transition hover:border-[#cbd736]"
+								onClick={() => setShowAllEvents((showAll) => !showAll)}
+								type="button"
+							>
+								{showAllEvents ? "Latest" : "All logs"}
+							</button>
+						</div>
+						<div className="mt-2 flex items-center justify-between gap-3">
 							<p className="font-mono text-[#747b74] text-[11px]">
 								{runStatus ?? "no-run"}
 							</p>
+							<p className="text-[#747b74] text-[11px]">
+								{events.length} event{events.length === 1 ? "" : "s"}
+							</p>
 						</div>
-						<div className="mt-3 space-y-2">
+						<div className="mt-3 max-h-[360px] space-y-2 overflow-y-auto pr-1">
 							{latestEvents.length === 0 ? (
 								<p className="rounded-lg border border-[#e2dfd5] bg-[#fffef9] p-3 text-[#69716b] text-sm leading-6">
 									Live agent events will sync here as the worker writes
@@ -544,9 +898,10 @@ export function WorkspaceShell({
 										</p>
 										{event.detail ? (
 											<p className="mt-2 text-[#69716b] text-xs leading-5">
-												{event.detail}
+												{truncateMiddle(event.detail, 260)}
 											</p>
 										) : null}
+										<EventPayload payload={event.payloadJson} />
 									</div>
 								))
 							)}
@@ -568,6 +923,39 @@ function AutopepMark() {
 			<div className="absolute inset-[9px] bg-[#fffef9] [clip-path:polygon(25%_5%,75%_5%,100%_50%,75%_95%,25%_95%,0_50%)]" />
 			<div className="absolute right-[5px] bottom-[5px] size-2 rounded-full bg-[#dfe94c]" />
 		</div>
+	);
+}
+
+function ActionLink({
+	disabled,
+	href,
+	icon,
+	label,
+}: {
+	disabled: boolean;
+	href: string | null;
+	icon: ReactNode;
+	label: string;
+}) {
+	if (disabled || !href) {
+		return (
+			<div className="flex items-center gap-2 rounded-md px-2 py-2 text-[#9aa199] text-sm">
+				{icon}
+				<span>{label}</span>
+			</div>
+		);
+	}
+
+	return (
+		<a
+			className="flex items-center gap-2 rounded-md px-2 py-2 text-[#36443f] text-sm transition hover:bg-[#f0efe8]"
+			href={href}
+			rel="noreferrer"
+			target="_blank"
+		>
+			{icon}
+			<span>{label}</span>
+		</a>
 	);
 }
 
@@ -673,11 +1061,10 @@ function MiniStructure({ muted = false }: { muted?: boolean }) {
 		>
 			<Image
 				alt=""
-				className={`h-full w-full object-cover ${muted ? "opacity-55 grayscale" : ""}`}
-				height={180}
-				sizes="104px"
-				src="/autopep-assets/protein-target-preview.png"
-				width={180}
+				className={`object-cover ${muted ? "opacity-55 grayscale" : ""}`}
+				fill
+				sizes={muted ? "86px" : "104px"}
+				src={proteinTargetPreview}
 			/>
 		</div>
 	);
@@ -745,10 +1132,12 @@ function StageTool({
 	active,
 	children,
 	label,
+	onClick,
 }: {
 	active?: boolean;
 	children: ReactNode;
 	label: string;
+	onClick: () => void;
 }) {
 	return (
 		<button
@@ -758,6 +1147,7 @@ function StageTool({
 					? "bg-[#e8ef75] text-[#21352f]"
 					: "text-[#3d4844] hover:bg-[#f0efe8]"
 			}`}
+			onClick={onClick}
 			title={label}
 			type="button"
 		>
@@ -897,29 +1287,42 @@ function MiniCell({
 		>
 			<Image
 				alt=""
-				className={`h-full w-full object-cover mix-blend-multiply ${
+				className={`object-cover mix-blend-multiply ${
 					accent
 						? "hue-rotate-[48deg] saturate-[1.18]"
 						: active
 							? ""
 							: "opacity-35 grayscale"
 				}`}
-				height={160}
+				fill
 				sizes={compact ? "56px" : "100px"}
-				src="/autopep-assets/protein-target-preview.png"
-				width={160}
+				src={proteinTargetPreview}
 			/>
 		</div>
 	);
 }
 
-function CandidateRow({ candidate }: { candidate: WorkspaceCandidate }) {
+function CandidateRow({
+	artifact,
+	candidate,
+}: {
+	artifact: WorkspaceArtifact | null;
+	candidate: WorkspaceCandidate;
+}) {
+	const pubmedCount = getCitationCount(candidate.citationJson.pubmed);
+	const biorxivCount = getCitationCount(candidate.citationJson.biorxiv);
+
 	return (
 		<div className="rounded-lg border border-[#e2dfd5] bg-[#fffef9] p-3">
 			<div className="flex items-center justify-between gap-3">
-				<p className="font-medium text-[#24302b] text-sm">
+				<a
+					className="font-medium text-[#24302b] text-sm underline-offset-4 transition hover:text-[#0b715f] hover:underline"
+					href={`https://www.rcsb.org/structure/${candidate.rcsbId}`}
+					rel="noreferrer"
+					target="_blank"
+				>
 					#{candidate.rank} {candidate.rcsbId}
-				</p>
+				</a>
 				<p className="font-mono text-[#57615b] text-xs">
 					{Math.round(candidate.relevanceScore * 100)}%
 				</p>
@@ -933,9 +1336,61 @@ function CandidateRow({ candidate }: { candidate: WorkspaceCandidate }) {
 					<MetaPill>{candidate.resolutionAngstrom.toFixed(1)} A</MetaPill>
 				) : null}
 				{candidate.proteinaReady ? <MetaPill>CIF ready</MetaPill> : null}
+				{pubmedCount > 0 ? <MetaPill>{pubmedCount} PubMed</MetaPill> : null}
+				{biorxivCount > 0 ? <MetaPill>{biorxivCount} bioRxiv</MetaPill> : null}
+			</div>
+			<div className="mt-3 flex items-center gap-2">
+				<ActionLink
+					disabled={!artifact?.signedUrl}
+					href={artifact?.signedUrl ?? null}
+					icon={<DownloadSimple size={15} />}
+					label={artifact ? "Download CIF" : "CIF pending"}
+				/>
+				<ActionLink
+					disabled={false}
+					href={`https://www.rcsb.org/structure/${candidate.rcsbId}`}
+					icon={<LinkSimple size={15} />}
+					label="RCSB"
+				/>
 			</div>
 		</div>
 	);
+}
+
+function getCitationCount(value: unknown) {
+	return Array.isArray(value) ? value.length : 0;
+}
+
+function EventPayload({ payload }: { payload: Record<string, unknown> }) {
+	const entries = Object.entries(payload);
+	if (entries.length === 0) {
+		return null;
+	}
+
+	const compact = JSON.stringify(payload);
+	if (!compact || compact === "{}") {
+		return null;
+	}
+
+	return (
+		<details className="mt-2 text-[#69716b] text-xs">
+			<summary className="cursor-pointer font-medium text-[#49544e]">
+				Details
+			</summary>
+			<pre className="mt-2 max-h-32 overflow-auto rounded-md bg-[#f5f3ed] p-2 font-mono text-[10px] leading-4">
+				{truncateMiddle(compact, 700)}
+			</pre>
+		</details>
+	);
+}
+
+function truncateMiddle(value: string, maxLength: number) {
+	if (value.length <= maxLength) {
+		return value;
+	}
+
+	const half = Math.floor((maxLength - 5) / 2);
+	return `${value.slice(0, half)} ... ${value.slice(-half)}`;
 }
 
 function MetaPill({ children }: { children: ReactNode }) {

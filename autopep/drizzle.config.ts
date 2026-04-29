@@ -8,5 +8,12 @@ export default {
 	dbCredentials: {
 		url: env.DATABASE_URL,
 	},
-	tablesFilter: ["autopep_*"],
+	tablesFilter: [
+		"autopep_*",
+		"pg-drizzle_*",
+		"user",
+		"session",
+		"account",
+		"verification",
+	],
 } satisfies Config;

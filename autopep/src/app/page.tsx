@@ -2,6 +2,7 @@ import Image from "next/image";
 
 import { AuthCard } from "@/app/_components/auth-card";
 import { AutopepWorkspace } from "@/app/_components/autopep-workspace";
+import { proteinTargetPreview } from "@/app/_components/protein-preview-image";
 import { getSession } from "@/server/better-auth/server";
 import { api, HydrateClient } from "@/trpc/server";
 
@@ -38,12 +39,10 @@ export default async function Home() {
 						</div>
 						<Image
 							alt="Generated protein structure preview"
-							className="absolute right-[-54px] bottom-[-42px] w-[340px] rounded-[34px] object-contain opacity-90 mix-blend-multiply shadow-[0_26px_70px_-48px_rgba(14,64,52,0.75)]"
-							height={1024}
+							className="absolute right-[-54px] bottom-[-42px] h-auto w-[340px] rounded-[34px] object-contain opacity-90 mix-blend-multiply shadow-[0_26px_70px_-48px_rgba(14,64,52,0.75)]"
 							priority
 							sizes="340px"
-							src="/autopep-assets/protein-target-preview.png"
-							width={1024}
+							src={proteinTargetPreview}
 						/>
 					</section>
 					<section className="bg-[#17211e] p-6 text-white md:p-8">

@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt } from "drizzle-orm";
 import { z } from "zod";
 
 import { createProjectRunWithLaunch } from "@/server/agent/project-run-creator";
+import { answerWorkspaceQuestion } from "@/server/agent/workspace-answer";
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
 import { r2ArtifactStore } from "@/server/artifacts/r2";
 import type { db as appDb } from "@/server/db";
@@ -29,6 +30,11 @@ const createProjectRunInput = z.object({
 	goal: z.string().min(3),
 	name: z.string().min(1).max(120).optional(),
 	topK: z.number().int().min(1).max(10).default(5),
+});
+
+const answerQuestionInput = z.object({
+	projectId: z.string().uuid().optional(),
+	question: z.string().min(1).max(1000),
 });
 
 export const getWorkspacePayload = async (
@@ -105,6 +111,33 @@ export const getWorkspacePayload = async (
 };
 
 export const workspaceRouter = createTRPCRouter({
+	answerQuestion: protectedProcedure
+		.input(answerQuestionInput)
+		.mutation(async ({ ctx, input }) => {
+			const ownerId = ctx.session.user.id;
+			const project = input.projectId
+				? await ctx.db.query.projects.findFirst({
+						where: and(
+							eq(projects.id, input.projectId),
+							eq(projects.ownerId, ownerId),
+						),
+					})
+				: await ctx.db.query.projects.findFirst({
+						where: eq(projects.ownerId, ownerId),
+						orderBy: [desc(projects.createdAt)],
+					});
+			const workspace = project
+				? await getWorkspacePayload(ctx.db, project.id, ownerId)
+				: null;
+
+			return {
+				answer: answerWorkspaceQuestion({
+					question: input.question,
+					workspace,
+				}),
+			};
+		}),
+
 	createProjectRun: protectedProcedure
 		.input(createProjectRunInput)
 		.mutation(async ({ ctx, input }) => {

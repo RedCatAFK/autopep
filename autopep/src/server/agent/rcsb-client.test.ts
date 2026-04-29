@@ -41,7 +41,7 @@ describe("searchRcsbEntries", () => {
 				type: "terminal",
 			},
 			request_options: {
-				pager: {
+				paginate: {
 					rows: 2,
 					start: 0,
 				},

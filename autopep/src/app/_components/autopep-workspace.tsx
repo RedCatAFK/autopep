@@ -1,11 +1,13 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { api } from "@/trpc/react";
 import {
+	type WorkspaceArtifact,
 	type WorkspaceCandidate,
+	type WorkspaceChatMessage,
 	type WorkspaceEvent,
 	WorkspaceShell,
 } from "./workspace-shell";
@@ -19,6 +21,13 @@ const spikeGoal = "Design a protein binder for SARS-CoV-2 spike RBD";
 
 export function AutopepWorkspace() {
 	const utils = api.useUtils();
+	const [chatMessages, setChatMessages] = useState<WorkspaceChatMessage[]>([
+		{
+			id: "welcome",
+			role: "assistant",
+			text: "Ask about run status, ranked PDB structures, bioRxiv/PubMed evidence, or CIF readiness.",
+		},
+	]);
 	const workspace = api.workspace.getLatestWorkspace.useQuery(undefined, {
 		refetchInterval: (query) => {
 			const status = query.state.data?.activeRun?.status;
@@ -31,10 +40,12 @@ export function AutopepWorkspace() {
 			await utils.workspace.getLatestWorkspace.invalidate();
 		},
 	});
+	const answerQuestion = api.workspace.answerQuestion.useMutation();
 
 	const candidates = useMemo<WorkspaceCandidate[]>(
 		() =>
 			(workspace.data?.candidates ?? []).map((candidate) => ({
+				citationJson: candidate.citationJson,
 				id: candidate.id,
 				method: candidate.method,
 				organism: candidate.organism,
@@ -54,6 +65,7 @@ export function AutopepWorkspace() {
 			(workspace.data?.events ?? []).map((event) => ({
 				detail: event.detail,
 				id: event.id,
+				payloadJson: event.payloadJson,
 				sequence: event.sequence,
 				title: event.title,
 				type: event.type,
@@ -61,7 +73,20 @@ export function AutopepWorkspace() {
 		[workspace.data?.events],
 	);
 
-	const artifactRows = workspace.data?.artifacts ?? [];
+	const artifacts = useMemo<WorkspaceArtifact[]>(
+		() =>
+			(workspace.data?.artifacts ?? []).map((artifact) => ({
+				byteSize: artifact.byteSize,
+				candidateId: artifact.candidateId,
+				fileName: artifact.fileName,
+				id: artifact.id,
+				signedUrl: artifact.signedUrl,
+				sourceUrl: artifact.sourceUrl,
+				type: artifact.type,
+			})),
+		[workspace.data?.artifacts],
+	);
+	const artifactRows = artifacts;
 	const findCifArtifact = (candidateId?: string) =>
 		artifactRows.find(
 			(artifact) =>
@@ -92,28 +117,68 @@ export function AutopepWorkspace() {
 	return (
 		<WorkspaceShell
 			artifactLabel={selectedArtifact?.fileName ?? "No CIF artifact yet"}
+			artifacts={artifacts}
 			candidates={candidates}
+			chatMessages={chatMessages}
 			events={events}
+			isAnsweringQuestion={answerQuestion.isPending}
 			isCreatingRun={createRun.isPending}
 			isLoadingWorkspace={workspace.isLoading || workspace.isFetching}
+			onAskQuestion={(question) => {
+				const userMessage: WorkspaceChatMessage = {
+					id: `user-${Date.now()}`,
+					role: "user",
+					text: question,
+				};
+				setChatMessages((messages) => [...messages, userMessage]);
+				answerQuestion.mutate(
+					{
+						projectId: workspace.data?.project.id,
+						question,
+					},
+					{
+						onError: (error) => {
+							setChatMessages((messages) => [
+								...messages,
+								{
+									id: `assistant-error-${Date.now()}`,
+									role: "assistant",
+									text: error.message,
+								},
+							]);
+						},
+						onSuccess: (result) => {
+							setChatMessages((messages) => [
+								...messages,
+								{
+									id: `assistant-${Date.now()}`,
+									role: "assistant",
+									text: result.answer,
+								},
+							]);
+						},
+					},
+				);
+			}}
 			onRefresh={() => {
 				void workspace.refetch();
 			}}
-			onStartGoal={(goal) => {
+			onStartGoal={(goal, options) => {
 				createRun.mutate({
 					goal,
 					name: inferProjectName(goal),
-					topK: 5,
+					topK: options?.topK ?? 5,
 				});
 			}}
 			projectGoal={projectGoal}
 			runStatus={workspace.data?.activeRun?.status ?? null}
+			selectedArtifact={selectedArtifact ?? null}
 			selectedCandidate={selectedCandidate}
 			targetName={targetName}
 		>
 			<MolstarViewer
 				label={selectedArtifact?.fileName ?? "Awaiting CIF"}
-				url={selectedArtifact?.signedUrl ?? null}
+				url={selectedArtifact?.sourceUrl ?? selectedArtifact?.signedUrl ?? null}
 			/>
 		</WorkspaceShell>
 	);

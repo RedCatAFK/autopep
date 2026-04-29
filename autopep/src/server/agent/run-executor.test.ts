@@ -110,4 +110,64 @@ describe("run executor", () => {
 			}),
 		);
 	}, 10_000);
+
+	it("falls back to deterministic retrieval when the Codex harness cannot produce a ready CIF", async () => {
+		const run = {
+			id: "55555555-5555-4555-8555-555555555555",
+			projectId: "66666666-6666-4666-8666-666666666666",
+			prompt: "Design a protein binder for SARS-CoV-2 spike RBD",
+			status: "running",
+			topK: 5,
+		};
+		const where = vi.fn().mockResolvedValue([]);
+		const from = vi.fn(() => ({ where }));
+		const db = {
+			select: vi.fn(() => ({ from })),
+		};
+		const appendRunEvent = vi.fn().mockResolvedValue(undefined);
+		const runCodexHarness = vi
+			.fn()
+			.mockRejectedValue(new Error("401 Unauthorized"));
+		const runCifRetrievalPipeline = vi.fn().mockResolvedValue({
+			runId: run.id,
+		});
+		const validateRunCompletion = vi.fn().mockReturnValue({
+			ok: false,
+			reason: "No proteina-ready candidate exists.",
+		});
+		const logger = {
+			error: vi.fn(),
+			log: vi.fn(),
+		};
+
+		const { executeClaimedRun } = await importRunExecutor();
+		const didWork = await executeClaimedRun(run as never, {
+			appendRunEvent,
+			agentMode: "codex",
+			db: db as never,
+			logger,
+			runCifRetrievalPipeline,
+			runCodexHarness,
+			validateRunCompletion,
+		});
+
+		expect(didWork).toBe(true);
+		expect(runCodexHarness).toHaveBeenCalledWith({
+			projectId: run.projectId,
+			prompt: run.prompt,
+			runId: run.id,
+			topK: run.topK,
+		});
+		expect(appendRunEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: run.id,
+				title: "Codex agent fallback",
+				type: "codex_agent_fallback",
+			}),
+		);
+		expect(runCifRetrievalPipeline).toHaveBeenCalledWith({
+			db,
+			runId: run.id,
+		});
+	});
 });

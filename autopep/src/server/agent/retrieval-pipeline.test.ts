@@ -5,6 +5,17 @@ import { rankRcsbCandidates } from "./retrieval-pipeline";
 describe("rankRcsbCandidates", () => {
 	it("uses RCSB metadata to rank candidates and keeps readiness false", () => {
 		const candidates = rankRcsbCandidates({
+			biorxivRefs: [
+				{
+					authors: "Zhang Y",
+					doi: "10.1101/2020.01.01.000001",
+					id: "PPR1",
+					publishedAt: "2020-01-01",
+					source: "PPR",
+					title: "Preprint protease structure",
+					url: "https://doi.org/10.1101/2020.01.01.000001",
+				},
+			],
 			metadataById: new Map([
 				[
 					"AAAA",
@@ -58,6 +69,9 @@ describe("rankRcsbCandidates", () => {
 		});
 		expect(candidates[0]?.selectionRationale).toContain(
 			"1 PubMed reference considered",
+		);
+		expect(candidates[0]?.selectionRationale).toContain(
+			"1 bioRxiv preprint considered",
 		);
 	});
 });

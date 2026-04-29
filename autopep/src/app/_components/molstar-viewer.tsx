@@ -5,9 +5,22 @@ import type { PluginUIContext } from "molstar/lib/mol-plugin-ui/context";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 
+import { proteinTargetPreview } from "@/app/_components/protein-preview-image";
+
 type MolstarViewerProps = {
 	label: string;
 	url: string | null;
+};
+
+const fitViewer = (plugin: PluginUIContext | null) => {
+	if (!plugin) {
+		return;
+	}
+
+	plugin.handleResize();
+	plugin.canvas3d?.requestResize();
+	plugin.canvas3d?.requestCameraReset({ durationMs: 0 });
+	plugin.managers.camera.reset(undefined, 0);
 };
 
 export function MolstarViewer({ label, url }: MolstarViewerProps) {
@@ -22,6 +35,20 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 		return () => {
 			pluginRef.current?.dispose();
 			pluginRef.current = null;
+		};
+	}, []);
+
+	useEffect(() => {
+		const handleViewerAction = (event: Event) => {
+			const action = (event as CustomEvent<{ action?: string }>).detail?.action;
+			if (action === "Reset" || action === "View") {
+				fitViewer(pluginRef.current);
+			}
+		};
+
+		window.addEventListener("autopep:viewer-action", handleViewerAction);
+		return () => {
+			window.removeEventListener("autopep:viewer-action", handleViewerAction);
 		};
 	}, []);
 
@@ -47,18 +74,10 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 			setIsLoading(true);
 
 			try {
-				const { created, plugin } = await getPlugin(
-					containerRef.current,
-					pluginRef,
-				);
+				const { Asset } = await import("molstar/lib/mol-util/assets");
+				const { plugin } = await getPlugin(containerRef.current, pluginRef);
 
 				if (!isCurrentLoad()) {
-					if (created) {
-						plugin.dispose();
-						if (pluginRef.current === plugin) {
-							pluginRef.current = null;
-						}
-					}
 					return;
 				}
 
@@ -66,7 +85,7 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 				if (!isCurrentLoad()) return;
 
 				const data = await plugin.builders.data.download(
-					{ isBinary: false, label, url },
+					{ isBinary: false, label, url: Asset.Url(url) },
 					{ state: { isGhost: true } },
 				);
 				if (!isCurrentLoad()) return;
@@ -81,10 +100,21 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 					trajectory,
 					"default",
 					{
+						representationPreset: "auto",
+						structure: {
+							name: "assembly",
+							params: { id: "1" },
+						},
 						showUnitcell: false,
 					},
 				);
 				if (!isCurrentLoad()) return;
+				fitViewer(plugin);
+				requestAnimationFrame(() => {
+					if (isCurrentLoad()) {
+						fitViewer(plugin);
+					}
+				});
 			} catch (cause) {
 				if (isCurrentLoad()) {
 					setError(cause instanceof Error ? cause.message : String(cause));
@@ -108,7 +138,7 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 	}, [label, url]);
 
 	return (
-		<div className="autopep-molstar relative h-full min-h-[430px] overflow-hidden bg-[#f9f8f3] lg:min-h-[620px]">
+		<div className="autopep-molstar relative h-full min-h-[430px] overflow-hidden bg-[#f9f8f3] lg:min-h-0">
 			<div
 				aria-hidden={!url}
 				className={`absolute inset-0 transition-opacity duration-300 ${
@@ -124,12 +154,10 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 						<div className="stage-orbit stage-orbit-b" />
 						<Image
 							alt="Generated target protein preview"
-							className="relative z-[1] w-full max-w-[430px] rounded-[32px] object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
-							height={1024}
+							className="relative z-[1] h-auto w-full max-w-[430px] rounded-[32px] object-contain mix-blend-multiply shadow-[0_24px_60px_-42px_rgba(14,64,52,0.7)]"
 							priority
 							sizes="(max-width: 768px) 82vw, 430px"
-							src="/autopep-assets/protein-target-preview.png"
-							width={1024}
+							src={proteinTargetPreview}
 						/>
 						<div className="mt-8 max-w-xs text-center">
 							<div className="mx-auto flex size-11 items-center justify-center rounded-lg border border-[#d6dec0] bg-[#edf45c] text-[#133f34]">
@@ -148,7 +176,7 @@ export function MolstarViewer({ label, url }: MolstarViewerProps) {
 			) : null}
 
 			{url ? (
-				<div className="pointer-events-none absolute top-4 left-4 z-[2] rounded-md border border-[#dfe4d7] bg-[#fffffb]/90 px-3 py-1.5 text-[#38443f] text-xs shadow-[0_10px_30px_-24px_rgba(20,43,35,0.8)] backdrop-blur">
+				<div className="pointer-events-none absolute top-4 left-4 z-[70] rounded-md border border-[#dfe4d7] bg-[#fffffb]/90 px-3 py-1.5 text-[#38443f] text-xs shadow-[0_10px_30px_-24px_rgba(20,43,35,0.8)] backdrop-blur">
 					{label}
 				</div>
 			) : null}

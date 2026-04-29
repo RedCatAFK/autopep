@@ -10,6 +10,7 @@ import {
 	proteinCandidates,
 	targetEntities,
 } from "@/server/db/schema";
+import { type BioRxivRef, searchBioRxivPreprints } from "./biorxiv-client";
 import { appendRunEvent } from "./events";
 import { type PubMedRef, searchPubMed } from "./pubmed-client";
 import {
@@ -40,7 +41,7 @@ type NormalizedTarget = {
 export type RankedRcsbCandidate = {
 	assemblyId: string;
 	chainIdsJson: string[];
-	citationJson: { pubmed: PubMedRef[] };
+	citationJson: { biorxiv: BioRxivRef[]; pubmed: PubMedRef[] };
 	confidence: number;
 	ligandIdsJson: string[];
 	method: string | null;
@@ -160,11 +161,13 @@ const scoreResolution = (resolutionAngstrom: number | null) => {
 
 export const rankRcsbCandidates = ({
 	metadataById,
+	biorxivRefs,
 	pubmedRefs,
 	rcsbIds,
 	target,
 }: {
 	metadataById: Map<string, RcsbEntryMetadata>;
+	biorxivRefs: BioRxivRef[];
 	pubmedRefs: PubMedRef[];
 	rcsbIds: string[];
 	target: NormalizedTarget;
@@ -191,12 +194,15 @@ export const rankRcsbCandidates = ({
 			pubmedRefs.length > 0
 				? `${pubmedRefs.length} PubMed reference${pubmedRefs.length === 1 ? "" : "s"} considered`
 				: "literature support unavailable",
+			biorxivRefs.length > 0
+				? `${biorxivRefs.length} bioRxiv preprint${biorxivRefs.length === 1 ? "" : "s"} considered`
+				: "bioRxiv preprint support unavailable",
 		];
 
 		return {
 			assemblyId: "1",
 			chainIdsJson: [],
-			citationJson: { pubmed: pubmedRefs },
+			citationJson: { biorxiv: biorxivRefs, pubmed: pubmedRefs },
 			confidence: clamp01(relevanceScore - 0.08),
 			ligandIdsJson: [],
 			method: metadata?.method ?? null,
@@ -388,6 +394,41 @@ export const runCifRetrievalPipeline = async ({
 			});
 		}
 
+		let biorxivRefs: BioRxivRef[] = [];
+		await appendRunEvent({
+			db,
+			detail: `${target.name} structure`,
+			runId,
+			title: "Searching bioRxiv preprints",
+			type: "searching_biorxiv",
+		});
+		try {
+			biorxivRefs = await searchBioRxivPreprints({
+				fetchImpl,
+				limit: Math.min(topK, 10),
+				query: `${target.name} structure`,
+			});
+			await appendRunEvent({
+				db,
+				detail:
+					biorxivRefs.length > 0
+						? `Found ${biorxivRefs.length} bioRxiv preprint reference${biorxivRefs.length === 1 ? "" : "s"}.`
+						: "No matching bioRxiv preprints were returned.",
+				payload: { biorxiv: biorxivRefs },
+				runId,
+				title: "bioRxiv search complete",
+				type: "searching_literature",
+			});
+		} catch (error) {
+			await appendRunEvent({
+				db,
+				detail: error instanceof Error ? error.message : String(error),
+				runId,
+				title: "bioRxiv search failed",
+				type: "source_failed",
+			});
+		}
+
 		await appendRunEvent({
 			db,
 			runId,
@@ -396,6 +437,7 @@ export const runCifRetrievalPipeline = async ({
 		});
 
 		const rankedCandidates = rankRcsbCandidates({
+			biorxivRefs,
 			metadataById,
 			pubmedRefs,
 			rcsbIds,

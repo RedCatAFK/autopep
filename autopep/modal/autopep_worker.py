@@ -3,9 +3,11 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 from typing import Any
 
+from fastapi import Request
 import modal
 
 
@@ -46,7 +48,7 @@ sandbox_image = (
         "npm",
         "unzip",
     )
-    .pip_install("requests")
+    .pip_install("fastapi[standard]", "requests")
     .run_commands(
         "curl -fsSL https://bun.sh/install | bash",
         "ln -sf /root/.bun/bin/bun /usr/local/bin/bun",
@@ -116,7 +118,13 @@ def _sandbox_command(run_id: str, project_id: str) -> str:
         "and finish only when at least one CIF artifact is ready for downstream Proteina use."
     )
     default_codex_command = (
-        'codex exec --model "${AUTOPEP_CODEX_MODEL:-gpt-5.5}" '
+        'mkdir -p /root/.codex && '
+        'if [ -n "${OPENAI_API_KEY:-}" ]; then '
+        'printenv OPENAI_API_KEY | codex login --with-api-key >/tmp/codex-login.log 2>&1 || '
+        '{ sed -E "s/(sk-[A-Za-z0-9_-]+)/<redacted>/g" /tmp/codex-login.log >&2; exit 1; }; '
+        "fi && "
+        'codex exec -c preferred_auth_method=\\"apikey\\" '
+        '--model "${AUTOPEP_CODEX_MODEL:-gpt-5.5}" '
         "--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "
         '--cd /app "$AUTOPEP_CODEX_TASK_PROMPT"'
     )
@@ -143,30 +151,36 @@ def _sandbox_command(run_id: str, project_id: str) -> str:
 @app.function(
     image=sandbox_image,
     secrets=[runtime_secret],
-    timeout=120,
+    timeout=SANDBOX_TIMEOUT_SECONDS,
+    volumes={WORKSPACE_DIR: workspace_volume},
+    cpu=0.125,
+    memory=512,
 )
 def launch_autopep_sandbox(run_id: str, project_id: str) -> str | None:
-    sandbox = modal.Sandbox.create(
-        "bash",
-        "-lc",
-        _sandbox_command(run_id=run_id, project_id=project_id),
-        app=app,
-        cpu=0.125,
-        idle_timeout=SANDBOX_IDLE_TIMEOUT_SECONDS,
-        image=sandbox_image,
-        memory=512,
-        secrets=[runtime_secret],
-        timeout=SANDBOX_TIMEOUT_SECONDS,
-        volumes={WORKSPACE_DIR: workspace_volume},
+    command = _sandbox_command(run_id=run_id, project_id=project_id)
+    process = subprocess.Popen(
+        ["bash", "-lc", command],
+        cwd=APP_DIR,
+        stderr=subprocess.STDOUT,
+        stdout=subprocess.PIPE,
+        text=True,
     )
-    sandbox.detach()
-    return sandbox.object_id
+
+    if process.stdout:
+        for line in process.stdout:
+            print(line, end="", flush=True)
+
+    return_code = process.wait()
+    if return_code != 0:
+        raise RuntimeError(f"Autopep worker exited with code {return_code}.")
+
+    return run_id
 
 
 @app.function(image=control_image, secrets=[webhook_secret], timeout=120)
 @modal.fastapi_endpoint(method="POST", docs=False, label="start-run")
-async def start_run(request: Any) -> Any:
-    from fastapi import Response
+async def start_run(request: Request) -> Any:
+    from fastapi.responses import JSONResponse
 
     _require_bearer(request)
     payload = await request.json()
@@ -175,9 +189,14 @@ async def start_run(request: Any) -> Any:
 
     run_id = _require_uuid(payload, "runId")
     project_id = _require_uuid(payload, "projectId")
-    sandbox_id = launch_autopep_sandbox.remote(run_id=run_id, project_id=project_id)
-    return Response(
-        content=f'{{"accepted":true,"sandboxId":"{sandbox_id}"}}',
-        media_type="application/json",
+    function_call = launch_autopep_sandbox.spawn(
+        run_id=run_id,
+        project_id=project_id,
+    )
+    return JSONResponse(
+        content={
+            "accepted": True,
+            "functionCallId": function_call.object_id,
+        },
         status_code=202,
     )

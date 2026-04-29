@@ -39,7 +39,12 @@ const normalizeEntryId = (entryId: string) => entryId.trim().toUpperCase();
 
 const assertOkResponse = async (response: Response, source: string) => {
 	if (!response.ok) {
-		throw new Error(`${source} request failed with ${response.status}.`);
+		const body = await response.text().catch(() => "");
+		throw new Error(
+			`${source} request failed with ${response.status}.${
+				body ? ` ${body.slice(0, 500)}` : ""
+			}`,
+		);
 	}
 };
 
@@ -58,7 +63,7 @@ export const searchRcsbEntries = async ({
 				},
 			},
 			request_options: {
-				pager: {
+				paginate: {
 					start: 0,
 					rows,
 				},

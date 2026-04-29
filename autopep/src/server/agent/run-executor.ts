@@ -43,6 +43,21 @@ type ClaimRunResult =
 const summarizeError = (error: unknown) =>
 	error instanceof Error ? error.message : String(error);
 
+const summarizeHarnessOutput = ({
+	stderr,
+	stdout,
+}: {
+	stderr: string;
+	stdout: string;
+}) => {
+	const output = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n\n");
+	if (!output) {
+		return "Codex completed without terminal output.";
+	}
+
+	return output.length > 1400 ? `${output.slice(0, 1400)}...` : output;
+};
+
 const resolveDeps = (deps: RunExecutorDeps = {}): ResolvedRunExecutorDeps => ({
 	appendRunEvent: deps.appendRunEvent ?? appendRunEvent,
 	agentMode: deps.agentMode ?? env.AUTOPEP_AGENT_MODE,
@@ -130,12 +145,41 @@ export const executeClaimedRun = async (
 
 	try {
 		if (agentMode === "codex") {
-			await runHarness({
-				projectId: run.projectId,
-				prompt: run.prompt,
+			await appendEvent({
+				db,
+				detail: env.AUTOPEP_CODEX_MODEL,
 				runId: run.id,
-				topK: run.topK,
+				title: "Codex agent started",
+				type: "codex_agent_started",
 			});
+
+			try {
+				const harnessResult = await runHarness({
+					projectId: run.projectId,
+					prompt: run.prompt,
+					runId: run.id,
+					topK: run.topK,
+				});
+
+				await appendEvent({
+					db,
+					detail: summarizeHarnessOutput(harnessResult),
+					runId: run.id,
+					title: "Codex agent finished",
+					type: "codex_agent_finished",
+				});
+			} catch (error) {
+				await appendEvent({
+					db,
+					detail: summarizeError(error),
+					payload: {
+						fallback: "deterministic_retrieval_pipeline",
+					},
+					runId: run.id,
+					title: "Codex agent fallback",
+					type: "codex_agent_fallback",
+				});
+			}
 
 			const [candidates, artifactRows] = await Promise.all([
 				db
@@ -161,9 +205,20 @@ export const executeClaimedRun = async (
 			});
 
 			if (!completion.ok) {
-				throw new Error(
-					`Codex harness finished without a ready CIF artifact. ${completion.reason}`,
-				);
+				await appendEvent({
+					db,
+					detail: `Codex did not leave a ready CIF artifact. ${completion.reason}`,
+					payload: {
+						fallback: "deterministic_retrieval_pipeline",
+					},
+					runId: run.id,
+					title: "Running retrieval pipeline",
+					type: "codex_agent_fallback",
+				});
+
+				await runDirectPipeline({ db, runId: run.id });
+				logger.log(`Completed run ${run.id}`);
+				return true;
 			}
 
 			const existingReadyEvent = await db.query.agentEvents.findFirst({
