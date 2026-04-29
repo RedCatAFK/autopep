@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -41,6 +41,7 @@ class DesignPayload:
     design_steps: list[str]
     smoke: bool
     warm_start: WarmStartPayload | None
+    warm_starts: list[WarmStartPayload] = field(default_factory=list)
 
 
 _MISSING = object()
@@ -56,7 +57,7 @@ def normalize_design_payload(
         raise ValueError("JSON body must be an object")
 
     target = _target_payload(payload, default_binder_length=default_binder_length)
-    warm_start = _warm_start_payload(payload)
+    warm_starts = _warm_start_payloads(payload)
     action = str(payload.get("action") or "").strip().lower()
     allowed_actions = {"", "design", "design-cif", "predict", "smoke", "smoke-cif"}
     if action not in allowed_actions:
@@ -81,7 +82,8 @@ def normalize_design_payload(
             "design_steps",
         ),
         smoke=smoke,
-        warm_start=warm_start,
+        warm_start=warm_starts[0] if warm_starts else None,
+        warm_starts=warm_starts,
     )
 
 
@@ -177,10 +179,36 @@ def _target_payload(payload: dict[str, Any], *, default_binder_length: list[int]
     )
 
 
-def _warm_start_payload(payload: dict[str, Any]) -> WarmStartPayload | None:
-    nested = payload.get("warm_start")
-    if nested is None:
-        nested = payload.get("seed_binder")
+def _warm_start_payloads(payload: dict[str, Any]) -> list[WarmStartPayload]:
+    nested = _MISSING
+    for name in ("warm_start", "warm_starts", "seed_binder", "seed_binders"):
+        if name in payload and payload[name] is not None:
+            nested = payload[name]
+            break
+
+    if nested is _MISSING:
+        warm_start = _warm_start_payload_from_mapping(payload, None, "warm_start")
+        return [warm_start] if warm_start else []
+
+    if isinstance(nested, (list, tuple)):
+        warm_starts = []
+        for index, item in enumerate(nested):
+            warm_start = _warm_start_payload_from_mapping(payload, item, f"warm_start[{index}]")
+            if warm_start:
+                warm_starts.append(warm_start)
+        return warm_starts
+
+    warm_start = _warm_start_payload_from_mapping(payload, nested, "warm_start")
+    return [warm_start] if warm_start else []
+
+
+def _warm_start_payload_from_mapping(
+    payload: dict[str, Any],
+    nested: Any,
+    field_name: str,
+) -> WarmStartPayload | None:
+    if nested is _MISSING:
+        nested = None
 
     if isinstance(nested, str):
         nested_payload: dict[str, Any] = {"structure": nested}
@@ -189,7 +217,7 @@ def _warm_start_payload(payload: dict[str, Any]) -> WarmStartPayload | None:
     elif isinstance(nested, dict):
         nested_payload = nested
     else:
-        raise ValueError("warm_start must be an object or a structure text string")
+        raise ValueError(f"{field_name} must be an object or a structure text string")
 
     structure = _first_present(
         nested_payload,
@@ -213,7 +241,7 @@ def _warm_start_payload(payload: dict[str, Any]) -> WarmStartPayload | None:
         return None
 
     return WarmStartPayload(
-        structure_text=_structure_text(structure, field_name="warm_start.structure"),
+        structure_text=_structure_text(structure, field_name=f"{field_name}.structure"),
         filename=str(
             _first_present(
                 nested_payload,

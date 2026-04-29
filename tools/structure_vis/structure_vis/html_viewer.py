@@ -2,16 +2,25 @@ from __future__ import annotations
 
 import html
 import json
+import gzip
 from dataclasses import asdict
 from pathlib import Path
 
-from .pymol_script import StructureInput
+from .pymol_script import StructureInput, structure_suffix
 
 
 def structure_format(path: Path) -> str:
-    if path.suffix.lower() == ".pdb":
+    suffix = structure_suffix(path)
+    if suffix in {".pdb", ".pdb.gz"}:
         return "pdb"
     return "mmcif"
+
+
+def structure_text(path: Path) -> str:
+    if path.name.lower().endswith(".gz"):
+        with gzip.open(path, mode="rt", encoding="utf-8") as handle:
+            return handle.read()
+    return path.read_text(encoding="utf-8")
 
 
 def build_html_viewer(inputs: list[StructureInput], title: str, compare: bool = False) -> str:
@@ -21,7 +30,7 @@ def build_html_viewer(inputs: list[StructureInput], title: str, compare: bool = 
             "path": str(item.path),
             "display_name": item.path.name,
             "format": structure_format(item.path),
-            "data": item.path.read_text(encoding="utf-8"),
+            "data": structure_text(item.path),
         }
         for item in inputs
     ]

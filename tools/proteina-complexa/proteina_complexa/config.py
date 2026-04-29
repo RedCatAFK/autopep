@@ -25,7 +25,7 @@ SEED_BINDER_DIR = Path("/data/seed_binders")
 RUNS_DIR = Path("/runs")
 
 DEFAULT_PIPELINE_CONFIG = "configs/search_binder_local_pipeline.yaml"
-DEFAULT_GPU = "A100-80GB"
+DEFAULT_GPU = "T4"
 DEFAULT_BINDER_LENGTH = [60, 120]
 
 TIMEOUT_SECONDS = 12 * 60 * 60
@@ -33,4 +33,3 @@ SCALEDOWN_WINDOW_SECONDS = 60
 
 MAX_RETURNED_PDBS = 20
 MAX_PDB_BYTES = 4 * 1024 * 1024
-

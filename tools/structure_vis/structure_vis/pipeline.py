@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import glob
+import html
+import json
 import shutil
 import subprocess
 import sys
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import combinations
 from pathlib import Path
 from typing import Iterable
 
@@ -17,6 +20,7 @@ from .pymol_script import (
     build_inputs,
     build_multi_view_script,
     object_name_for,
+    structure_suffix,
     validate_structure_files,
     write_manifest,
 )
@@ -27,6 +31,12 @@ class GeneratedScene:
     scene_path: Path
     manifest_path: Path
     opened: bool = False
+
+
+@dataclass(frozen=True)
+class BatchResult:
+    scenes: list[GeneratedScene]
+    index_path: Path
 
 
 def compare_structures(
@@ -69,14 +79,14 @@ def compare_structures(
 
 
 def view_structures(
-    files: Iterable[str | Path],
+    files: str | Path | Iterable[str | Path],
     *,
     out_dir: str | Path | None = None,
     style: str = "cartoon",
     open_pymol: bool = False,
     pymol: str | None = None,
 ) -> GeneratedScene:
-    paths = validate_structure_files([Path(path) for path in files])
+    paths = resolve_structure_inputs(files)
     inputs = build_inputs(paths, role="structure")
     output_dir = prepare_output_dir(out_dir, "view")
     pml_path = output_dir / "view.pml"
@@ -92,13 +102,13 @@ def view_structures(
 
 
 def html_structures(
-    files: Iterable[str | Path],
+    files: str | Path | Iterable[str | Path],
     *,
     compare: bool = False,
     out_dir: str | Path | None = None,
     open_browser: bool = False,
 ) -> GeneratedScene:
-    paths = validate_structure_files([Path(path) for path in files])
+    paths = resolve_structure_inputs(files)
     if compare and len(paths) < 2:
         raise ValueError("compare=True requires at least two structure files.")
 
@@ -127,6 +137,186 @@ def html_structures(
     )
     opened = webbrowser.open(html_path.as_uri()) if open_browser else False
     return GeneratedScene(html_path, manifest_path, opened)
+
+
+def batch_compare_structures(
+    inputs: str | Path | Iterable[str | Path],
+    *,
+    out_dir: str | Path | None = None,
+    viewer: str = "html",
+    strategy: str = "all_pairs",
+    reference: str | Path | None = None,
+    style: str = "cartoon",
+    distance_cutoff: float = 2.0,
+    open_first: bool = False,
+    pymol: str | None = None,
+) -> BatchResult:
+    paths = resolve_structure_inputs(inputs)
+    if len(paths) < 2:
+        raise ValueError("Batch comparison requires at least two structure files.")
+
+    pairs = comparison_pairs(paths, strategy=strategy, reference=Path(reference) if reference else None)
+    output_dir = prepare_output_dir(out_dir, "batch_compare")
+    scenes: list[GeneratedScene] = []
+    for index, (reference_path, mobile_path) in enumerate(pairs, start=1):
+        pair_dir = output_dir / f"{index:03d}_{safe_stem(reference_path)}__vs__{safe_stem(mobile_path)}"
+        should_open = open_first and index == 1
+        if viewer == "html":
+            scene = html_structures(
+                [reference_path, mobile_path],
+                compare=True,
+                out_dir=pair_dir,
+                open_browser=should_open,
+            )
+        elif viewer == "pymol":
+            scene = compare_structures(
+                reference_path,
+                mobile_path,
+                out_dir=pair_dir,
+                style=style,
+                distance_cutoff=distance_cutoff,
+                open_pymol=should_open,
+                pymol=pymol,
+            )
+        else:
+            raise ValueError(f"Unknown viewer: {viewer}")
+        scenes.append(scene)
+
+    index_path = write_batch_index(output_dir, scenes, pairs, viewer=viewer, strategy=strategy)
+    return BatchResult(scenes=scenes, index_path=index_path)
+
+
+def comparison_pairs(
+    paths: list[Path],
+    *,
+    strategy: str,
+    reference: Path | None = None,
+) -> list[tuple[Path, Path]]:
+    if strategy == "all_pairs":
+        return list(combinations(paths, 2))
+    if strategy == "to_reference":
+        reference_path = reference.expanduser().resolve() if reference else paths[0]
+        if reference_path not in paths:
+            paths = [reference_path, *paths]
+            paths = resolve_structure_inputs(paths)
+        return [(reference_path, path) for path in paths if path != reference_path]
+    raise ValueError("strategy must be 'all_pairs' or 'to_reference'.")
+
+
+def resolve_structure_inputs(inputs: str | Path | Iterable[str | Path], *, recursive: bool = True) -> list[Path]:
+    paths: list[Path] = []
+    input_items = [inputs] if isinstance(inputs, str | Path) else inputs
+    for raw_input in input_items:
+        text = str(raw_input)
+        expanded = Path(raw_input).expanduser()
+        if has_glob_magic(text):
+            paths.extend(Path(match) for match in sorted(glob.glob(text, recursive=recursive)))
+        elif expanded.is_dir():
+            paths.extend(structures_in_dir(expanded, recursive=recursive))
+        else:
+            paths.append(expanded)
+
+    unique: dict[Path, None] = {}
+    for path in validate_structure_files(paths):
+        unique[path] = None
+    return sorted(unique)
+
+
+def structures_in_dir(directory: Path, *, recursive: bool) -> list[Path]:
+    iterator = directory.rglob("*") if recursive else directory.glob("*")
+    return sorted(
+        path
+        for path in iterator
+        if path.is_file() and structure_suffix(path) in {
+            ".pdb",
+            ".cif",
+            ".mmcif",
+            ".pdb.gz",
+            ".cif.gz",
+            ".mmcif.gz",
+        }
+    )
+
+
+def has_glob_magic(value: str) -> bool:
+    return any(character in value for character in "*?[")
+
+
+def safe_stem(path: Path) -> str:
+    stem = object_name_for(path, 1, role="").strip("_")
+    return stem[:80]
+
+
+def write_batch_index(
+    output_dir: Path,
+    scenes: list[GeneratedScene],
+    pairs: list[tuple[Path, Path]],
+    *,
+    viewer: str,
+    strategy: str,
+) -> Path:
+    json_index_path = output_dir / "batch_index.json"
+    payload = {
+        "viewer": viewer,
+        "strategy": strategy,
+        "comparisons": [
+            {
+                "reference": str(reference),
+                "mobile": str(mobile),
+                "scene": str(scene.scene_path),
+                "manifest": str(scene.manifest_path),
+            }
+            for scene, (reference, mobile) in zip(scenes, pairs, strict=True)
+        ],
+    }
+    json_index_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    html_index_path = output_dir / "index.html"
+    rows = []
+    for scene, (reference, mobile) in zip(scenes, pairs, strict=True):
+        scene_href = html.escape(scene.scene_path.relative_to(output_dir).as_posix())
+        reference_name = html.escape(reference.name)
+        mobile_name = html.escape(mobile.name)
+        rows.append(
+            f"<tr><td>{reference_name}</td><td>{mobile_name}</td>"
+            f'<td><a href="{scene_href}">open</a></td></tr>'
+        )
+    html_index_path.write_text(
+        """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Structure Batch Comparisons</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 24px; color: #18202b; }
+    table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+    th, td { border-bottom: 1px solid #d9dee7; padding: 8px 10px; text-align: left; }
+    th { background: #f7f8fa; }
+    a { color: #2563eb; }
+  </style>
+</head>
+<body>
+  <h1>Structure Batch Comparisons</h1>
+  <p>Viewer: """
+        + html.escape(viewer)
+        + " | Strategy: "
+        + html.escape(strategy)
+        + """</p>
+  <table>
+    <thead><tr><th>Reference</th><th>Mobile</th><th>Scene</th></tr></thead>
+    <tbody>
+      """
+        + "\n      ".join(rows)
+        + """
+    </tbody>
+  </table>
+</body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    return html_index_path
 
 
 def expand_globs(patterns: Iterable[str]) -> list[Path]:

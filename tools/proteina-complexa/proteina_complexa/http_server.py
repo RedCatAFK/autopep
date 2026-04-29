@@ -27,7 +27,22 @@ async def parse_request_payload(request: Any) -> dict[str, Any]:
     return payload
 
 
+def validate_batched_warm_start_controls(design_payload: DesignPayload) -> None:
+    warm_starts = design_payload.warm_starts or ([design_payload.warm_start] if design_payload.warm_start else [])
+    if len(warm_starts) <= 1:
+        return
+    for field_name in ("noise_level", "start_t", "num_steps"):
+        values = [
+            getattr(warm_start, field_name)
+            for warm_start in warm_starts
+            if getattr(warm_start, field_name) is not None
+        ]
+        if values and any(value != values[0] for value in values[1:]):
+            raise ValueError(f"Batched warm starts require the same {field_name} for every seed")
+
+
 def run_design_payload(design_payload: DesignPayload) -> dict:
+    validate_batched_warm_start_controls(design_payload)
     preprocessed = preprocess_target_structure(
         structure_text=design_payload.target.structure_text,
         structure_filename=design_payload.target.filename,
@@ -44,30 +59,58 @@ def run_design_payload(design_payload: DesignPayload) -> dict:
     ]
     effective_steps = normalize_design_steps(design_payload.design_steps)
     request_overrides = normalize_overrides(design_payload.overrides)
+    warm_starts = design_payload.warm_starts or ([design_payload.warm_start] if design_payload.warm_start else [])
+    warm_start_count = len(warm_starts)
     mode_overrides: list[str] = []
     if design_payload.smoke:
         effective_steps = ["generate"]
-        mode_overrides = smoke_overrides()
+        mode_overrides = smoke_overrides(sample_count=warm_start_count or 1)
+    elif warm_start_count > 1:
+        mode_overrides = [
+            f"++generation.dataloader.batch_size={warm_start_count}",
+            f"++generation.dataloader.dataset.nres.nsamples={warm_start_count}",
+        ]
 
-    warm_start = design_payload.warm_start
+    run_kwargs: dict[str, Any] = {}
+    if warm_start_count > 1:
+        run_kwargs["seed_binders"] = [
+            {
+                "structure_text": warm_start.structure_text,
+                "filename": warm_start.filename,
+                "chain": warm_start.chain,
+                "noise_level": warm_start.noise_level,
+                "start_t": warm_start.start_t,
+                "num_steps": warm_start.num_steps,
+            }
+            for warm_start in warm_starts
+        ]
+    else:
+        warm_start = warm_starts[0] if warm_starts else None
+        run_kwargs.update(
+            {
+                "seed_binder_text": warm_start.structure_text if warm_start else None,
+                "seed_binder_filename": warm_start.filename if warm_start else "seed_binder.pdb",
+                "seed_binder_chain": warm_start.chain if warm_start else None,
+                "seed_binder_noise_level": warm_start.noise_level if warm_start else None,
+                "seed_binder_start_t": warm_start.start_t if warm_start else None,
+                "seed_binder_num_steps": warm_start.num_steps if warm_start else None,
+            }
+        )
+
     design = run_design(
         task_name=preprocessed["target_name"],
         run_name=design_payload.run_name,
         pipeline_config=design_payload.pipeline_config,
         overrides=[*target_overrides, *mode_overrides, *request_overrides],
         steps=effective_steps,
-        seed_binder_text=warm_start.structure_text if warm_start else None,
-        seed_binder_filename=warm_start.filename if warm_start else "seed_binder.pdb",
-        seed_binder_chain=warm_start.chain if warm_start else None,
-        seed_binder_noise_level=warm_start.noise_level if warm_start else None,
-        seed_binder_start_t=warm_start.start_t if warm_start else None,
-        seed_binder_num_steps=warm_start.num_steps if warm_start else None,
         include_generated_pdbs=True,
+        **run_kwargs,
     )
     return {
         "run_name": design_payload.run_name,
         "task_name": preprocessed["target_name"],
         "mode": "smoke-cif" if design_payload.smoke else "design-cif",
+        "warm_start_count": warm_start_count,
         "preprocessed_target": preprocessed,
         "design": design,
         "format": "pdb",
@@ -154,4 +197,3 @@ def create_app():
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return web_app
-

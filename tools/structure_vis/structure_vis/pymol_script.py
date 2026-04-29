@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-SUPPORTED_SUFFIXES = {".pdb", ".cif", ".mmcif"}
+SUPPORTED_SUFFIXES = {".pdb", ".cif", ".mmcif", ".pdb.gz", ".cif.gz", ".mmcif.gz"}
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ def validate_structure_files(paths: Iterable[Path]) -> list[Path]:
         path = raw_path.expanduser().resolve()
         if not path.exists():
             raise FileNotFoundError(f"Structure file does not exist: {path}")
-        if path.suffix.lower() not in SUPPORTED_SUFFIXES:
+        if structure_suffix(path) not in SUPPORTED_SUFFIXES:
             suffixes = ", ".join(sorted(SUPPORTED_SUFFIXES))
             raise ValueError(f"Unsupported structure file type for {path}. Expected one of: {suffixes}")
         resolved.append(path)
@@ -32,8 +32,20 @@ def validate_structure_files(paths: Iterable[Path]) -> list[Path]:
     return resolved
 
 
+def structure_suffix(path: Path) -> str:
+    suffixes = path.suffixes
+    if len(suffixes) >= 2 and suffixes[-1].lower() == ".gz":
+        return "".join(suffix.lower() for suffix in suffixes[-2:])
+    return path.suffix.lower()
+
+
 def object_name_for(path: Path, index: int, role: str = "obj") -> str:
-    stem = re.sub(r"[^A-Za-z0-9_]+", "_", path.stem).strip("_") or "structure"
+    stem = path.name
+    for suffix in sorted(SUPPORTED_SUFFIXES, key=len, reverse=True):
+        if stem.lower().endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    stem = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_") or "structure"
     return f"{role}_{index:02d}_{stem}"
 
 

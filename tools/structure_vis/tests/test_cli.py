@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 from structure_vis.cli import main
-from structure_vis.pipeline import compare_structures, html_structures
+from structure_vis.pipeline import batch_compare_structures, compare_structures, html_structures, resolve_structure_inputs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +111,39 @@ class CliTests(unittest.TestCase):
             self.assertEqual(scene.scene_path.name, "viewer.html")
             self.assertEqual(scene.scene_path.parent, tmp_path.resolve())
             self.assertIn("3Dmol-min.js", scene.scene_path.read_text(encoding="utf-8"))
+
+    def test_folder_inputs_expand_to_structures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            shutil.copy(ROOT / "examples" / "reference.pdb", tmp_path / "reference.pdb")
+            shutil.copy(ROOT / "examples" / "model_shifted.pdb", tmp_path / "model_shifted.pdb")
+            paths = resolve_structure_inputs([tmp_path])
+
+            self.assertEqual([path.name for path in paths], ["model_shifted.pdb", "reference.pdb"])
+
+    def test_single_folder_input_expands_to_structures(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            shutil.copy(ROOT / "examples" / "reference.pdb", tmp_path / "reference.pdb")
+            paths = resolve_structure_inputs(tmp_path)
+
+            self.assertEqual([path.name for path in paths], ["reference.pdb"])
+
+    def test_batch_compare_folder_writes_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            input_dir = tmp_path / "inputs"
+            output_dir = tmp_path / "outputs"
+            input_dir.mkdir()
+            shutil.copy(ROOT / "examples" / "reference.pdb", input_dir / "reference.pdb")
+            shutil.copy(ROOT / "examples" / "model_shifted.pdb", input_dir / "model_shifted.pdb")
+            batch = batch_compare_structures([input_dir], out_dir=output_dir, viewer="html")
+
+            self.assertEqual(len(batch.scenes), 1)
+            self.assertTrue(batch.index_path.exists())
+            self.assertEqual(batch.index_path.name, "index.html")
+            self.assertIn("Structure Batch Comparisons", batch.index_path.read_text(encoding="utf-8"))
+            self.assertTrue((output_dir / "batch_index.json").exists())
 
 
 if __name__ == "__main__":

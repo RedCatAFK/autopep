@@ -253,6 +253,29 @@ class DesignCommandTests(unittest.TestCase):
             overrides,
         )
 
+    def test_seed_binder_overrides_accept_batched_paths_and_chains(self) -> None:
+        overrides = warm_start.seed_binder_overrides(
+            seed_binder_path=[
+                Path("/data/seed_binders/seed_0.cif"),
+                Path("/data/seed_binders/seed_1.cif"),
+            ],
+            seed_binder_chain=[None, "B"],
+            seed_binder_noise_level=0.5,
+        )
+
+        self.assertIn(
+            '++generation.dataloader.dataset.conditional_features.0.seed_binder_pdb_path=["/data/seed_binders/seed_0.cif","/data/seed_binders/seed_1.cif"]',
+            overrides,
+        )
+        self.assertIn(
+            '++generation.dataloader.dataset.conditional_features.0.seed_binder_chain=[null,"B"]',
+            overrides,
+        )
+        self.assertIn(
+            "++generation.dataloader.dataset.conditional_features.0.seed_binder_noise_level=0.5",
+            overrides,
+        )
+
     def test_seed_binder_remote_path_preserves_uncompressed_structure_suffix(self) -> None:
         self.assertEqual(
             warm_start.seed_binder_remote_path(
@@ -269,6 +292,15 @@ class DesignCommandTests(unittest.TestCase):
                 seed_binder_filename="seed.pdb",
             ),
             warm_start.SEED_BINDER_DIR / "target_102L_warm_smoke.pdb",
+        )
+        self.assertEqual(
+            warm_start.seed_binder_remote_path(
+                task_name="target_102L",
+                run_name="warm_smoke",
+                seed_binder_filename="105M.cif.gz",
+                seed_binder_index=0,
+            ),
+            warm_start.SEED_BINDER_DIR / "target_102L_warm_smoke_seed_0_target_105M.cif",
         )
 
     def test_run_design_with_seed_passes_seed_overrides(self) -> None:
@@ -316,6 +348,54 @@ class DesignCommandTests(unittest.TestCase):
         )
         self.assertEqual(result["warm_start"]["mode"], "warm")
         self.assertEqual(result["warm_start"]["support_status"], "native")
+
+    def test_run_design_with_batched_seeds_passes_seed_list_overrides(self) -> None:
+        calls = []
+
+        def fake_run(command, *, cwd):
+            calls.append((command, cwd))
+            return "ok"
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(design, "COMPLEXA_ROOT", Path(tmp) / "complexa"),
+            mock.patch.object(commands, "RUNS_DIR", Path(tmp) / "runs"),
+            mock.patch.object(design, "run_complexa", fake_run),
+            mock.patch.object(
+                design,
+                "warm_start_batch_overrides",
+                return_value=(
+                    [
+                        '++generation.dataloader.dataset.conditional_features.0.seed_binder_pdb_path=["/data/seed_binders/seed_0.pdb","/data/seed_binders/seed_1.pdb"]',
+                    ],
+                    {
+                        "mode": "warm",
+                        "seed_binder_count": 2,
+                        "seed_binder_paths": ["/data/seed_binders/seed_0.pdb", "/data/seed_binders/seed_1.pdb"],
+                        "support_status": "native",
+                    },
+                ),
+            ) as setup,
+        ):
+            result = design.run_design(
+                task_name="02_PDL1",
+                run_name="pdl1_seeded",
+                overrides=[],
+                steps=["generate"],
+                seed_binders=[
+                    {"structure_text": "ATOM seed 0\n", "filename": "seed_0.pdb"},
+                    {"structure_text": "ATOM seed 1\n", "filename": "seed_1.pdb"},
+                ],
+            )
+
+        setup.assert_called_once()
+        command = calls[0][0]
+        self.assertIn(
+            '++generation.dataloader.dataset.conditional_features.0.seed_binder_pdb_path=["/data/seed_binders/seed_0.pdb","/data/seed_binders/seed_1.pdb"]',
+            command,
+        )
+        self.assertEqual(result["warm_start"]["mode"], "warm")
+        self.assertEqual(result["warm_start"]["seed_binder_count"], 2)
 
     def test_run_design_falls_back_to_cold_when_warm_start_setup_fails(self) -> None:
         calls = []
@@ -397,6 +477,72 @@ class DesignCommandTests(unittest.TestCase):
         self.assertIn("++generation.dataloader.batch_size=2", run_kwargs["overrides"])
         self.assertEqual(result["mode"], "smoke-cif")
         self.assertEqual(result["format"], "pdb")
+
+    def test_http_design_request_accepts_batched_warm_starts(self) -> None:
+        preprocessed = {
+            "target_name": "target_102L",
+            "hydra_overrides": [
+                "++generation.task_name=target_102L",
+                "++generation.target_dict_cfg.target_102L.target_path=/data/target_data/preprocessed_targets/target_102L.pdb",
+            ],
+        }
+
+        with (
+            mock.patch.object(http_server, "preprocess_target_structure", return_value=preprocessed) as preprocess,
+            mock.patch.object(http_server, "run_design", return_value={"warm_start": {"mode": "warm"}}) as run,
+        ):
+            result = http_server.run_design_request(
+                {
+                    "action": "smoke-cif",
+                    "run_name": "api_smoke",
+                    "target": {
+                        "structure": "data_target\n#",
+                        "filename": "102L.cif",
+                        "name": "target_102L",
+                        "target_input": "A1-162",
+                        "binder_length": [60, 120],
+                    },
+                    "warm_start": [
+                        {
+                            "structure": "ATOM seed 0\n",
+                            "filename": "105M.cif",
+                            "noise_level": 0.5,
+                        },
+                        {
+                            "structure": "ATOM seed 1\n",
+                            "filename": "1OZ9.cif",
+                            "noise_level": 0.5,
+                        },
+                    ],
+                }
+            )
+
+        preprocess.assert_called_once()
+        run.assert_called_once()
+        run_kwargs = run.call_args.kwargs
+        self.assertEqual(run_kwargs["seed_binders"][0]["filename"], "105M.cif")
+        self.assertEqual(run_kwargs["seed_binders"][1]["filename"], "1OZ9.cif")
+        self.assertIn("++generation.dataloader.batch_size=2", run_kwargs["overrides"])
+        self.assertIn("++generation.dataloader.dataset.nres.nsamples=2", run_kwargs["overrides"])
+        self.assertEqual(run_kwargs["steps"], ["generate"])
+        self.assertEqual(result["warm_start_count"], 2)
+
+    def test_http_design_request_rejects_mixed_batch_noise_levels(self) -> None:
+        with self.assertRaisesRegex(ValueError, "same noise_level"):
+            http_server.run_design_request(
+                {
+                    "action": "smoke-cif",
+                    "target": {
+                        "structure": "data_target\n#",
+                        "filename": "102L.cif",
+                        "target_input": "A1-162",
+                    },
+                    "warm_start": [
+                        {"structure": "ATOM seed 0\n", "filename": "105M.cif", "noise_level": 0.25},
+                        {"structure": "ATOM seed 1\n", "filename": "1OZ9.cif", "noise_level": 0.5},
+                    ],
+                }
+            )
 
     def test_http_design_request_requires_target_contents_not_path(self) -> None:
         with self.assertRaisesRegex(ValueError, "file contents"):

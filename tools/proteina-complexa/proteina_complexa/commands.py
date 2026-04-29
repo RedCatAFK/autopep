@@ -66,12 +66,13 @@ def design_command(
     return command
 
 
-def smoke_overrides() -> list[str]:
+def smoke_overrides(sample_count: int = 1) -> list[str]:
+    sample_count = max(1, int(sample_count))
     return [
         "++generation.search.algorithm=single-pass",
         "++generation.reward_model=null",
-        "++generation.dataloader.batch_size=1",
-        "++generation.dataloader.dataset.nres.nsamples=1",
+        f"++generation.dataloader.batch_size={sample_count}",
+        f"++generation.dataloader.dataset.nres.nsamples={sample_count}",
         "++generation.args.nsteps=20",
     ]
 
@@ -165,4 +166,3 @@ def collect_generated_pdbs(
             }
         )
     return pdbs
-

@@ -33,9 +33,16 @@ skip it and use a standalone PyMOL executable instead. PyMOL wheels commonly lag
 Edit this block in `compare_proteins.py`:
 
 ```python
-MODE = "compare"  # "compare" or "view"
+MODE = "batch_compare"  # "batch_compare", "compare", or "view"
 VIEWER = "html"  # "html" needs no PyMOL install; "pymol" writes a .pml scene
 OPEN_VIEWER = False
+
+STRUCTURE_INPUTS = [
+    ROOT / "examples",
+    # ROOT / "your_structure_folder",
+    # ROOT / "your_structure_folder" / "*.cif",
+]
+BATCH_STRATEGY = "all_pairs"  # "all_pairs" or "to_reference"
 
 REFERENCE = ROOT / "examples" / "reference.pdb"
 MOBILE = ROOT / "examples" / "model_shifted.pdb"
@@ -47,6 +54,12 @@ Then run:
 ```bash
 python3 compare_proteins.py
 ```
+
+Folder inputs are expanded recursively. Supported files are `.pdb`, `.cif`, `.mmcif`, plus `.pdb.gz`, `.cif.gz`, and `.mmcif.gz`.
+
+`BATCH_STRATEGY = "all_pairs"` compares every structure to every other structure. For many structures this grows quickly: 10 structures means 45 comparisons. Use `BATCH_STRATEGY = "to_reference"` to compare every structure against one reference instead.
+
+Batch mode writes an `index.html` with links to every generated comparison scene.
 
 For a PyMOL diff scene, set:
 
@@ -133,8 +146,9 @@ pymol runs/compare_YYYYMMDD_HHMMSS/compare.pml
 Use these functions directly from another script:
 
 ```python
-from structure_vis.pipeline import compare_structures, html_structures, view_structures
+from structure_vis.pipeline import batch_compare_structures, compare_structures, html_structures, view_structures
 
+batch_compare_structures(["folder/of/structures"], viewer="html", out_dir="runs/latest")
 html_structures(["a.pdb", "b.cif"], compare=True, out_dir="runs/latest")
 compare_structures("reference.pdb", "model.cif", distance_cutoff=1.0, out_dir="runs/latest")
 view_structures(["a.pdb", "b.pdb", "c.cif"], out_dir="runs/latest")

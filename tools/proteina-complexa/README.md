@@ -43,9 +43,11 @@ The usual cold-start binder path is:
 Warm start is optional. When a request includes `warm_start`, the same target
 preprocessing path still runs first, then the seed binder is written under
 `/data/seed_binders`, seed-binder Hydra overrides are added, and the patched
-Complexa sampler resumes denoising from the supplied binder state. If seed setup
-fails, the wrapper logs the problem and falls back to the cold path. The response
-reports this as `design.warm_start.mode: "cold"` or `"warm"`.
+Complexa sampler resumes denoising from the supplied binder state. `warm_start`
+can be either one seed object or a list of seed objects; the list form keeps the
+target fixed and runs the seeds as one generation batch. If seed setup fails, the
+wrapper logs the problem and falls back to the cold path. The response reports
+this as `design.warm_start.mode: "cold"` or `"warm"`.
 
 Warm-start controls:
 
@@ -143,6 +145,36 @@ curl -X POST "$PROTEINA_COMPLEXA_MODAL_URL/design" \
 JSON
 ```
 
+For a batched warm-start smoke request, send `warm_start` as a list. The server
+sets the smoke `batch_size` and `nres.nsamples` to the number of seeds unless
+you override them explicitly. `chain` may differ per seed; diffusion controls
+such as `noise_level`, `start_t`, and `num_steps` must be shared across the
+batch:
+
+```json
+{
+  "action": "smoke-cif",
+  "target": {
+    "structure": "data_...\n#\n",
+    "filename": "102L.cif",
+    "name": "target_102L",
+    "target_input": "A1-162"
+  },
+  "warm_start": [
+    {"structure": "data_105M\n#\n", "filename": "105M.cif", "noise_level": 0.5},
+    {"structure": "data_1OZ9\n#\n", "filename": "1OZ9.cif", "noise_level": 0.5}
+  ]
+}
+```
+
+The helper smoke script defaults to all files under
+`test_proteins/warm_start_test/*.cif.gz` and JSON mode, so all returned PDBs
+are preserved under `runs/http_smoke_pdbs_<timestamp>/`:
+
+```bash
+scripts/http_smoke_pdb.sh
+```
+
 Use `"action": "smoke-cif"` for a generation-only check. Use
 `"action": "design-cif"` or omit `action` for the full design pipeline.
 
@@ -154,6 +186,7 @@ Response shape:
   "task_name": "target_102L",
   "mode": "smoke-cif",
   "format": "pdb",
+  "warm_start_count": 1,
   "count": 1,
   "pdb_filename": "job_0_n_261_id_0_single_orig0.pdb",
   "pdb": "ATOM ...\n",

@@ -60,6 +60,7 @@ image = (
         "if git apply --reverse --check {patch} >/dev/null 2>&1; then "
         "echo 'Proteina warm-start patch: already-applied'; "
         "elif grep -q seed_binder_pdb_path src/proteinfoundation/datasets/gen_dataset.py "
+        "&& grep -q _seed_binder_list src/proteinfoundation/datasets/gen_dataset.py "
         "&& grep -q warm_start_initial_state src/proteinfoundation/proteina.py "
         "&& grep -q warm_start_checkpoints src/proteinfoundation/search/beam_search.py; then "
         "echo 'Proteina warm-start patch: native'; "
@@ -68,4 +69,3 @@ image = (
     )
     .add_local_python_source("proteina_complexa")
 )
-

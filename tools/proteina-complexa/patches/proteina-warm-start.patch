@@ -1,5 +1,5 @@
 diff --git a/src/proteinfoundation/datasets/gen_dataset.py b/src/proteinfoundation/datasets/gen_dataset.py
-index 5a2650e..8309bbd 100644
+index 5a2650e..ec9d6d7 100644
 --- a/src/proteinfoundation/datasets/gen_dataset.py
 +++ b/src/proteinfoundation/datasets/gen_dataset.py
 @@ -6,6 +6,9 @@ import atomworks
@@ -43,53 +43,107 @@ index 5a2650e..8309bbd 100644
  
          # Validate pdb_path exists with helpful error message
          if not os.path.exists(pdb_path):
-@@ -451,6 +466,55 @@ To fix:
+@@ -451,6 +466,109 @@ To fix:
          self.binder_center = torch.tensor(binder_center).reshape(1, 3) if binder_center is not None else None
          self.pdb_id = pdb_id
  
-+    def _load_seed_binder_features(self) -> dict[str, torch.Tensor] | None:
-+        """Load an optional seed binder as mutable generation-state features."""
-+        if not self.seed_binder_pdb_path:
++    def _seed_binder_list(self, value) -> list:
++        if value is None or value == "":
++            return []
++        if isinstance(value, (str, bytes)):
++            return [value]
++        try:
++            values = list(value)
++        except TypeError:
++            return [value]
++        return [item for item in values if item is not None and item != ""]
++
++    def _seed_option(self, value, seed_idx: int):
++        if value is None or isinstance(value, (str, bytes)):
++            return value
++        try:
++            values = list(value)
++        except TypeError:
++            return value
++        if not values:
++            return None
++        if seed_idx < len(values):
++            return values[seed_idx]
++        return values[-1]
++
++    def _pad_seed_binder_features(self, features: list[dict[str, torch.Tensor]]) -> list[dict[str, torch.Tensor]]:
++        max_len = max(int(feature["residue_mask"].shape[0]) for feature in features)
++        padded_features = []
++        for feature in features:
++            pad_len = max_len - int(feature["residue_mask"].shape[0])
++            if pad_len <= 0:
++                padded_features.append(feature)
++                continue
++            padded_features.append(
++                {
++                    "coords_nm": torch.nn.functional.pad(feature["coords_nm"], (0, 0, 0, 0, 0, pad_len)),
++                    "coord_mask": torch.nn.functional.pad(feature["coord_mask"], (0, 0, 0, pad_len)),
++                    "residue_type": torch.nn.functional.pad(feature["residue_type"], (0, pad_len)),
++                    "residue_mask": torch.nn.functional.pad(feature["residue_mask"], (0, pad_len)),
++                }
++            )
++        return padded_features
++
++    def _load_one_seed_binder_features(self, seed_binder_pdb_path: str, seed_binder_chain: str | None):
++        if not os.path.exists(seed_binder_pdb_path):
++            raise FileNotFoundError(seed_binder_pdb_path)
++
++        loaded = load_any(seed_binder_pdb_path, model=1)
++        struct = loaded[0] if isinstance(loaded, (list, tuple)) else loaded
++        if seed_binder_chain:
++            struct = struct[struct.chain_id == seed_binder_chain]
++        if len(struct) == 0:
++            raise ValueError("seed binder selection matched no atoms")
++        if not hasattr(struct, "occupancy"):
++            struct.set_annotation("occupancy", np.ones(len(struct), dtype=np.float32))
++
++        encoded = atom_array_to_encoding(
++            struct,
++            encoding=AF2_ATOM37_ENCODING,
++            default_coord=0.0,
++        )
++        coord_mask = torch.from_numpy(encoded["mask"]).bool()
++        residue_mask = coord_mask[:, 1].bool()
++        if not bool(residue_mask.any()):
++            raise ValueError("seed binder contains no CA-bearing residues")
++
++        coords_nm = ang_to_nm(torch.from_numpy(encoded["xyz"]).float())[residue_mask]
++        coord_mask = coord_mask[residue_mask]
++        residue_type = torch.from_numpy(encoded["seq"]).long()[residue_mask]
++        residue_mask = torch.ones(coords_nm.shape[0], dtype=torch.bool)
++
++        logger.info(
++            f"Loaded warm-start seed binder from {seed_binder_pdb_path} "
++            f"with {coords_nm.shape[0]} residues"
++        )
++        return {
++            "coords_nm": coords_nm,
++            "coord_mask": coord_mask,
++            "residue_type": residue_type,
++            "residue_mask": residue_mask,
++        }
++
++    def _load_seed_binder_features(self) -> list[dict[str, torch.Tensor]] | None:
++        """Load optional seed binders as mutable generation-state features."""
++        seed_paths = self._seed_binder_list(self.seed_binder_pdb_path)
++        if not seed_paths:
 +            return None
 +
 +        try:
-+            if not os.path.exists(self.seed_binder_pdb_path):
-+                raise FileNotFoundError(self.seed_binder_pdb_path)
-+
-+            loaded = load_any(self.seed_binder_pdb_path, model=1)
-+            struct = loaded[0] if isinstance(loaded, (list, tuple)) else loaded
-+            if self.seed_binder_chain:
-+                struct = struct[struct.chain_id == self.seed_binder_chain]
-+            if len(struct) == 0:
-+                raise ValueError("seed binder selection matched no atoms")
-+            if not hasattr(struct, "occupancy"):
-+                struct.set_annotation("occupancy", np.ones(len(struct), dtype=np.float32))
-+
-+            encoded = atom_array_to_encoding(
-+                struct,
-+                encoding=AF2_ATOM37_ENCODING,
-+                default_coord=0.0,
-+            )
-+            coord_mask = torch.from_numpy(encoded["mask"]).bool()
-+            residue_mask = coord_mask[:, 1].bool()
-+            if not bool(residue_mask.any()):
-+                raise ValueError("seed binder contains no CA-bearing residues")
-+
-+            coords_nm = ang_to_nm(torch.from_numpy(encoded["xyz"]).float())[residue_mask]
-+            coord_mask = coord_mask[residue_mask]
-+            residue_type = torch.from_numpy(encoded["seq"]).long()[residue_mask]
-+            residue_mask = torch.ones(coords_nm.shape[0], dtype=torch.bool)
-+
-+            logger.info(
-+                f"Loaded warm-start seed binder from {self.seed_binder_pdb_path} "
-+                f"with {coords_nm.shape[0]} residues"
-+            )
-+            return {
-+                "coords_nm": coords_nm,
-+                "coord_mask": coord_mask,
-+                "residue_type": residue_type,
-+                "residue_mask": residue_mask,
-+            }
++            features = []
++            for seed_idx, seed_path in enumerate(seed_paths):
++                features.append(
++                    self._load_one_seed_binder_features(
++                        str(seed_path),
++                        self._seed_option(self.seed_binder_chain, seed_idx),
++                    )
++                )
++            return self._pad_seed_binder_features(features)
 +        except Exception as exc:
 +            logger.warning(
 +                f"Warm-start seed binder could not be loaded; falling back to cold start: {exc}"
@@ -99,29 +153,36 @@ index 5a2650e..8309bbd 100644
      def __repr__(self):
          return (
              f"TargetFeatures("
-@@ -464,6 +528,13 @@ To fix:
+@@ -464,6 +582,19 @@ To fix:
          )
  
      def setup(self, nres: list[int]):
 +        self.seed_binder_features = self._load_seed_binder_features()
 +        if self.seed_binder_features is not None:
-+            seed_len = int(self.seed_binder_features["residue_mask"].shape[0])
++            seed_lengths = [
++                int(seed_features["residue_mask"].sum().item())
++                for seed_features in self.seed_binder_features
++            ]
 +            for idx in range(len(nres)):
-+                nres[idx] = seed_len
-+            logger.info(f"Warm-start mode active; overriding generated binder length to seed length {seed_len}")
++                nres[idx] = seed_lengths[idx % len(seed_lengths)]
++            logger.info(
++                f"Warm-start mode active with {len(seed_lengths)} seed binder(s); "
++                f"overriding generated binder lengths to {seed_lengths}"
++            )
 +
          (
              self.target_structures,
              self.target_masks,
-@@ -594,6 +665,17 @@ To fix:
+@@ -594,6 +725,18 @@ To fix:
              result["target_hotspot_mask"] = self.target_hotspots_masks[sample_idx].clone()
          if self.binder_center is not None and self.binder_centers is not None:
              result["binder_center"] = self.binder_centers[sample_idx].clone()
 +        if self.seed_binder_features is not None:
-+            result["warm_start_coords_nm"] = self.seed_binder_features["coords_nm"].clone()
-+            result["warm_start_coord_mask"] = self.seed_binder_features["coord_mask"].clone()
-+            result["warm_start_residue_type"] = self.seed_binder_features["residue_type"].clone()
-+            result["warm_start_residue_mask"] = self.seed_binder_features["residue_mask"].clone()
++            seed_features = self.seed_binder_features[sample_idx % len(self.seed_binder_features)]
++            result["warm_start_coords_nm"] = seed_features["coords_nm"].clone()
++            result["warm_start_coord_mask"] = seed_features["coord_mask"].clone()
++            result["warm_start_residue_type"] = seed_features["residue_type"].clone()
++            result["warm_start_residue_mask"] = seed_features["residue_mask"].clone()
 +            if self.seed_binder_noise_level is not None:
 +                result["warm_start_noise_level"] = torch.tensor(float(self.seed_binder_noise_level), dtype=torch.float32)
 +            if self.seed_binder_start_t is not None:

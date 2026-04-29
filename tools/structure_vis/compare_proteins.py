@@ -2,22 +2,32 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from structure_vis.pipeline import compare_structures, html_structures, view_structures
+from structure_vis.pipeline import batch_compare_structures, compare_structures, html_structures, view_structures
 
 
 ROOT = Path(__file__).resolve().parent
 
 # Edit this block, then run:
 #   python3 compare_proteins.py
-MODE = "compare"  # "compare" or "view"
+MODE = "batch_compare"  # "batch_compare", "compare", or "view"
 VIEWER = "html"  # "html" needs no PyMOL install; "pymol" writes a .pml scene
 OPEN_VIEWER = False
 
+# Batch mode accepts folders, individual files, or glob patterns.
+STRUCTURE_INPUTS: list[Path | str] = [
+    ROOT / "examples",
+    # ROOT / "your_structure_folder",
+    # ROOT / "your_structure_folder" / "*.cif",
+]
+BATCH_STRATEGY = "all_pairs"  # "all_pairs" or "to_reference"
+BATCH_REFERENCE = None  # Used only when BATCH_STRATEGY = "to_reference"
+
+# Single-pair compare mode.
 REFERENCE = ROOT / "examples" / "102L.cif"
-MOBILE = ROOT / "examples" / "hot.pdb"
+MOBILE = ROOT / "examples" / "http_smoke"
 EXTRA_PROTEINS: list[Path] = []
 
-# Used when MODE = "view"; ignored for compare mode.
+# Multi-view mode.
 PROTEINS: list[Path] = [
     ROOT / "examples" / "reference.pdb",
     ROOT / "examples" / "model_shifted.pdb",
@@ -30,6 +40,24 @@ PYMOL_EXECUTABLE = None  # Example: "/Applications/PyMOL.app/Contents/MacOS/PyMO
 
 
 def main() -> None:
+    if MODE == "batch_compare":
+        batch = batch_compare_structures(
+            STRUCTURE_INPUTS,
+            viewer=VIEWER,
+            strategy=BATCH_STRATEGY,
+            reference=BATCH_REFERENCE,
+            out_dir=OUT_DIR,
+            style=STYLE,
+            distance_cutoff=DISTANCE_CUTOFF,
+            open_first=OPEN_VIEWER,
+            pymol=PYMOL_EXECUTABLE,
+        )
+        print(f"Batch comparisons: {len(batch.scenes)}")
+        print(f"Batch index: {batch.index_path}")
+        if batch.scenes:
+            print(f"First scene: {batch.scenes[0].scene_path}")
+        return
+
     if MODE == "compare":
         files = [REFERENCE, MOBILE, *EXTRA_PROTEINS]
         if VIEWER == "html":

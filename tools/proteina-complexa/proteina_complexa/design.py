@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from typing import Any, Sequence
+
 from . import commands
 from .config import COMPLEXA_ROOT, DEFAULT_PIPELINE_CONFIG
 from .runtime import run_complexa
-from .warm_start import warm_start_overrides
+from .warm_start import warm_start_batch_overrides, warm_start_overrides
 
 
 def run_design(
@@ -19,6 +21,7 @@ def run_design(
     seed_binder_noise_level: float | None = None,
     seed_binder_start_t: float | None = None,
     seed_binder_num_steps: int | None = None,
+    seed_binders: Sequence[dict[str, Any]] | None = None,
     include_generated_pdbs: bool = False,
 ) -> dict:
     """Run one Complexa design job in the current Modal container."""
@@ -38,8 +41,17 @@ def run_design(
     existing_logs = set(run_dir.glob("logs/**/*.log"))
 
     seed_overrides: list[str] = []
-    warm_start: dict[str, str] = {"mode": "cold"}
-    if seed_binder_text:
+    warm_start: dict[str, Any] = {"mode": "cold"}
+    if seed_binders:
+        try:
+            seed_overrides, warm_start = warm_start_batch_overrides(
+                task_name=task_name,
+                run_name=run_name,
+                seed_binders=seed_binders,
+            )
+        except Exception as exc:
+            print(f"Batched warm-start setup failed; falling back to cold start: {exc}", flush=True)
+    elif seed_binder_text:
         try:
             seed_overrides, warm_start = warm_start_overrides(
                 task_name=task_name,
