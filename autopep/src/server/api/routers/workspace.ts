@@ -16,6 +16,7 @@ import {
 	agentRuns,
 	type artifacts,
 	contextReferences,
+	type messages as messagesTable,
 	type proteinCandidates,
 	recipes,
 	recipeVersions,
@@ -159,8 +160,20 @@ const mapWorkspaceToProject = (
 
 const mapEvent = (event: typeof agentEvents.$inferSelect) => ({
 	...event,
+	createdAt: event.createdAt.toISOString(),
 	detail: event.summary,
 	payloadJson: event.displayJson,
+});
+
+const mapMessage = (message: typeof messagesTable.$inferSelect) => ({
+	...message,
+	createdAt: message.createdAt.toISOString(),
+});
+
+const mapRunSummary = (run: typeof agentRuns.$inferSelect) => ({
+	id: run.id,
+	startedAt: run.startedAt ? run.startedAt.toISOString() : null,
+	status: run.status,
 });
 
 const mapCandidate = (candidate: typeof proteinCandidates.$inferSelect) => {
@@ -239,13 +252,23 @@ const getWorkspaceCompatibilityPayload = async ({
 			]
 		: [];
 
+	const runSummaries = [...payload.runs]
+		.sort((a, b) => {
+			const aTime = a.startedAt?.getTime() ?? 0;
+			const bTime = b.startedAt?.getTime() ?? 0;
+			return bTime - aTime;
+		})
+		.map(mapRunSummary);
+
 	return {
 		...payload,
 		artifacts: await Promise.all(payload.artifacts.map(mapArtifact)),
 		candidateScores: payload.candidateScores,
 		candidates: payload.candidates.map(mapCandidate),
 		events: payload.events.map(mapEvent),
+		messages: payload.messages.map(mapMessage),
 		project,
+		runs: runSummaries,
 		targetEntities,
 	};
 };

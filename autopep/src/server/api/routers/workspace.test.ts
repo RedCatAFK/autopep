@@ -526,6 +526,99 @@ describe("workspace router procedures", () => {
 		expect(expressionReferences(where, workspaces.ownerId)).toBe(true);
 	});
 
+	it("returns iso createdAt timestamps and a runs summary on the workspace payload", async () => {
+		const workspace = {
+			activeThreadId: "33333333-3333-4333-8333-333333333333",
+			description: "Workspace with traffic",
+			id: "22222222-2222-4222-8222-222222222222",
+			name: "Active workspace",
+			ownerId: "user-1",
+		};
+		const thread = {
+			id: workspace.activeThreadId,
+			title: "Main thread",
+			workspaceId: workspace.id,
+		};
+		const run = {
+			createdAt: new Date("2026-04-29T11:55:00.000Z"),
+			finishedAt: null,
+			id: "11111111-1111-4111-8111-111111111111",
+			prompt: "Investigate the active goal",
+			startedAt: new Date("2026-04-29T12:00:00.000Z"),
+			status: "running",
+			threadId: thread.id,
+			workspaceId: workspace.id,
+		};
+		const olderRun = {
+			createdAt: new Date("2026-04-28T11:55:00.000Z"),
+			finishedAt: new Date("2026-04-28T12:30:00.000Z"),
+			id: "11111111-1111-4111-8111-111111111112",
+			prompt: "Earlier exploration",
+			startedAt: new Date("2026-04-28T12:00:00.000Z"),
+			status: "completed",
+			threadId: thread.id,
+			workspaceId: workspace.id,
+		};
+		const message = {
+			content: "Hello",
+			createdAt: new Date("2026-04-29T12:01:00.000Z"),
+			id: "44444444-4444-4444-8444-444444444444",
+			role: "user",
+			threadId: thread.id,
+		};
+		const event = {
+			createdAt: new Date("2026-04-29T12:02:00.000Z"),
+			displayJson: { step: "launch" },
+			id: "99999999-9999-4999-8999-999999999999",
+			runId: run.id,
+			sequence: 1,
+			summary: "Started",
+			title: "Run started",
+			type: "run_started",
+		};
+		const db = {
+			query: {
+				agentEvents: { findMany: vi.fn().mockResolvedValue([event]) },
+				agentRuns: { findMany: vi.fn().mockResolvedValue([run, olderRun]) },
+				artifacts: { findMany: emptyFindMany() },
+				candidateScores: { findMany: emptyFindMany() },
+				contextReferences: { findMany: emptyFindMany() },
+				messages: { findMany: vi.fn().mockResolvedValue([message]) },
+				proteinCandidates: { findMany: emptyFindMany() },
+				recipes: { findMany: emptyFindMany() },
+				threads: { findMany: vi.fn().mockResolvedValue([thread]) },
+				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
+			},
+		};
+		const caller = createWorkspaceCaller(db);
+
+		const payload = await caller.getWorkspace({ workspaceId: workspace.id });
+
+		expect(typeof payload?.messages[0]?.createdAt).toBe("string");
+		expect(payload?.messages[0]?.createdAt).toBe(message.createdAt.toISOString());
+		expect(typeof payload?.events[0]?.createdAt).toBe("string");
+		expect(payload?.events[0]?.createdAt).toBe(event.createdAt.toISOString());
+
+		expect(payload?.runs.length).toBeGreaterThanOrEqual(1);
+		const firstRun = payload?.runs[0];
+		expect(firstRun?.id).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+		expect([
+			"queued",
+			"running",
+			"paused",
+			"completed",
+			"failed",
+			"cancelled",
+		]).toContain(firstRun?.status);
+		expect(
+			firstRun?.startedAt === null || typeof firstRun?.startedAt === "string",
+		).toBe(true);
+		expect(firstRun?.startedAt).toBe(run.startedAt.toISOString());
+		expect(payload?.runs[1]?.startedAt).toBe(olderRun.startedAt.toISOString());
+	});
+
 	it("loads the latest workspace payload for the authenticated owner", async () => {
 		const workspace = {
 			activeThreadId: "33333333-3333-4333-8333-333333333333",
@@ -600,6 +693,7 @@ describe("workspace router procedures", () => {
 
 	it("loads run events only after confirming workspace ownership", async () => {
 		const event = {
+			createdAt: new Date("2026-04-29T12:00:00.000Z"),
 			displayJson: { step: "launch" },
 			id: "99999999-9999-4999-8999-999999999999",
 			runId: "11111111-1111-4111-8111-111111111111",
@@ -631,6 +725,7 @@ describe("workspace router procedures", () => {
 		).resolves.toEqual([
 			{
 				...event,
+				createdAt: event.createdAt.toISOString(),
 				detail: "Started",
 				payloadJson: { step: "launch" },
 			},
