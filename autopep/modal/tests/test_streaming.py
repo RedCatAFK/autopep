@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from autopep_agent.streaming import normalize_stream_event
+from autopep_agent.streaming import (
+    SANDBOX_OUTPUT_MAX_BYTES,
+    SandboxOutputCoalescer,
+    cap_sandbox_output,
+    extract_sandbox_event,
+    normalize_stream_event,
+)
 
 
 def test_normalize_stream_event_drops_token_deltas() -> None:
@@ -114,6 +120,153 @@ def test_unknown_event_returns_none() -> None:
     event = SimpleNamespace(type="unknown_event")
 
     assert normalize_stream_event(event) is None
+
+
+def test_normalize_stream_event_drops_sandbox_stdout_delta() -> None:
+    event = SimpleNamespace(
+        type="sandbox_stdout_delta",
+        command_id="cmd-1",
+        delta="hello",
+    )
+
+    assert normalize_stream_event(event) is None
+
+
+def test_normalize_stream_event_drops_sandbox_stderr_delta() -> None:
+    event = SimpleNamespace(
+        type="sandbox_stderr_delta",
+        command_id="cmd-1",
+        delta="oops",
+    )
+
+    assert normalize_stream_event(event) is None
+
+
+def test_extract_sandbox_event_returns_none_for_non_sandbox_events() -> None:
+    event = SimpleNamespace(type="raw_response_event")
+    assert extract_sandbox_event(event) is None
+
+
+def test_extract_sandbox_event_normalizes_started_lifecycle_event() -> None:
+    event = SimpleNamespace(
+        type="sandbox_command_started",
+        command_id="cmd-1",
+        display={"command": "ls -la", "commandId": "cmd-1"},
+    )
+
+    extracted = extract_sandbox_event(event)
+
+    assert extracted is not None
+    assert extracted["type"] == "sandbox_command_started"
+    assert extracted["command_id"] == "cmd-1"
+    assert extracted["display"] == {"command": "ls -la", "commandId": "cmd-1"}
+
+
+def test_extract_sandbox_event_reads_command_id_from_display() -> None:
+    event = SimpleNamespace(
+        type="sandbox_command_completed",
+        display={"commandId": "cmd-2", "exitCode": 0},
+    )
+
+    extracted = extract_sandbox_event(event)
+
+    assert extracted is not None
+    assert extracted["command_id"] == "cmd-2"
+
+
+def test_cap_sandbox_output_returns_text_unchanged_under_cap() -> None:
+    text = "hello world"
+
+    assert cap_sandbox_output(text, max_bytes=20) == text
+
+
+def test_cap_sandbox_output_truncates_with_ellipsis_marker() -> None:
+    text = "abcdefghij"
+
+    capped = cap_sandbox_output(text, max_bytes=5)
+
+    assert capped.endswith("…")
+    assert len(capped) == 5
+    assert capped == "abcd…"
+
+
+def test_sandbox_output_coalescer_merges_chunks_into_completion_display() -> None:
+    coalescer = SandboxOutputCoalescer()
+    coalescer.start("cmd-1")
+    coalescer.stdout_delta("cmd-1", "hello ")
+    coalescer.stdout_delta("cmd-1", "world")
+    coalescer.stderr_delta("cmd-1", "oops\n")
+
+    enriched = coalescer.complete(
+        "cmd-1",
+        base_display={"commandId": "cmd-1", "exitCode": 0},
+    )
+
+    assert enriched == {
+        "commandId": "cmd-1",
+        "exitCode": 0,
+        "stdout": "hello world",
+        "stderr": "oops\n",
+        "stdoutTruncated": False,
+        "stderrTruncated": False,
+    }
+
+
+def test_sandbox_output_coalescer_returns_empty_strings_when_no_chunks() -> None:
+    coalescer = SandboxOutputCoalescer()
+    coalescer.start("cmd-1")
+
+    enriched = coalescer.complete("cmd-1", base_display={"commandId": "cmd-1"})
+
+    assert enriched["stdout"] == ""
+    assert enriched["stderr"] == ""
+    assert enriched["stdoutTruncated"] is False
+    assert enriched["stderrTruncated"] is False
+
+
+def test_sandbox_output_coalescer_truncates_stdout_at_default_cap() -> None:
+    coalescer = SandboxOutputCoalescer()
+    coalescer.start("cmd-1")
+    long_chunk = "a" * (SANDBOX_OUTPUT_MAX_BYTES + 500)
+    coalescer.stdout_delta("cmd-1", long_chunk)
+
+    enriched = coalescer.complete("cmd-1")
+
+    assert enriched["stdoutTruncated"] is True
+    assert len(enriched["stdout"]) == SANDBOX_OUTPUT_MAX_BYTES
+    assert enriched["stdout"].endswith("…")
+    assert enriched["stderrTruncated"] is False
+
+
+def test_sandbox_output_coalescer_isolates_buffers_per_command_id() -> None:
+    coalescer = SandboxOutputCoalescer()
+    coalescer.start("cmd-1")
+    coalescer.start("cmd-2")
+    coalescer.stdout_delta("cmd-1", "from-1")
+    coalescer.stdout_delta("cmd-2", "from-2")
+
+    enriched_1 = coalescer.complete("cmd-1")
+    enriched_2 = coalescer.complete("cmd-2")
+
+    assert enriched_1["stdout"] == "from-1"
+    assert enriched_2["stdout"] == "from-2"
+
+
+def test_sandbox_output_coalescer_pop_is_idempotent_for_unknown_command() -> None:
+    # Defensive: a completed event with a never-buffered command_id should
+    # still produce an empty-but-present stdout/stderr payload rather than
+    # crashing.
+    coalescer = SandboxOutputCoalescer()
+
+    enriched = coalescer.complete("never-started", base_display={"exitCode": 1})
+
+    assert enriched == {
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "",
+        "stdoutTruncated": False,
+        "stderrTruncated": False,
+    }
 
 
 def test_raw_event_uses_jsonable_model_dump() -> None:

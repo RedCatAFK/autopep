@@ -48,7 +48,11 @@ from autopep_agent.smoke_agent import (
     build_sandbox_agent,
     build_tool_agent,
 )
-from autopep_agent.streaming import normalize_stream_event
+from autopep_agent.streaming import (
+    SandboxOutputCoalescer,
+    extract_sandbox_event,
+    normalize_stream_event,
+)
 
 
 SANDBOX_APP_NAME = "autopep-agent-runtime"
@@ -293,6 +297,7 @@ async def _append_normalized_stream_events(
     run_id: str,
     writer: EventWriter,
 ) -> None:
+    coalescer = SandboxOutputCoalescer()
     async for event in _stream_events(streamed_run):
         # Side-channel: forward raw token deltas and the completion sentinel
         # to the per-run Modal Queue so the run_stream SSE endpoint can tail
@@ -307,6 +312,61 @@ async def _append_normalized_stream_events(
                 await _push_token_delta(run_id, str(delta))
         elif data_type == "response.completed":
             await _push_token_done(run_id)
+
+        # Sandbox events are state-y: per-chunk stdout/stderr deltas must be
+        # buffered in-memory and merged into the parent ``sandbox_command_
+        # completed`` event so the ledger only ever sees one started + one
+        # completed row per command. Delta events are dropped from the ledger
+        # (normalize_stream_event also filters them defensively).
+        sandbox_event = extract_sandbox_event(event)
+        if sandbox_event is not None:
+            command_id = sandbox_event["command_id"]
+            sandbox_type = sandbox_event["type"]
+            if sandbox_type == "sandbox_stdout_delta":
+                if command_id:
+                    coalescer.stdout_delta(command_id, sandbox_event["text"])
+                continue
+            if sandbox_type == "sandbox_stderr_delta":
+                if command_id:
+                    coalescer.stderr_delta(command_id, sandbox_event["text"])
+                continue
+            if sandbox_type == "sandbox_command_started":
+                if command_id:
+                    coalescer.start(command_id)
+                base_display = dict(sandbox_event["display"])
+                if command_id and "commandId" not in base_display:
+                    base_display["commandId"] = command_id
+                await writer.append_event(
+                    run_id=run_id,
+                    event_type=sandbox_type,
+                    title="Sandbox command started",
+                    summary=str(base_display.get("command") or "") or None,
+                    display=base_display,
+                    raw=sandbox_event["raw"],
+                )
+                continue
+            if sandbox_type == "sandbox_command_completed":
+                base_display = dict(sandbox_event["display"])
+                if command_id and "commandId" not in base_display:
+                    base_display["commandId"] = command_id
+                enriched_display = (
+                    coalescer.complete(command_id, base_display=base_display)
+                    if command_id
+                    else base_display
+                )
+                exit_code = base_display.get("exitCode")
+                summary = (
+                    f"exit code {exit_code}" if exit_code is not None else None
+                )
+                await writer.append_event(
+                    run_id=run_id,
+                    event_type=sandbox_type,
+                    title="Sandbox command completed",
+                    summary=summary,
+                    display=enriched_display,
+                    raw=sandbox_event["raw"],
+                )
+                continue
 
         normalized = normalize_stream_event(event)
         if normalized is None:
@@ -414,12 +474,19 @@ async def _execute_smoke_run(
         agent = build_tool_agent(model=model)
     elif task_kind == "smoke_sandbox":
         agent = build_sandbox_agent(model=model)
+        # Single synthetic command id so the UI can correlate the
+        # started / completed events for this smoke command. Per-chunk
+        # stdout / stderr are coalesced into the completed event below
+        # rather than persisted as their own ledger rows.
+        command_id = f"smoke-{run_id}"
+        coalescer = SandboxOutputCoalescer()
+        coalescer.start(command_id)
         await writer.append_event(
             run_id=run_id,
             event_type="sandbox_command_started",
             title="Sandbox command started",
             summary="echo sandbox-ok",
-            display={"command": "echo sandbox-ok"},
+            display={"commandId": command_id, "command": "echo sandbox-ok"},
             raw={
                 "agent": getattr(agent, "name", "Autopep smoke sandbox"),
                 "model": model,
@@ -427,27 +494,28 @@ async def _execute_smoke_run(
             },
         )
         sandbox_result = await _run_modal_sandbox_echo()
-        await writer.append_event(
-            run_id=run_id,
-            event_type="sandbox_stdout_delta",
-            title="Sandbox stdout",
-            summary=sandbox_result["stdout"].strip() or None,
-            display={"delta": sandbox_result["stdout"]},
-        )
+        # Feed the captured stdout / stderr through the coalescer as if they
+        # had arrived as a single delta chunk each. The smoke path doesn't
+        # actually stream chunks, but routing through the same helper keeps
+        # the wire format identical to what the real Agents SDK sandbox
+        # session will produce in production.
+        if sandbox_result["stdout"]:
+            coalescer.stdout_delta(command_id, sandbox_result["stdout"])
         if sandbox_result["stderr"]:
-            await writer.append_event(
-                run_id=run_id,
-                event_type="sandbox_stderr_delta",
-                title="Sandbox stderr",
-                summary=sandbox_result["stderr"].strip() or None,
-                display={"delta": sandbox_result["stderr"]},
-            )
+            coalescer.stderr_delta(command_id, sandbox_result["stderr"])
+        completed_display = coalescer.complete(
+            command_id,
+            base_display={
+                "commandId": command_id,
+                "exitCode": sandbox_result["exit_code"],
+            },
+        )
         await writer.append_event(
             run_id=run_id,
             event_type="sandbox_command_completed",
             title="Sandbox command completed",
             summary=f"exit code {sandbox_result['exit_code']}",
-            display={"exitCode": sandbox_result["exit_code"]},
+            display=completed_display,
             raw=sandbox_result,
         )
         await writer.append_event(

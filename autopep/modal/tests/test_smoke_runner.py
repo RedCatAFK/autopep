@@ -358,15 +358,29 @@ async def test_smoke_sandbox_emits_sandbox_events_without_biology_tools(
 
     await runner_mod.execute_run("run-smoke-sandbox", "thread-1", "workspace-1")
 
+    # sandbox_stdout_delta / sandbox_stderr_delta are coalesced into
+    # sandbox_command_completed.display.stdout|stderr by Task 2.8 — they
+    # MUST NOT be persisted to the agent_events ledger.
     assert [event["type"] for event in writer.events] == [
         "run_started",
         "sandbox_command_started",
-        "sandbox_stdout_delta",
         "sandbox_command_completed",
         "assistant_message_completed",
         "run_completed",
     ]
-    assert writer.events[2]["display"] == {"delta": "sandbox-ok\n"}
+    started_event = writer.events[1]
+    completed_event = writer.events[2]
+    assert started_event["display"]["command"] == "echo sandbox-ok"
+    # Started event carries a commandId; the completed event uses the same id
+    # so the UI can pair started/completed across the same sandbox command.
+    started_command_id = started_event["display"]["commandId"]
+    assert started_command_id
+    assert completed_event["display"]["commandId"] == started_command_id
+    assert completed_event["display"]["stdout"] == "sandbox-ok\n"
+    assert completed_event["display"]["stderr"] == ""
+    assert completed_event["display"]["stdoutTruncated"] is False
+    assert completed_event["display"]["stderrTruncated"] is False
+    assert completed_event["display"]["exitCode"] == 0
     assert built_configs[0]["model"] == "gpt-5.4-mini"
     assert sandbox_calls == [
         "create:autopep-agent-runtime",

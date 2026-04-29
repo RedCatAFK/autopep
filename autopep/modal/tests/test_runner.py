@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -352,6 +353,100 @@ async def test_execute_run_records_failure_when_config_loading_fails(
     )
     assert failure_event is not None
     assert "Missing required environment variables" in (failure_event["summary"] or "")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_stdout_deltas_are_coalesced_into_completion() -> None:
+    """The runner must NOT persist per-chunk sandbox_*_delta events.
+
+    Drives a fake event stream through the runner's stream-handling helper
+    and asserts that a `started`, three deltas, and a `completed` event
+    collapse into exactly two ledger rows whose `display.stdout|stderr`
+    contains the merged output.
+    """
+    writer = _FakeEventWriter("test-db")
+    streamed = _FakeStreamedRun(
+        [
+            SimpleNamespace(
+                type="sandbox_command_started",
+                command_id="cmd-1",
+                display={"command": "echo hi"},
+            ),
+            SimpleNamespace(
+                type="sandbox_stdout_delta",
+                command_id="cmd-1",
+                delta="hello ",
+            ),
+            SimpleNamespace(
+                type="sandbox_stdout_delta",
+                command_id="cmd-1",
+                delta="world",
+            ),
+            SimpleNamespace(
+                type="sandbox_stderr_delta",
+                command_id="cmd-1",
+                delta="oops\n",
+            ),
+            SimpleNamespace(
+                type="sandbox_command_completed",
+                command_id="cmd-1",
+                display={"exitCode": 0},
+            ),
+        ],
+    )
+
+    await runner_mod._append_normalized_stream_events(
+        streamed,
+        run_id="r-sandbox",
+        writer=writer,
+    )
+
+    types = [event["type"] for event in writer.events]
+    assert types == ["sandbox_command_started", "sandbox_command_completed"]
+    completed = writer.events[1]
+    assert completed["display"]["stdout"] == "hello world"
+    assert completed["display"]["stderr"] == "oops\n"
+    assert completed["display"]["stdoutTruncated"] is False
+    assert completed["display"]["stderrTruncated"] is False
+    assert completed["display"]["commandId"] == "cmd-1"
+    assert completed["display"]["exitCode"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sandbox_stdout_truncates_at_10kb_with_truncation_flag() -> None:
+    writer = _FakeEventWriter("test-db")
+    huge = "x" * 25_000  # ~25KB, well past the 10KB cap
+    streamed = _FakeStreamedRun(
+        [
+            SimpleNamespace(
+                type="sandbox_command_started",
+                command_id="cmd-big",
+                display={"command": "yes"},
+            ),
+            SimpleNamespace(
+                type="sandbox_stdout_delta",
+                command_id="cmd-big",
+                delta=huge,
+            ),
+            SimpleNamespace(
+                type="sandbox_command_completed",
+                command_id="cmd-big",
+                display={"exitCode": 0},
+            ),
+        ],
+    )
+
+    await runner_mod._append_normalized_stream_events(
+        streamed,
+        run_id="r-trunc",
+        writer=writer,
+    )
+
+    completed = writer.events[-1]
+    assert completed["type"] == "sandbox_command_completed"
+    assert completed["display"]["stdoutTruncated"] is True
+    assert len(completed["display"]["stdout"]) == 10_000
+    assert completed["display"]["stdout"].endswith("…")
 
 
 @pytest.mark.asyncio
