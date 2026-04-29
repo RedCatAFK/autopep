@@ -134,6 +134,7 @@ export function WorkspaceShell({
 	contextReferences,
 	fileArtifacts,
 	isChatDisabled = false,
+	isLoadingWorkspace,
 	isRecipesOpen,
 	isSavingRecipe = false,
 	isSendingMessage,
@@ -200,15 +201,22 @@ export function WorkspaceShell({
 				onSend={onSendMessage}
 				recipes={chatRecipes}
 			/>
-			<ViewerTabs
-				activeTabId={activeTabId}
-				candidateScores={candidateScores}
-				candidates={tabCandidates}
-				onClose={closeTab}
-				onOpenCandidate={openCandidateInTab}
-				onSelect={setActiveTabId}
-				tabs={tabs}
-			/>
+			<div className="relative min-h-0 lg:min-h-0 lg:overflow-hidden">
+				{isLoadingWorkspace ? (
+					<div className="pointer-events-none absolute inset-x-0 top-0 z-[2] h-0.5 overflow-hidden bg-[#e5eadc]">
+						<div className="molstar-loading-bar h-full w-1/3 bg-[#dce846]" />
+					</div>
+				) : null}
+				<ViewerTabs
+					activeTabId={activeTabId}
+					candidateScores={candidateScores}
+					candidates={tabCandidates}
+					onClose={closeTab}
+					onOpenCandidate={openCandidateInTab}
+					onSelect={setActiveTabId}
+					tabs={tabs}
+				/>
+			</div>
 			<FilesPanel
 				activeArtifactId={activeArtifactId}
 				artifacts={fileArtifacts}
