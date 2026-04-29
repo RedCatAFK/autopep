@@ -8,6 +8,10 @@ import pytest
 import respx
 
 from autopep_agent.endpoint_clients import ChaiClient, ProteinaClient, ScoringClient
+from autopep_agent.endpoint_clients import (
+    PROTEINA_DESIGN_STEPS,
+    PROTEINA_FAST_GENERATION_OVERRIDES,
+)
 
 
 def _request_json(request: httpx.Request) -> dict[str, Any]:
@@ -25,8 +29,8 @@ async def test_proteina_design_posts_target_payload_with_api_key() -> None:
     result = await client.design(
         target_structure="data_target",
         target_filename="target.cif",
-        target_input="A",
-        hotspot_residues=["A:42", "A:73"],
+        target_input="A1-162",
+        hotspot_residues=["A42", "A73"],
         binder_length=[60, 120],
     )
 
@@ -37,11 +41,13 @@ async def test_proteina_design_posts_target_payload_with_api_key() -> None:
     assert request.headers["content-type"] == "application/json"
     assert _request_json(request) == {
         "action": "design-cif",
+        "design_steps": PROTEINA_DESIGN_STEPS,
+        "overrides": PROTEINA_FAST_GENERATION_OVERRIDES,
         "target": {
             "structure": "data_target",
             "filename": "target.cif",
-            "target_input": "A",
-            "hotspot_residues": ["A:42", "A:73"],
+            "target_input": "A1-162",
+            "hotspot_residues": ["A42", "A73"],
             "binder_length": [60, 120],
         },
     }

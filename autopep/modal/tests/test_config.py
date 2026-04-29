@@ -48,7 +48,7 @@ def test_from_env_reads_required_values_and_normalizes_urls(
         == REQUIRED_ENV["MODAL_PROTEIN_INTERACTION_SCORING_API_KEY"]
     )
     assert config.openai_api_key == REQUIRED_ENV["OPENAI_API_KEY"]
-    assert config.default_model == "gpt-5.4"
+    assert config.default_model == "gpt-5.5"
 
 
 def test_from_env_uses_openai_default_model_override(

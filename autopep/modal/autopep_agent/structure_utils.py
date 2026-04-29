@@ -65,7 +65,7 @@ def build_fasta(candidates: Sequence[Mapping[str, object]]) -> str:
     for candidate in candidates:
         candidate_id = str(candidate["id"]).strip()
         sequence = str(candidate["sequence"]).strip().upper()
-        fasta_parts.append(f">{candidate_id}\n{sequence}\n")
+        fasta_parts.append(f">protein|name={candidate_id}\n{sequence}\n")
     return "".join(fasta_parts)
 
 

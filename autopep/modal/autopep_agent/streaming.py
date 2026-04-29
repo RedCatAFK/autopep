@@ -61,7 +61,24 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
 
     if event_type == "raw_response_event":
         data = _get(event, "data")
-        if _get(data, "type") == "response.output_text.delta":
+        data_type = _get(data, "type")
+        if data_type == "response.created":
+            return {
+                "type": "assistant_message_started",
+                "title": "Assistant message started",
+                "summary": None,
+                "display": {},
+                "raw": _as_jsonable(event),
+            }
+        if data_type == "response.completed":
+            return {
+                "type": "assistant_message_completed",
+                "title": "Assistant message completed",
+                "summary": None,
+                "display": {},
+                "raw": _as_jsonable(event),
+            }
+        if data_type == "response.output_text.delta":
             delta = _get(data, "delta", "")
             if delta:
                 return {
@@ -111,6 +128,15 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
             return {
                 "type": "reasoning_step",
                 "title": "Reasoning step",
+                "summary": None,
+                "display": {},
+                "raw": raw,
+            }
+
+        if name in {"message_output_created", "message_output"}:
+            return {
+                "type": "assistant_message_completed",
+                "title": "Assistant message completed",
                 "summary": None,
                 "display": {},
                 "raw": raw,

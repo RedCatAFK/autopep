@@ -13,11 +13,15 @@ export const env = createEnv({
 				: z.string().optional(),
 		BETTER_AUTH_URL: z.string().url().optional(),
 		AUTOPEP_AGENT_MODE: z.enum(["direct", "codex"]).default("direct"),
+		AUTOPEP_ALLOW_SMOKE_RUNS: z.enum(["0", "1"]).optional(),
 		AUTOPEP_CODEX_COMMAND: z.string().optional(),
 		AUTOPEP_CODEX_MODEL: z.string().default("gpt-5.5"),
 		AUTOPEP_MODAL_START_URL: z.string().url().optional(),
 		AUTOPEP_MODAL_WEBHOOK_SECRET: z.string().optional(),
 		AUTOPEP_RUNNER_BACKEND: z.enum(["local", "modal"]).default("local"),
+		AUTOPEP_SMOKE_OWNER_ID: z.string().optional(),
+		AUTOPEP_SMOKE_THREAD_ID: z.string().uuid().optional(),
+		AUTOPEP_SMOKE_WORKSPACE_ID: z.string().uuid().optional(),
 		AUTOPEP_WORKER_ID: z.string().optional(),
 		DATABASE_URL: z.string().url(),
 		MODAL_CHAI_API_KEY: z.string().optional(),
@@ -32,6 +36,7 @@ export const env = createEnv({
 			.enum(["development", "test", "production"])
 			.default("development"),
 		OPENAI_API_KEY: z.string().optional(),
+		OPENAI_DEFAULT_MODEL: z.string().default("gpt-5.5"),
 		R2_ACCESS_KEY_ID:
 			process.env.NODE_ENV === "production"
 				? z.string()
@@ -66,11 +71,15 @@ export const env = createEnv({
 	 */
 	runtimeEnv: {
 		AUTOPEP_AGENT_MODE: process.env.AUTOPEP_AGENT_MODE,
+		AUTOPEP_ALLOW_SMOKE_RUNS: process.env.AUTOPEP_ALLOW_SMOKE_RUNS,
 		AUTOPEP_CODEX_COMMAND: process.env.AUTOPEP_CODEX_COMMAND,
 		AUTOPEP_CODEX_MODEL: process.env.AUTOPEP_CODEX_MODEL,
 		AUTOPEP_MODAL_START_URL: process.env.AUTOPEP_MODAL_START_URL,
 		AUTOPEP_MODAL_WEBHOOK_SECRET: process.env.AUTOPEP_MODAL_WEBHOOK_SECRET,
 		AUTOPEP_RUNNER_BACKEND: process.env.AUTOPEP_RUNNER_BACKEND,
+		AUTOPEP_SMOKE_OWNER_ID: process.env.AUTOPEP_SMOKE_OWNER_ID,
+		AUTOPEP_SMOKE_THREAD_ID: process.env.AUTOPEP_SMOKE_THREAD_ID,
+		AUTOPEP_SMOKE_WORKSPACE_ID: process.env.AUTOPEP_SMOKE_WORKSPACE_ID,
 		AUTOPEP_WORKER_ID: process.env.AUTOPEP_WORKER_ID,
 		BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
 		BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
@@ -87,6 +96,7 @@ export const env = createEnv({
 		MODAL_TOKEN_SECRET: process.env.MODAL_TOKEN_SECRET,
 		NODE_ENV: process.env.NODE_ENV,
 		OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+		OPENAI_DEFAULT_MODEL: process.env.OPENAI_DEFAULT_MODEL,
 		R2_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID,
 		R2_ACCOUNT_ID: process.env.R2_ACCOUNT_ID,
 		R2_BUCKET: process.env.R2_BUCKET,

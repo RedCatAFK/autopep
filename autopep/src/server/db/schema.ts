@@ -116,6 +116,9 @@ export const agentTaskKind = pgEnum("agent_task_kind", [
 	"prepare_structure",
 	"mutate_structure",
 	"branch_design",
+	"smoke_chat",
+	"smoke_tool",
+	"smoke_sandbox",
 ]);
 
 export const artifactKind = pgEnum("artifact_kind", [
@@ -234,7 +237,7 @@ export const agentRuns = createAutopepTable(
 		status: agentRunStatus("status").default("queued").notNull(),
 		taskKind: agentTaskKind("task_kind").default("chat").notNull(),
 		prompt: text("prompt").notNull(),
-		model: text("model").notNull().default("gpt-5.4"),
+		model: text("model").notNull().default("gpt-5.5"),
 		agentName: text("agent_name").notNull().default("Autopep"),
 		modalCallId: text("modal_call_id"),
 		sandboxSessionStateJson: jsonb("sandbox_session_state_json")

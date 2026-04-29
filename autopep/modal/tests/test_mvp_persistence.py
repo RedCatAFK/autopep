@@ -903,6 +903,46 @@ async def test_fold_sequences_with_chai_persists_inference_and_artifacts(
 
 
 @pytest.mark.asyncio
+async def test_fold_sequences_with_chai_links_ordered_response_when_filename_does_not_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    recorder, _writer = _wire_persistence_doubles(monkeypatch)
+    monkeypatch.setattr(biology_tools, "r2_put_object", _fake_r2_put)
+
+    response = {
+        "cifs": [
+            {"filename": "rank_1_pred.model_idx_0.cif", "cif": "data_block\n#"},
+        ],
+    }
+
+    class FakeChaiClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def predict(self, fasta: str, num_diffn_samples: int = 1) -> Any:
+            return response
+
+    monkeypatch.setattr(biology_tools, "ChaiClient", FakeChaiClient)
+
+    set_tool_run_context(_make_ctx())
+
+    await biology_tools._fold_sequences_with_chai(
+        sequence_candidates=[
+            {
+                "id": "candidate-1",
+                "sequence": "ACDE",
+                "candidate_id": "db-candidate-1",
+            },
+        ],
+    )
+
+    assert len(recorder.fold_calls) == 1
+    assert recorder.fold_calls[0]["candidate_id"] == "db-candidate-1"
+    assert recorder.fold_calls[0]["fold_artifact_id"] == "artifact-1"
+
+
+@pytest.mark.asyncio
 async def test_fold_sequences_with_chai_marks_inference_failed_and_reraises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -14,7 +14,13 @@ from autopep_agent.db import (
     map_scoring_result_to_rows,
     update_candidate_fold_artifact,
 )
-from autopep_agent.endpoint_clients import ChaiClient, ProteinaClient, ScoringClient
+from autopep_agent.endpoint_clients import (
+    PROTEINA_DESIGN_STEPS,
+    PROTEINA_FAST_GENERATION_OVERRIDES,
+    ChaiClient,
+    ProteinaClient,
+    ScoringClient,
+)
 from autopep_agent.events import EventWriter
 from autopep_agent.r2_client import put_object as r2_put_object
 from autopep_agent.run_context import get_tool_run_context
@@ -78,6 +84,8 @@ async def _generate_binder_candidates(
         "target_input": target_input,
         "hotspot_residues": list(hotspot_residues),
         "binder_length": [binder_length_min, binder_length_max],
+        "design_steps": PROTEINA_DESIGN_STEPS,
+        "overrides": PROTEINA_FAST_GENERATION_OVERRIDES,
     }
     inference_id = await create_model_inference(
         ctx.database_url,
@@ -274,6 +282,11 @@ async def _fold_sequences_with_chai(
         for c in sequence_candidates
         if c.get("candidate_id") is not None
     }
+    candidate_ids_by_index = [
+        c.get("candidate_id")
+        for c in sequence_candidates
+        if c.get("candidate_id") is not None
+    ]
 
     for index, cif_record in enumerate(_extract_cif_records(response), start=1):
         filename = cif_record["filename"]
@@ -314,6 +327,8 @@ async def _fold_sequences_with_chai(
 
         match_key = _match_candidate_key(cif_record, fallback_index=index)
         candidate_db_id = candidate_id_by_name.get(match_key)
+        if candidate_db_id is None and index <= len(candidate_ids_by_index):
+            candidate_db_id = candidate_ids_by_index[index - 1]
         if candidate_db_id is not None:
             await update_candidate_fold_artifact(
                 ctx.database_url,

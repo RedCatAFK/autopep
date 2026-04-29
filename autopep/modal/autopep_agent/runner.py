@@ -34,17 +34,25 @@ from autopep_agent.db import (
     mark_run_completed,
     mark_run_failed,
 )
+from autopep_agent.demo_pipeline import execute_demo_one_loop
 from autopep_agent.events import EventWriter
 from autopep_agent.run_context import (
     ToolRunContext,
     reset_tool_run_context,
     set_tool_run_context,
 )
+from autopep_agent.smoke_agent import (
+    SMOKE_MODEL,
+    build_ping_agent,
+    build_sandbox_agent,
+    build_tool_agent,
+)
 from autopep_agent.streaming import normalize_stream_event
 
 
 SANDBOX_APP_NAME = "autopep-agent-runtime"
 SANDBOX_TIMEOUT_SECONDS = 60 * 60
+SMOKE_TASK_KINDS = {"smoke_chat", "smoke_tool", "smoke_sandbox"}
 
 
 @dataclass(frozen=True)
@@ -227,6 +235,26 @@ async def _stream_events(streamed_run: Any) -> Any:
         yield event
 
 
+async def _append_normalized_stream_events(
+    streamed_run: Any,
+    *,
+    run_id: str,
+    writer: EventWriter,
+) -> None:
+    async for event in _stream_events(streamed_run):
+        normalized = normalize_stream_event(event)
+        if normalized is None:
+            continue
+        await writer.append_event(
+            run_id=run_id,
+            event_type=normalized["type"],
+            title=normalized["title"],
+            summary=normalized.get("summary"),
+            display=normalized.get("display"),
+            raw=normalized.get("raw"),
+        )
+
+
 async def _append_failure_event(
     writer: EventWriter,
     *,
@@ -250,6 +278,131 @@ async def _mark_failure(database_url: str, *, run_id: str, error_summary: str) -
         await mark_run_failed(database_url, run_id, error_summary)
     except Exception:
         pass
+
+
+async def _run_modal_sandbox_echo() -> dict[str, Any]:
+    """Run the smoke sandbox command through the Agents SDK Modal sandbox client."""
+
+    if ModalSandboxClient is None or ModalSandboxClientOptions is None:
+        raise RuntimeError("Installed Agents SDK does not expose Modal sandbox APIs.")
+
+    try:
+        options = ModalSandboxClientOptions(
+            app_name=SANDBOX_APP_NAME,
+            sandbox_create_timeout_s=60,
+            timeout=120,
+        )
+    except TypeError:
+        options = ModalSandboxClientOptions(app_name=SANDBOX_APP_NAME)
+
+    client = ModalSandboxClient()
+    session = await client.create(options=options)
+    try:
+        async with session:
+            result = await session.exec("echo sandbox-ok", timeout=30, shell=True)
+    finally:
+        await client.delete(session)
+
+    stdout_bytes = getattr(result, "stdout", b"")
+    stderr_bytes = getattr(result, "stderr", b"")
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    exit_code = int(getattr(result, "exit_code", 1))
+    if exit_code != 0:
+        raise RuntimeError(
+            f"Smoke sandbox command exited {exit_code}: {stderr or stdout}",
+        )
+    return {
+        "command": "echo sandbox-ok",
+        "exit_code": exit_code,
+        "stderr": stderr,
+        "stdout": stdout,
+    }
+
+
+async def _execute_smoke_run(
+    *,
+    run_context: Any,
+    run_id: str,
+    thread_id: str,
+    workspace_id: str,
+    writer: EventWriter,
+) -> None:
+    if os.environ.get("AUTOPEP_ALLOW_SMOKE_RUNS") != "1":
+        raise RuntimeError("Smoke runs require AUTOPEP_ALLOW_SMOKE_RUNS=1.")
+
+    task_kind = run_context.task_kind
+    # DB-created runs currently default to the production model. Smoke runs are
+    # intentionally cheap, so only honor an explicitly persisted mini model.
+    model = run_context.model if "mini" in str(run_context.model or "") else SMOKE_MODEL
+    run_config = _build_run_config(
+        model=model,
+        run_id=run_id,
+        thread_id=thread_id,
+        workspace_id=workspace_id,
+    )
+
+    if task_kind == "smoke_chat":
+        agent = build_ping_agent(model=model)
+    elif task_kind == "smoke_tool":
+        agent = build_tool_agent(model=model)
+    elif task_kind == "smoke_sandbox":
+        agent = build_sandbox_agent(model=model)
+        await writer.append_event(
+            run_id=run_id,
+            event_type="sandbox_command_started",
+            title="Sandbox command started",
+            summary="echo sandbox-ok",
+            display={"command": "echo sandbox-ok"},
+            raw={
+                "agent": getattr(agent, "name", "Autopep smoke sandbox"),
+                "model": model,
+                "runConfigBuilt": run_config is not None,
+            },
+        )
+        sandbox_result = await _run_modal_sandbox_echo()
+        await writer.append_event(
+            run_id=run_id,
+            event_type="sandbox_stdout_delta",
+            title="Sandbox stdout",
+            summary=sandbox_result["stdout"].strip() or None,
+            display={"delta": sandbox_result["stdout"]},
+        )
+        if sandbox_result["stderr"]:
+            await writer.append_event(
+                run_id=run_id,
+                event_type="sandbox_stderr_delta",
+                title="Sandbox stderr",
+                summary=sandbox_result["stderr"].strip() or None,
+                display={"delta": sandbox_result["stderr"]},
+            )
+        await writer.append_event(
+            run_id=run_id,
+            event_type="sandbox_command_completed",
+            title="Sandbox command completed",
+            summary=f"exit code {sandbox_result['exit_code']}",
+            display={"exitCode": sandbox_result["exit_code"]},
+            raw=sandbox_result,
+        )
+        await writer.append_event(
+            run_id=run_id,
+            event_type="assistant_message_completed",
+            title="Assistant message completed",
+            summary=sandbox_result["stdout"].strip() or None,
+            display={"text": sandbox_result["stdout"].strip()},
+        )
+        return
+    else:  # Defensive guard if SMOKE_TASK_KINDS and routing drift.
+        raise RuntimeError(f"Unsupported smoke task kind: {task_kind}")
+
+    streamed_run = await _maybe_await(
+        Runner.run_streamed(
+            agent,
+            input=run_context.prompt,
+            run_config=run_config,
+        ),
+    )
+    await _append_normalized_stream_events(streamed_run, run_id=run_id, writer=writer)
 
 
 async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
@@ -293,6 +446,56 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
             display={"taskKind": task_kind},
         )
 
+        if task_kind in SMOKE_TASK_KINDS:
+            await _execute_smoke_run(
+                run_context=run_context,
+                run_id=run_id,
+                thread_id=thread_id,
+                workspace_id=workspace_id,
+                writer=writer,
+            )
+            await writer.append_event(
+                run_id=run_id,
+                event_type="run_completed",
+                title="Run completed",
+                summary="Autopep completed the smoke agent run.",
+            )
+            await mark_run_completed(database_url, run_id)
+            return
+
+        if task_kind == "branch_design":
+            ctx_token = set_tool_run_context(
+                ToolRunContext(
+                    workspace_id=workspace_id,
+                    run_id=run_id,
+                    database_url=database_url,
+                    proteina_base_url=config.modal_proteina_url,
+                    proteina_api_key=config.modal_proteina_api_key,
+                    chai_base_url=config.modal_chai_url,
+                    chai_api_key=config.modal_chai_api_key,
+                    scoring_base_url=config.modal_protein_interaction_scoring_url,
+                    scoring_api_key=config.modal_protein_interaction_scoring_api_key,
+                ),
+            )
+            try:
+                await execute_demo_one_loop(
+                    config=config,
+                    database_url=database_url,
+                    run_id=run_id,
+                    workspace_id=workspace_id,
+                    writer=writer,
+                )
+            finally:
+                reset_tool_run_context(ctx_token)
+            await writer.append_event(
+                run_id=run_id,
+                event_type="run_completed",
+                title="Run completed",
+                summary="Autopep completed the one-loop binder design workflow.",
+            )
+            await mark_run_completed(database_url, run_id)
+            return
+
         agent = build_autopep_agent(run_context.enabled_recipes)
         run_config = _build_run_config(
             model=run_context.model or config.default_model,
@@ -333,19 +536,11 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                     run_config=run_config,
                 ),
             )
-
-            async for event in _stream_events(streamed_run):
-                normalized = normalize_stream_event(event)
-                if normalized is None:
-                    continue
-                await writer.append_event(
-                    run_id=run_id,
-                    event_type=normalized["type"],
-                    title=normalized["title"],
-                    summary=normalized.get("summary"),
-                    display=normalized.get("display"),
-                    raw=normalized.get("raw"),
-                )
+            await _append_normalized_stream_events(
+                streamed_run,
+                run_id=run_id,
+                writer=writer,
+            )
         finally:
             reset_tool_run_context(ctx_token)
 

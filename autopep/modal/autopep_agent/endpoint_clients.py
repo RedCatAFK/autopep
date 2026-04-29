@@ -5,6 +5,16 @@ from typing import Any, Mapping, Sequence
 import httpx
 
 
+PROTEINA_DESIGN_STEPS = ["generate"]
+PROTEINA_FAST_GENERATION_OVERRIDES = [
+    "++generation.search.algorithm=single-pass",
+    "++generation.reward_model=null",
+    "++generation.dataloader.batch_size=1",
+    "++generation.dataloader.dataset.nres.nsamples=1",
+    "++generation.args.nsteps=20",
+]
+
+
 class ModalEndpointClient:
     def __init__(self, base_url: str, api_key: str, timeout_s: float = 900) -> None:
         self.base_url = base_url.rstrip("/")
@@ -41,6 +51,8 @@ class ProteinaClient(ModalEndpointClient):
             "/design",
             {
                 "action": "design-cif",
+                "design_steps": PROTEINA_DESIGN_STEPS,
+                "overrides": PROTEINA_FAST_GENERATION_OVERRIDES,
                 "target": {
                     "structure": target_structure,
                     "filename": target_filename,

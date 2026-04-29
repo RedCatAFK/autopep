@@ -9,7 +9,7 @@ from fastapi import Request
 import modal
 
 
-APP_NAME = "autopep-agent-worker"
+APP_NAME = "autopep-sandbox-worker"
 APP_DIR = "/app"
 WORKSPACE_DIR = "/autopep-workspaces"
 WORKSPACE_VOLUME_NAME = "autopep-workspaces"

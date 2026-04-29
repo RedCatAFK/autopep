@@ -9,6 +9,15 @@ export const runStatusSchema = z.enum([
 	"cancelled",
 ]);
 
+export const publicTaskKindSchema = z.enum([
+	"chat",
+	"research",
+	"structure_search",
+	"prepare_structure",
+	"mutate_structure",
+	"branch_design",
+]);
+
 export const taskKindSchema = z.enum([
 	"chat",
 	"research",
@@ -16,6 +25,9 @@ export const taskKindSchema = z.enum([
 	"prepare_structure",
 	"mutate_structure",
 	"branch_design",
+	"smoke_chat",
+	"smoke_tool",
+	"smoke_sandbox",
 ]);
 
 export const agentEventTypeSchema = z.enum([
@@ -117,4 +129,6 @@ export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export type CandidateScore = z.infer<typeof candidateScoreSchema>;
 export type ContextReference = z.infer<typeof contextReferenceSchema>;
 export type EndpointModelName = z.infer<typeof endpointModelNameSchema>;
+export type PublicTaskKind = z.infer<typeof publicTaskKindSchema>;
 export type RunStatus = z.infer<typeof runStatusSchema>;
+export type TaskKind = z.infer<typeof taskKindSchema>;

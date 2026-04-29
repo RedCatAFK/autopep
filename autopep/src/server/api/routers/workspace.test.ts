@@ -337,6 +337,21 @@ describe("workspace router procedures", () => {
 		});
 	});
 
+	it("rejects smoke task kinds through the public sendMessage route", async () => {
+		vi.mocked(createMessageRunWithLaunch).mockClear();
+		const caller = createWorkspaceCaller({});
+
+		await expect(
+			caller.sendMessage({
+				prompt: "ping",
+				taskKind: "smoke_chat" as never,
+				workspaceId: "22222222-2222-4222-8222-222222222222",
+			}),
+		).rejects.toThrow();
+
+		expect(createMessageRunWithLaunch).not.toHaveBeenCalled();
+	});
+
 	it("does not fall back to another workspace when a requested answer workspace is missing", async () => {
 		const findFirst = vi.fn().mockResolvedValue(null);
 		const caller = createWorkspaceCaller({

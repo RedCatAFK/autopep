@@ -18,6 +18,46 @@ def test_normalize_text_delta_event() -> None:
     assert normalized["display"]["delta"] == "hello"
 
 
+def test_normalize_raw_response_created_event() -> None:
+    event = SimpleNamespace(
+        type="raw_response_event",
+        data=SimpleNamespace(type="response.created"),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "assistant_message_started"
+    assert normalized["title"] == "Assistant message started"
+
+
+def test_normalize_raw_response_completed_event() -> None:
+    event = SimpleNamespace(
+        type="raw_response_event",
+        data=SimpleNamespace(type="response.completed"),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "assistant_message_completed"
+    assert normalized["title"] == "Assistant message completed"
+
+
+def test_normalize_message_output_event() -> None:
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="message_output_created",
+        item=SimpleNamespace(raw_item={"type": "message", "content": "pong"}),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "assistant_message_completed"
+    assert normalized["title"] == "Assistant message completed"
+
+
 def test_normalize_tool_call_event() -> None:
     event = SimpleNamespace(
         type="run_item_stream_event",

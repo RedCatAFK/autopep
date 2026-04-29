@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { taskKindSchema } from "@/server/agent/contracts";
+import { publicTaskKindSchema } from "@/server/agent/contracts";
 import {
 	createMessageRunWithLaunch,
 	createProjectRunWithLaunch,
@@ -63,7 +63,7 @@ const sendMessageInput = z.object({
 	prompt: z.string().min(1).max(12000),
 	projectId: z.string().uuid().optional(),
 	recipeRefs: z.array(z.string().uuid()).default([]),
-	taskKind: taskKindSchema.default("chat"),
+	taskKind: publicTaskKindSchema.default("chat"),
 	workspaceId: z.string().uuid().optional(),
 });
 

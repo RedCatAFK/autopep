@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 
-DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_MODEL = "gpt-5.5"
 
 REQUIRED_ENV_VARS = (
     "DATABASE_URL",

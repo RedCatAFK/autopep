@@ -7,6 +7,7 @@ import pytest
 
 from autopep_agent import runner as runner_mod
 from autopep_agent.db import AgentRunContext
+from autopep_agent.run_context import get_tool_run_context
 from autopep_agent.runner import (
     build_agent_instructions,
     build_autopep_agent,
@@ -68,6 +69,60 @@ def test_build_autopep_agent_includes_biology_tools() -> None:
         "fold_sequences_with_chai",
         "score_candidate_interactions",
     }.issubset(_tool_names(agent.tools))
+
+
+@pytest.mark.asyncio
+async def test_execute_run_routes_branch_design_to_demo_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    writer = _wire_fake_writer(monkeypatch)
+    runner_double, _streamed = _wire_fake_runner(monkeypatch)
+
+    async def fake_get_run_context(*_args: Any, **_kwargs: Any) -> AgentRunContext:
+        return AgentRunContext(
+            prompt="Generate a protein that binds to 3CL-protease",
+            model=None,
+            task_kind="branch_design",
+            enabled_recipes=["run the demo recipe"],
+        )
+
+    async def fake_claim_run(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    demo_calls: list[dict[str, Any]] = []
+
+    async def fake_execute_demo_one_loop(**kwargs: Any) -> dict[str, Any]:
+        demo_calls.append(kwargs)
+        assert get_tool_run_context().run_id == "r-demo"
+        await kwargs["writer"].append_event(
+            run_id=kwargs["run_id"],
+            event_type="assistant_message_completed",
+            title="MVP loop complete",
+        )
+        return {"candidate_count": 1}
+
+    completed: list[str] = []
+
+    async def fake_mark_completed(_url: str, run_id: str) -> None:
+        completed.append(run_id)
+
+    monkeypatch.setattr(runner_mod, "get_run_context", fake_get_run_context)
+    monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
+    monkeypatch.setattr(runner_mod, "execute_demo_one_loop", fake_execute_demo_one_loop)
+    monkeypatch.setattr(runner_mod, "mark_run_completed", fake_mark_completed)
+
+    await execute_run(run_id="r-demo", thread_id="t1", workspace_id="w1")
+
+    assert len(demo_calls) == 1
+    assert demo_calls[0]["run_id"] == "r-demo"
+    assert [event["type"] for event in writer.events] == [
+        "run_started",
+        "assistant_message_completed",
+        "run_completed",
+    ]
+    runner_double.run_streamed.assert_not_called()
+    assert completed == ["r-demo"]
 
 
 def test_build_sandbox_config_returns_usable_object_without_network() -> None:

@@ -5,6 +5,7 @@ import { getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import {
+	agentTaskKind,
 	agentEvents,
 	agentRuns,
 	artifacts,
@@ -60,6 +61,48 @@ describe("Autopep schema", () => {
 
 		expect(migrationSql).not.toMatch(
 			/DROP TABLE IF EXISTS "(user|session|account|verification)"/,
+		);
+	});
+
+	it("keeps smoke task kinds in schema and forward migration", () => {
+		expect(agentTaskKind.enumValues).toEqual(
+			expect.arrayContaining(["smoke_chat", "smoke_tool", "smoke_sandbox"]),
+		);
+
+		const baseMigrationSql = readFileSync(
+			resolve(process.cwd(), "drizzle/0003_smooth_sasquatch.sql"),
+			"utf8",
+		);
+		const forwardMigrationSql = readFileSync(
+			resolve(process.cwd(), "drizzle/0004_smoke_task_kinds.sql"),
+			"utf8",
+		);
+
+		// 0003 is already shipped — smoke values are added by the forward 0004
+		// migration via ALTER TYPE, not by editing 0003 in place.
+		expect(baseMigrationSql).not.toContain("'smoke_chat'");
+		expect(forwardMigrationSql).toContain("ADD VALUE IF NOT EXISTS 'smoke_chat'");
+		expect(forwardMigrationSql).toContain("ADD VALUE IF NOT EXISTS 'smoke_tool'");
+		expect(forwardMigrationSql).toContain(
+			"ADD VALUE IF NOT EXISTS 'smoke_sandbox'",
+		);
+	});
+
+	it("ships the model default bump as a forward ALTER in 0004, not an in-place 0003 edit", () => {
+		const baseMigrationSql = readFileSync(
+			resolve(process.cwd(), "drizzle/0003_smooth_sasquatch.sql"),
+			"utf8",
+		);
+		const forwardMigrationSql = readFileSync(
+			resolve(process.cwd(), "drizzle/0004_smoke_task_kinds.sql"),
+			"utf8",
+		);
+
+		// 0003 must keep its original 'gpt-5.4' default — already-applied 0003
+		// will not retroactively pick up an in-place edit.
+		expect(baseMigrationSql).toContain("\"model\" text DEFAULT 'gpt-5.4'");
+		expect(forwardMigrationSql).toContain(
+			"ALTER TABLE \"autopep_agent_run\" ALTER COLUMN \"model\" SET DEFAULT 'gpt-5.5'",
 		);
 	});
 });

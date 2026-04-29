@@ -51,7 +51,7 @@ def test_extract_pdb_sequences_keeps_insertion_code_residues() -> None:
 
 def test_build_fasta_formats_candidate_ids_and_sequences() -> None:
     assert build_fasta([{"id": "candidate-1", "sequence": "ACDE"}]) == (
-        ">candidate-1\nACDE\n"
+        ">protein|name=candidate-1\nACDE\n"
     )
 
 

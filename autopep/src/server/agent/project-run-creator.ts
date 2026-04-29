@@ -1,8 +1,17 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 
+import { env } from "@/env";
 import { launchCreatedRun } from "@/server/agent/run-launcher";
 import type { db as appDb } from "@/server/db";
-import { agentRuns, messages, threads, workspaces } from "@/server/db/schema";
+import {
+	agentRuns,
+	messages,
+	recipeVersions,
+	recipes,
+	runRecipes,
+	threads,
+	workspaces,
+} from "@/server/db/schema";
 import { createWorkspaceWithThread } from "@/server/workspaces/repository";
 
 type AgentRunInsert = typeof agentRuns.$inferInsert;
@@ -84,6 +93,43 @@ const createThreadForWorkspace = async ({
 	};
 };
 
+const insertRunRecipes = async ({
+	db,
+	ownerId,
+	recipeRefs,
+	runId,
+}: {
+	db: typeof appDb;
+	ownerId: string;
+	recipeRefs: string[];
+	runId: string;
+}) => {
+	for (const recipeId of recipeRefs) {
+		const recipe = await db.query.recipes.findFirst({
+			where: and(eq(recipes.id, recipeId), eq(recipes.ownerId, ownerId)),
+		});
+		if (!recipe) {
+			continue;
+		}
+
+		const latestVersion = await db.query.recipeVersions.findFirst({
+			where: eq(recipeVersions.recipeId, recipe.id),
+			orderBy: [desc(recipeVersions.version)],
+		});
+		if (!latestVersion) {
+			continue;
+		}
+
+		await db.insert(runRecipes).values({
+			bodySnapshot: latestVersion.bodyMarkdown,
+			nameSnapshot: recipe.name,
+			recipeId: recipe.id,
+			recipeVersionId: latestVersion.id,
+			runId,
+		});
+	}
+};
+
 const ensureOwnedWorkspace = async ({
 	db,
 	ownerId,
@@ -152,6 +198,7 @@ export const createMessageRunWithLaunch = async ({
 			.insert(agentRuns)
 			.values({
 				createdById: ownerId,
+				model: env.OPENAI_DEFAULT_MODEL,
 				prompt: input.prompt,
 				rootRunId: null,
 				sdkStateJson: input.sdkStateJson ?? {},
@@ -182,6 +229,13 @@ export const createMessageRunWithLaunch = async ({
 		if (!message) {
 			throw new Error("Failed to create user message.");
 		}
+
+		await insertRunRecipes({
+			db: writeDb,
+			ownerId,
+			recipeRefs: input.recipeRefs ?? [],
+			runId: run.id,
+		});
 
 		return {
 			message,

@@ -5,8 +5,10 @@ import {
 	artifactKindSchema,
 	candidateScoreSchema,
 	endpointModelNameSchema,
+	publicTaskKindSchema,
 	runStatusSchema,
 	scoreLabelSchema,
+	taskKindSchema,
 } from "./contracts";
 
 describe("Autopep runtime contracts", () => {
@@ -19,6 +21,34 @@ describe("Autopep runtime contracts", () => {
 			"failed",
 			"cancelled",
 		]);
+	});
+
+	it("accepts task kinds for production and smoke agent runs", () => {
+		for (const taskKind of [
+			"chat",
+			"branch_design",
+			"smoke_chat",
+			"smoke_tool",
+			"smoke_sandbox",
+		]) {
+			expect(taskKindSchema.parse(taskKind)).toBe(taskKind);
+		}
+	});
+
+	it("excludes smoke task kinds from the public-facing schema", () => {
+		for (const taskKind of [
+			"chat",
+			"research",
+			"structure_search",
+			"prepare_structure",
+			"mutate_structure",
+			"branch_design",
+		]) {
+			expect(publicTaskKindSchema.parse(taskKind)).toBe(taskKind);
+		}
+		for (const taskKind of ["smoke_chat", "smoke_tool", "smoke_sandbox"]) {
+			expect(() => publicTaskKindSchema.parse(taskKind)).toThrow();
+		}
 	});
 
 	it("accepts event types for chat, tools, sandbox output, candidates, and scores", () => {

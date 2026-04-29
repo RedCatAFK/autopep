@@ -234,7 +234,7 @@ async def test_fold_sequences_with_chai_uses_candidate_fasta(
         {
             "base_url": "https://chai.example/run",
             "api_key": "chai-key",
-            "fasta": ">candidate-1\nACDE\n",
+            "fasta": ">protein|name=candidate-1\nACDE\n",
             "num_diffn_samples": 1,
         },
     ]
