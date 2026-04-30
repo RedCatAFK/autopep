@@ -598,3 +598,154 @@ async def update_candidate_fold_artifact(
                 raise RuntimeError(
                     "candidate not found in this workspace/run",
                 )
+
+
+# ---------------------------------------------------------------------------
+# thread_items helpers
+#
+# `thread_items` is the canonical Responses-API-shaped log of a thread. Every
+# user message, assistant message, function call, function output, and
+# reasoning chunk is one row, ordered by `(thread_id, sequence)`. These
+# helpers feed the SDK Session and the webhook that persists assistant text.
+# ---------------------------------------------------------------------------
+
+
+async def next_thread_sequence(database_url: str, thread_id: str) -> int:
+    """Return ``MAX(sequence) + 1`` for ``thread_id`` (1 if no rows exist)."""
+
+    async with await psycopg.AsyncConnection.connect(database_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select coalesce(max(sequence), 0)
+                from autopep_thread_item
+                where thread_id = %s
+                """,
+                (thread_id,),
+            )
+            row = await cur.fetchone()
+    max_seq = int(row[0]) if row and row[0] is not None else 0
+    return max_seq + 1
+
+
+async def insert_thread_item(
+    database_url: str,
+    *,
+    thread_id: str,
+    run_id: str | None,
+    item_type: str,
+    role: str | None,
+    content_json: dict[str, Any],
+    attachment_refs_json: list[str] | None = None,
+    context_refs_json: list[str] | None = None,
+    recipe_refs_json: list[str] | None = None,
+    sequence: int | None = None,
+) -> str:
+    """Insert one ``autopep_thread_item`` row; return the new id.
+
+    If ``sequence`` is not supplied it is computed via
+    :func:`next_thread_sequence`. Note: there is a race window between the
+    sequence read and the insert if two callers target the same
+    ``thread_id`` concurrently — for transitional Phase 0 we accept this and
+    rely on the unique ``(thread_id, sequence)`` constraint to surface the
+    conflict as a Postgres error rather than silent data loss.
+    """
+
+    if sequence is None:
+        sequence = await next_thread_sequence(database_url, thread_id)
+
+    async with await psycopg.AsyncConnection.connect(database_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                insert into autopep_thread_item (
+                    thread_id,
+                    run_id,
+                    sequence,
+                    item_type,
+                    role,
+                    content_json,
+                    attachment_refs_json,
+                    context_refs_json,
+                    recipe_refs_json
+                )
+                values (
+                    %s, %s, %s, %s, %s,
+                    %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb
+                )
+                returning id
+                """,
+                (
+                    thread_id,
+                    run_id,
+                    sequence,
+                    item_type,
+                    role,
+                    json.dumps(content_json),
+                    json.dumps(attachment_refs_json)
+                    if attachment_refs_json is not None
+                    else None,
+                    json.dumps(context_refs_json)
+                    if context_refs_json is not None
+                    else None,
+                    json.dumps(recipe_refs_json)
+                    if recipe_refs_json is not None
+                    else None,
+                ),
+            )
+            row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError("Failed to insert thread_item row.")
+    return str(row[0])
+
+
+async def select_thread_items_for_session(
+    database_url: str,
+    *,
+    thread_id: str,
+) -> list[dict[str, Any]]:
+    """Return all thread items for ``thread_id`` ordered by ``sequence`` ASC.
+
+    Each row is a plain dict suitable for serializing into the SDK Session
+    history. ``content_json`` and the ``*_refs_json`` columns are returned
+    as Python objects (psycopg decodes ``jsonb`` automatically).
+    """
+
+    async with await psycopg.AsyncConnection.connect(database_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select
+                    id,
+                    run_id,
+                    sequence,
+                    item_type,
+                    role,
+                    content_json,
+                    attachment_refs_json,
+                    context_refs_json,
+                    recipe_refs_json,
+                    created_at
+                from autopep_thread_item
+                where thread_id = %s
+                order by sequence asc
+                """,
+                (thread_id,),
+            )
+            rows = await cur.fetchall()
+
+    return [
+        {
+            "id": str(row[0]),
+            "run_id": str(row[1]) if row[1] is not None else None,
+            "sequence": int(row[2]),
+            "item_type": str(row[3]),
+            "role": str(row[4]) if row[4] is not None else None,
+            "content_json": row[5] if row[5] is not None else {},
+            "attachment_refs_json": row[6],
+            "context_refs_json": row[7],
+            "recipe_refs_json": row[8],
+            "created_at": row[9].isoformat() if row[9] is not None else None,
+        }
+        for row in rows
+    ]
