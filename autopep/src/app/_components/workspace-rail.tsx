@@ -5,6 +5,7 @@ import {
 	DotsThreeVertical,
 	Flask,
 	Plus,
+	SignOut,
 } from "@phosphor-icons/react";
 import {
 	type FormEvent,
@@ -15,7 +16,7 @@ import {
 } from "react";
 
 import { HoverTooltip } from "./hover-tooltip";
-import { WorkspaceAvatar } from "./workspace-avatar";
+import { initial, WorkspaceAvatar } from "./workspace-avatar";
 
 export type RailWorkspace = {
 	description?: string | null;
@@ -24,30 +25,44 @@ export type RailWorkspace = {
 	name: string;
 };
 
+export type RailAccount = {
+	email?: string | null;
+	name?: string | null;
+};
+
 type WorkspaceRailProps = {
+	account?: RailAccount;
 	activeWorkspaceId: string | null;
 	onArchiveWorkspace: (workspaceId: string) => void;
 	onCreateWorkspace: () => void;
 	onOpenRecipes?: () => void;
 	onRename?: (workspaceId: string, name: string) => void;
 	onSelectWorkspace: (workspaceId: string) => void;
+	onSignOut?: () => void;
+	signingOut?: boolean;
+	signOutError?: string | null;
 	workspaces: RailWorkspace[];
 };
 
 export function WorkspaceRail({
+	account,
 	activeWorkspaceId,
 	onArchiveWorkspace,
 	onCreateWorkspace,
 	onOpenRecipes,
 	onRename,
 	onSelectWorkspace,
+	onSignOut,
+	signingOut = false,
+	signOutError,
 	workspaces,
 }: WorkspaceRailProps) {
 	const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+	const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
 	const [renamingId, setRenamingId] = useState<string | null>(null);
 
 	useEffect(() => {
-		if (!openMenuId) {
+		if (!openMenuId && !isAccountMenuOpen) {
 			return;
 		}
 		const handler = (event: MouseEvent) => {
@@ -55,10 +70,13 @@ export function WorkspaceRail({
 			if (!target?.closest("[data-rail-menu]")) {
 				setOpenMenuId(null);
 			}
+			if (!target?.closest("[data-account-menu]")) {
+				setIsAccountMenuOpen(false);
+			}
 		};
 		window.addEventListener("mousedown", handler);
 		return () => window.removeEventListener("mousedown", handler);
-	}, [openMenuId]);
+	}, [isAccountMenuOpen, openMenuId]);
 
 	return (
 		<aside className="flex items-center gap-2 overflow-x-auto border-[#e5e2d9] border-b bg-[#fbfaf6] px-3 py-3 lg:flex-col lg:overflow-x-visible lg:border-r lg:border-b-0 lg:px-2 lg:py-4">
@@ -186,16 +204,28 @@ export function WorkspaceRail({
 					})
 				)}
 			</nav>
-			{onOpenRecipes ? (
-				<button
-					aria-label="Open recipes"
-					className="mt-auto flex size-10 shrink-0 items-center justify-center rounded-md text-[#5a6360] transition-colors duration-200 hover:bg-[#f0efe8] hover:text-[#26332e] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px lg:mb-12"
-					onClick={onOpenRecipes}
-					type="button"
-				>
-					<BookOpen aria-hidden="true" size={18} />
-				</button>
-			) : null}
+			<div className="ml-auto flex shrink-0 items-center gap-2 lg:mt-auto lg:ml-0 lg:flex-col">
+				{onOpenRecipes ? (
+					<button
+						aria-label="Open recipes"
+						className="flex size-10 shrink-0 items-center justify-center rounded-md text-[#5a6360] transition-colors duration-200 hover:bg-[#f0efe8] hover:text-[#26332e] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
+						onClick={onOpenRecipes}
+						type="button"
+					>
+						<BookOpen aria-hidden="true" size={18} />
+					</button>
+				) : null}
+				{account && onSignOut ? (
+					<AccountMenu
+						account={account}
+						isOpen={isAccountMenuOpen}
+						onOpenChange={setIsAccountMenuOpen}
+						onSignOut={onSignOut}
+						signingOut={signingOut}
+						signOutError={signOutError}
+					/>
+				) : null}
+			</div>
 		</aside>
 	);
 }
@@ -246,5 +276,79 @@ function RenameInput({
 				ref={ref}
 			/>
 		</form>
+	);
+}
+
+function AccountMenu({
+	account,
+	isOpen,
+	onOpenChange,
+	onSignOut,
+	signingOut,
+	signOutError,
+}: {
+	account: RailAccount;
+	isOpen: boolean;
+	onOpenChange: (isOpen: boolean) => void;
+	onSignOut: () => void;
+	signingOut: boolean;
+	signOutError?: string | null;
+}) {
+	const label = account.email ?? account.name ?? "Account";
+	const displayName =
+		account.name?.trim() || account.email || "Autopep account";
+	const displayEmail =
+		account.email && account.email !== displayName ? account.email : null;
+
+	return (
+		<div className="relative" data-account-menu>
+			<HoverTooltip label={label}>
+				<button
+					aria-expanded={isOpen}
+					aria-haspopup="menu"
+					aria-label={`Open account menu for ${label}`}
+					className="flex size-10 shrink-0 items-center justify-center rounded-md border border-[#ddd9ce] bg-[#fffef9] text-[#1d342e] transition-colors duration-200 hover:border-[#cbd736] hover:bg-[#f2f1e9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
+					onClick={() => onOpenChange(!isOpen)}
+					type="button"
+				>
+					<span
+						aria-hidden="true"
+						className="flex size-7 items-center justify-center rounded-[6px] bg-[#17211e] font-semibold text-[#eef1e6] text-[13px]"
+					>
+						{initial(displayName)}
+					</span>
+				</button>
+			</HoverTooltip>
+			{isOpen ? (
+				<div
+					className="absolute top-full right-0 z-30 mt-2 min-w-[220px] rounded-md border border-[#e5e2d9] bg-[#fffef9] p-2 shadow-[0_18px_50px_-26px_rgba(25,39,33,0.75)] lg:top-auto lg:right-auto lg:bottom-0 lg:left-full lg:mt-0 lg:ml-2"
+					role="menu"
+				>
+					<div className="border-[#ebe7dc] border-b px-2 pt-1 pb-2">
+						<p className="font-semibold text-[#17211e] text-sm">
+							{displayName}
+						</p>
+						{displayEmail ? (
+							<p className="mt-0.5 text-[#6b746d] text-xs">{displayEmail}</p>
+						) : null}
+					</div>
+					<button
+						className="mt-1 flex w-full items-center gap-2 rounded-[6px] px-2 py-2 text-left font-medium text-[#33413c] text-sm transition-colors duration-200 hover:bg-[#f0efe8] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-60"
+						disabled={signingOut}
+						onClick={onSignOut}
+						role="menuitem"
+						type="button"
+					>
+						<SignOut aria-hidden="true" size={16} />
+						{signingOut ? "Signing out..." : "Sign out"}
+					</button>
+					{signOutError ? (
+						<p className="mt-2 rounded-[6px] border border-[#d88b7a]/30 bg-[#fff1ee] px-2 py-1.5 text-[#8e3c30] text-xs">
+							{signOutError}
+						</p>
+					) : null}
+				</div>
+			) : null}
+		</div>
 	);
 }

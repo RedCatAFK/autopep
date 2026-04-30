@@ -1,8 +1,10 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ChatPanelSendInput } from "@/app/_components/chat-panel";
+import { authClient } from "@/server/better-auth/client";
 import { api } from "@/trpc/react";
 import { buildStreamItems } from "./build-stream-items";
 import type { RecipeInput } from "./recipes-dialog";
@@ -19,6 +21,11 @@ import {
 	WorkspaceShell,
 } from "./workspace-shell";
 
+export type AutopepAccount = {
+	email?: string | null;
+	name?: string | null;
+};
+
 export type IsLoadingWorkspaceArgs = {
 	latestIsLoading: boolean;
 	latestIsFetching: boolean;
@@ -31,7 +38,12 @@ export const computeIsLoadingWorkspace = ({
 	selectedIsLoading,
 }: IsLoadingWorkspaceArgs) => latestIsLoading || selectedIsLoading;
 
-export function AutopepWorkspace() {
+type AutopepWorkspaceProps = {
+	account?: AutopepAccount;
+};
+
+export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
+	const router = useRouter();
 	const utils = api.useUtils();
 	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
 		null,
@@ -40,6 +52,8 @@ export function AutopepWorkspace() {
 	const [tabs, setTabs] = useState<ViewerTab[]>([]);
 	const [activeTabId, setActiveTabId] = useState<string | null>(null);
 	const [isRecipesOpen, setIsRecipesOpen] = useState(false);
+	const [isSigningOut, setIsSigningOut] = useState(false);
+	const [signOutError, setSignOutError] = useState<string | null>(null);
 	const previousCandidateCount = useRef(0);
 
 	const workspacesQuery = api.workspace.listWorkspaces.useQuery();
@@ -406,6 +420,24 @@ export function AutopepWorkspace() {
 		archiveRecipe.mutate({ recipeId });
 	};
 
+	const signOut = async () => {
+		setSignOutError(null);
+		setIsSigningOut(true);
+
+		try {
+			const { error } = await authClient.signOut();
+
+			if (error) {
+				setSignOutError(error.message ?? "Unable to sign out.");
+				return;
+			}
+
+			router.refresh();
+		} finally {
+			setIsSigningOut(false);
+		}
+	};
+
 	const persistedWorkspaces = (workspacesQuery.data ?? []).map((workspace) => ({
 		description: workspace.description,
 		id: workspace.id,
@@ -428,6 +460,7 @@ export function AutopepWorkspace() {
 
 	return (
 		<WorkspaceShell
+			account={account}
 			activeArtifactId={activeArtifactId}
 			activeTabId={activeTabId}
 			activeWorkspaceId={railActiveWorkspaceId}
@@ -480,6 +513,7 @@ export function AutopepWorkspace() {
 				selectExistingWorkspace(workspaceId);
 			}}
 			onSendMessage={sendWorkspaceMessage}
+			onSignOut={signOut}
 			onUpdateRecipe={updateRecipeForWorkspace}
 			onUploadChatAttachments={attachmentUpload.upload}
 			openArtifactInTab={openArtifactInTab}
@@ -488,6 +522,8 @@ export function AutopepWorkspace() {
 			recipes={recipes}
 			runs={runs}
 			setActiveTabId={setActiveTabId}
+			signingOut={isSigningOut}
+			signOutError={signOutError}
 			streamItems={streamItems}
 			tabs={tabs}
 			workspaces={railWorkspaces}

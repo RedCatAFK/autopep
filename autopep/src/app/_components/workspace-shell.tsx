@@ -7,15 +7,19 @@ import {
 	type ChatRecipe,
 } from "./chat-panel";
 import type { StreamItem } from "./chat-stream-item";
-import type { AttachmentChip } from "./use-attachment-upload";
 import { FilesPanel } from "./files-panel";
 import {
 	type RecipeInput,
 	type RecipeRow,
 	RecipesDialog,
 } from "./recipes-dialog";
+import type { AttachmentChip } from "./use-attachment-upload";
 import { type ViewerTab, ViewerTabs } from "./viewer-tabs";
-import { type RailWorkspace, WorkspaceRail } from "./workspace-rail";
+import {
+	type RailAccount,
+	type RailWorkspace,
+	WorkspaceRail,
+} from "./workspace-rail";
 
 export type WorkspaceCandidate = {
 	citationJson?: Record<string, unknown>;
@@ -90,6 +94,7 @@ export type WorkspaceRunSummary = {
 };
 
 type WorkspaceShellProps = {
+	account?: RailAccount;
 	activeArtifactId: string | null;
 	activeTabId: string | null;
 	activeWorkspaceId: string | null;
@@ -116,6 +121,7 @@ type WorkspaceShellProps = {
 	onRenameWorkspace?: (workspaceId: string, name: string) => void;
 	onSelectWorkspace: (workspaceId: string) => void;
 	onSendMessage: (input: ChatPanelSendInput) => void;
+	onSignOut?: () => void;
 	onUpdateRecipe: (input: RecipeInput & { recipeId: string }) => void;
 	onUploadChatAttachments?: (files: File[]) => void;
 	openArtifactInTab: (artifactId: string) => void;
@@ -124,12 +130,15 @@ type WorkspaceShellProps = {
 	recipes: RecipeRow[];
 	runs: WorkspaceRunSummary[];
 	setActiveTabId: (tabId: string | null) => void;
+	signingOut?: boolean;
+	signOutError?: string | null;
 	streamItems: StreamItem[];
 	tabs: ViewerTab[];
 	workspaces: RailWorkspace[];
 };
 
 export function WorkspaceShell({
+	account,
 	activeArtifactId,
 	activeTabId,
 	activeWorkspaceId,
@@ -156,6 +165,7 @@ export function WorkspaceShell({
 	onRenameWorkspace,
 	onSelectWorkspace,
 	onSendMessage,
+	onSignOut,
 	onUpdateRecipe,
 	onUploadChatAttachments,
 	openArtifactInTab,
@@ -164,6 +174,8 @@ export function WorkspaceShell({
 	recipes,
 	runs,
 	setActiveTabId,
+	signingOut = false,
+	signOutError,
 	streamItems,
 	tabs,
 	workspaces,
@@ -192,12 +204,16 @@ export function WorkspaceShell({
 	return (
 		<main className="grid min-h-[100dvh] grid-cols-1 bg-[#f8f7f2] text-[#17211e] lg:fixed lg:inset-0 lg:min-h-0 lg:grid-cols-[56px_minmax(360px,420px)_minmax(0,1fr)_minmax(260px,300px)] lg:overflow-hidden">
 			<WorkspaceRail
+				account={account}
 				activeWorkspaceId={activeWorkspaceId}
 				onArchiveWorkspace={onArchiveWorkspace}
 				onCreateWorkspace={onCreateWorkspace}
 				onOpenRecipes={onOpenRecipes}
 				onRename={onRenameWorkspace}
 				onSelectWorkspace={onSelectWorkspace}
+				onSignOut={onSignOut}
+				signingOut={signingOut}
+				signOutError={signOutError}
 				workspaces={workspaces}
 			/>
 			<ChatPanel
