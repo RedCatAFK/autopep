@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Mapping, Sequence
 
 import httpx
@@ -15,27 +16,98 @@ PROTEINA_FAST_GENERATION_OVERRIDES = [
     "++generation.args.nsteps=20",
 ]
 
+TRANSIENT_STATUS_CODES = {500, 502, 503, 504}
+
+
+class ModalEndpointError(RuntimeError):
+    """Concise endpoint failure surfaced to the agent/tool ledger."""
+
+    def __init__(
+        self,
+        *,
+        method: str,
+        url: str,
+        status_code: int | None = None,
+        response_text: str | None = None,
+        cause: BaseException | None = None,
+    ) -> None:
+        self.method = method
+        self.url = url
+        self.status_code = status_code
+        self.response_text = response_text
+
+        if status_code is None:
+            detail = f"{method} {url} failed"
+        else:
+            detail = f"{method} {url} returned HTTP {status_code}"
+            if status_code in TRANSIENT_STATUS_CODES:
+                detail += " (endpoint unavailable or restarting)"
+        if response_text:
+            detail += f": {response_text[:500]}"
+
+        super().__init__(detail)
+        if cause is not None:
+            self.__cause__ = cause
+
 
 class ModalEndpointClient:
-    def __init__(self, base_url: str, api_key: str, timeout_s: float = 900) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout_s: float = 900,
+        *,
+        max_attempts: int = 2,
+        retry_delay_s: float = 1.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_s = timeout_s
+        self.max_attempts = max(1, int(max_attempts))
+        self.retry_delay_s = max(0.0, float(retry_delay_s))
 
     async def post_json(self, path: str, payload: Mapping[str, Any]) -> Any:
         request_path = path if path.startswith("/") else f"/{path}"
+        url = f"{self.base_url}{request_path}"
         headers = {
             "X-API-Key": self.api_key,
             "content-type": "application/json",
         }
 
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            response = await client.post(
-                f"{self.base_url}{request_path}",
-                headers=headers,
-                json=payload,
-            )
-        response.raise_for_status()
+            for attempt in range(1, self.max_attempts + 1):
+                try:
+                    response = await client.post(url, headers=headers, json=payload)
+                except httpx.RequestError as exc:
+                    if attempt < self.max_attempts:
+                        await asyncio.sleep(self.retry_delay_s)
+                        continue
+                    raise ModalEndpointError(
+                        method="POST",
+                        url=url,
+                        response_text=str(exc),
+                        cause=exc,
+                    ) from exc
+
+                if (
+                    response.status_code in TRANSIENT_STATUS_CODES
+                    and attempt < self.max_attempts
+                ):
+                    await asyncio.sleep(self.retry_delay_s)
+                    continue
+
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise ModalEndpointError(
+                        method="POST",
+                        url=url,
+                        status_code=response.status_code,
+                        response_text=response.text,
+                        cause=exc,
+                    ) from exc
+                break
+
         return response.json()
 
 

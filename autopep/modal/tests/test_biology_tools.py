@@ -137,10 +137,79 @@ def test_exported_biology_tools_are_agents_sdk_function_tools() -> None:
         "properties"
     ]
 
+    assert biology_tools.seed_binder_candidate.name == "seed_binder_candidate"
+    assert callable(biology_tools.seed_binder_candidate.on_invoke_tool)
+    assert (
+        "binder_sequence"
+        in biology_tools.seed_binder_candidate.params_json_schema["properties"]
+    )
+
     # Aliases share the same function_tool object so runner.py imports of
     # the old names keep working until the runner merge step lands.
     assert biology_tools.generate_binder_candidates is biology_tools.proteina_design
     assert biology_tools.fold_sequences_with_chai is biology_tools.chai_fold_complex
+
+
+@pytest.mark.asyncio
+async def test_seed_binder_candidate_persists_known_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_run_context()
+    calls: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+
+    async def _fake_create_candidate(_database_url: str, **kwargs: Any) -> str:
+        calls.append(kwargs)
+        return "candidate-seed-1"
+
+    class _FakeWriter:
+        def __init__(self, _url: str) -> None:
+            pass
+
+        async def append_event(self, **kwargs: Any) -> None:
+            events.append(kwargs)
+
+    monkeypatch.setattr(biology_tools, "create_candidate", _fake_create_candidate)
+    monkeypatch.setattr(biology_tools, "EventWriter", _FakeWriter)
+
+    result = await biology_tools._seed_binder_candidate(
+        binder_sequence=">nb\n gg-yy ",
+        target_sequence=" aaaa ",
+        title="Seed nanobody",
+        source="pdb_seed",
+        chain_id="H",
+        source_reference="PDB 7XYZ chain H",
+        why_selected="Bound to the target in an experimental structure.",
+    )
+
+    assert result == {
+        "candidate_id": "candidate-seed-1",
+        "rank": 1,
+        "title": "Seed nanobody",
+        "source": "pdb_seed",
+        "sequence": "GGYY",
+        "target_sequence": "AAAA",
+        "chain_ids": ["H"],
+    }
+    assert calls == [
+        {
+            "workspace_id": "w1",
+            "run_id": "r1",
+            "rank": 1,
+            "source": "pdb_seed",
+            "title": "Seed nanobody",
+            "sequence": "GGYY",
+            "chain_ids": ["H"],
+            "why_selected": "Bound to the target in an experimental structure.",
+            "metadata_json": {
+                "fallback": True,
+                "target_sequence": "AAAA",
+                "source_reference": "PDB 7XYZ chain H",
+            },
+        },
+    ]
+    assert events[0]["event_type"] == "candidate_ranked"
+    assert events[0]["display"]["candidateId"] == "candidate-seed-1"
 
 
 @pytest.mark.asyncio

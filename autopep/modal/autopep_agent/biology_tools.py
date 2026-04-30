@@ -54,6 +54,7 @@ def _fold_artifact_key(*, workspace_id: str, run_id: str, filename: str) -> str:
 
 
 _WORKSPACE_PREFIX = "/workspace/"
+_VALID_SEQUENCE_LETTERS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 
 def _workspace_path_to_storage_key(workspace_id: str, workspace_path: str) -> str:
@@ -76,6 +77,91 @@ def _workspace_path_to_storage_key(workspace_id: str, workspace_path: str) -> st
     else:
         suffix = path.lstrip("/")
     return f"workspaces/{workspace_id}/{suffix.lstrip('/')}"
+
+
+# ---------------------------------------------------------------------------
+# Fallback candidate seeding
+# ---------------------------------------------------------------------------
+
+
+async def _seed_binder_candidate(
+    binder_sequence: str,
+    target_sequence: str | None = None,
+    title: str = "Known binder candidate",
+    source: str = "known_binder",
+    rank: int = 1,
+    chain_id: str | None = None,
+    source_reference: str | None = None,
+    why_selected: str | None = None,
+) -> dict[str, Any]:
+    """Persist a known binder sequence as a normal candidate.
+
+    Use this when Proteina is unavailable or when literature/PDB evidence
+    already provides a binder/nanobody sequence that should be folded and
+    scored directly. If ``target_sequence`` is provided, it is stored in
+    candidate metadata so ``chai_fold_complex`` can run by candidate id alone.
+    """
+
+    ctx = get_tool_run_context()
+    writer = EventWriter(ctx.database_url)
+
+    sequence = _normalize_sequence_text(binder_sequence, "binder_sequence")
+    normalized_target_sequence = (
+        _normalize_sequence_text(target_sequence, "target_sequence")
+        if target_sequence
+        else None
+    )
+    normalized_title = title.strip() or "Known binder candidate"
+    normalized_source = source.strip() or "known_binder"
+    normalized_chain_id = chain_id.strip() if chain_id and chain_id.strip() else None
+    normalized_reference = (
+        source_reference.strip()
+        if source_reference and source_reference.strip()
+        else None
+    )
+    normalized_why = why_selected.strip() if why_selected and why_selected.strip() else None
+
+    metadata: dict[str, Any] = {"fallback": True}
+    if normalized_target_sequence:
+        metadata["target_sequence"] = normalized_target_sequence
+    if normalized_reference:
+        metadata["source_reference"] = normalized_reference
+
+    candidate_id = await create_candidate(
+        ctx.database_url,
+        workspace_id=ctx.workspace_id,
+        run_id=ctx.run_id,
+        rank=max(1, int(rank)),
+        source=normalized_source,
+        title=normalized_title,
+        sequence=sequence,
+        chain_ids=[normalized_chain_id] if normalized_chain_id else None,
+        why_selected=normalized_why,
+        metadata_json=metadata,
+    )
+
+    await writer.append_event(
+        run_id=ctx.run_id,
+        event_type="candidate_ranked",
+        title=normalized_title,
+        summary="Persisted fallback binder candidate from known sequence.",
+        display={
+            "candidateId": candidate_id,
+            "rank": max(1, int(rank)),
+            "source": normalized_source,
+            "fallback": True,
+        },
+    )
+
+    return {
+        "candidate_id": candidate_id,
+        "rank": max(1, int(rank)),
+        "title": normalized_title,
+        "source": normalized_source,
+        "sequence": sequence,
+        "target_sequence": normalized_target_sequence,
+        "chain_ids": [normalized_chain_id] if normalized_chain_id else [],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +697,11 @@ proteina_design = function_tool(
     name_override="proteina_design",
     strict_mode=False,
 )
+seed_binder_candidate = function_tool(
+    _seed_binder_candidate,
+    name_override="seed_binder_candidate",
+    strict_mode=False,
+)
 chai_fold_complex = function_tool(
     _chai_fold_complex,
     name_override="chai_fold_complex",
@@ -639,6 +730,27 @@ def _clean_sequence(value: str | None) -> str | None:
         return None
     sequence = value.strip().upper()
     return sequence or None
+
+
+def _normalize_sequence_text(value: str | None, field_name: str) -> str:
+    if value is None:
+        raise ValueError(f"{field_name} must not be empty")
+
+    sequence = "".join(
+        line.strip()
+        for line in str(value).splitlines()
+        if line.strip() and not line.lstrip().startswith(">")
+    )
+    sequence = sequence.replace(" ", "").replace("-", "").upper()
+    if not sequence:
+        raise ValueError(f"{field_name} must not be empty")
+
+    invalid = sorted(set(sequence) - _VALID_SEQUENCE_LETTERS)
+    if invalid:
+        raise ValueError(
+            f"{field_name} contains invalid sequence characters: {''.join(invalid)}",
+        )
+    return sequence
 
 
 async def _persist_chai_response(
@@ -887,6 +999,7 @@ def _candidate_structure_text(candidate: Mapping[str, Any]) -> str | None:
 # a complex FASTA so this import is kept solely for backwards compatibility.
 __all__ = [
     "proteina_design",
+    "seed_binder_candidate",
     "chai_fold_complex",
     "score_candidate_interactions",
     "generate_binder_candidates",

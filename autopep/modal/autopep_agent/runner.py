@@ -20,6 +20,7 @@ from agents.sandbox.entries import LocalDir, R2Mount
 from autopep_agent.biology_tools import (
     chai_fold_complex,
     proteina_design,
+    seed_binder_candidate,
 )
 from autopep_agent.config import WorkerConfig
 from autopep_agent.db import (
@@ -60,6 +61,15 @@ SMOKE_TASK_KINDS = {"smoke_chat", "smoke_tool", "smoke_sandbox"}
 OPENAI_PROMPT_BLOCKED_REASON = "openai_prompt_blocked"
 OPENAI_PROMPT_BLOCKED_MESSAGE = "Message blocked by OpenAI."
 OPENAI_PROMPT_BLOCKED_SUMMARY = "OpenAI blocked this message for safety reasons."
+AUTOPEP_TOOLS = (
+    literature_search,
+    pdb_search,
+    pdb_fetch,
+    proteina_design,
+    seed_binder_candidate,
+    chai_fold_complex,
+    score_candidates,
+)
 
 # Mount path of the ``autopep-workspaces`` Modal volume. Attachments are
 # downloaded into ``{WORKSPACE_DIR}/{workspace_id}/inputs/`` so the agent
@@ -67,6 +77,10 @@ OPENAI_PROMPT_BLOCKED_SUMMARY = "OpenAI blocked this message for safety reasons.
 WORKSPACE_DIR = "/autopep-workspaces"
 
 _FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _format_available_tools(tools: tuple[Any, ...]) -> str:
+    return ", ".join(str(getattr(tool, "name", tool)) for tool in tools)
 
 
 def _sanitize_attachment_filename(name: str) -> str:
@@ -217,10 +231,15 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
             "  - pdb_search(query, max_chain_length=500, top_k=10, organism?) — "
             "RCSB Search API; metadata only, no download.\n"
             "  - pdb_fetch(pdb_id, chain_id?) — downloads PDB into /workspace/, "
-            "registers an artifact, returns the sandbox path + extracted sequence.\n"
+            "registers an artifact, returns the sandbox path, selected sequence, "
+            "and all chain sequences.\n"
             "  - proteina_design(target_pdb_path, hotspot_residues?, binder_length_min=60, "
             "binder_length_max=90, num_candidates=5, warm_start_structure_path?) — "
             "5 candidates per call; optional warm-start from a prior fold.\n"
+            "  - seed_binder_candidate(binder_sequence, target_sequence?, title?, "
+            "source?, source_reference?) — persist a known literature/PDB binder "
+            "sequence as a candidate when Proteina is unavailable or a direct seed "
+            "is scientifically appropriate.\n"
             "  - chai_fold_complex(candidate_ids, target_sequence?, target_name='target') — "
             "parallel target+binder folds via asyncio.gather.\n"
             "  - score_candidates(target_name, target_sequence, candidate_ids) — "
@@ -240,6 +259,14 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
             "→ proteina_design → chai_fold_complex → score_candidates → "
             "present a ranked summary. You may iterate within the same run "
             "(e.g., warm-start Proteina from your best fold)."
+        ),
+        (
+            "If proteina_design fails with a 5xx/502 endpoint error, do not keep "
+            "retrying the same Proteina call. Use retrieved literature/PDB evidence "
+            "to choose a known binder or partner sequence, call seed_binder_candidate, "
+            "then continue with chai_fold_complex and score_candidates. In the final "
+            "answer, state clearly that the candidate was a fallback seed rather than "
+            "a newly generated Proteina design."
         ),
         (
             "Final message format for binder runs: rank candidates by combined "
@@ -323,12 +350,7 @@ def build_autopep_agent(
         ),
         capabilities=capabilities,
         tools=[
-            literature_search,
-            pdb_search,
-            pdb_fetch,
-            proteina_design,
-            chai_fold_complex,
-            score_candidates,
+            *AUTOPEP_TOOLS,
         ],
     )
 

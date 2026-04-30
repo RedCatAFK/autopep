@@ -71,12 +71,14 @@ def test_build_agent_instructions_mentions_workflow_tools_and_recipes() -> None:
     assert "pdb_search" in instructions
     assert "pdb_fetch" in instructions
     assert "proteina_design" in instructions
+    assert "seed_binder_candidate" in instructions
+    assert "fallback seed" in instructions
     assert "chai_fold_complex" in instructions
     assert "score_candidates" in instructions
     assert recipe in instructions
 
 
-def test_build_autopep_agent_has_full_six_tool_surface() -> None:
+def test_build_autopep_agent_has_full_tool_surface() -> None:
     agent = build_autopep_agent(
         config=_test_config(),
         workspace_id="00000000-0000-0000-0000-000000000001",
@@ -90,6 +92,7 @@ def test_build_autopep_agent_has_full_six_tool_surface() -> None:
         "pdb_search",
         "pdb_fetch",
         "proteina_design",
+        "seed_binder_candidate",
         "chai_fold_complex",
         "score_candidates",
     } == _tool_names(agent.tools)
