@@ -7,7 +7,12 @@ import httpx
 import pytest
 import respx
 
-from autopep_agent.endpoint_clients import ChaiClient, ProteinaClient, ScoringClient
+from autopep_agent.endpoint_clients import (
+    ChaiClient,
+    ModalEndpointError,
+    ProteinaClient,
+    ScoringClient,
+)
 from autopep_agent.endpoint_clients import (
     PROTEINA_DESIGN_STEPS,
     PROTEINA_FAST_GENERATION_OVERRIDES,
@@ -51,6 +56,34 @@ async def test_proteina_design_posts_target_payload_with_api_key() -> None:
             "binder_length": [60, 120],
         },
     }
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_proteina_design_retries_then_raises_concise_502_error() -> None:
+    route = respx.post("https://proteina.example/run/design").mock(
+        return_value=httpx.Response(502, text="Bad Gateway"),
+    )
+    client = ProteinaClient(
+        "https://proteina.example/run/",
+        "proteina-key",
+        max_attempts=2,
+        retry_delay_s=0,
+    )
+
+    with pytest.raises(ModalEndpointError) as exc_info:
+        await client.design(
+            target_structure="data_target",
+            target_filename="target.cif",
+            target_input=None,
+            hotspot_residues=[],
+            binder_length=[60, 120],
+        )
+
+    assert route.call_count == 2
+    message = str(exc_info.value)
+    assert "HTTP 502" in message
+    assert "endpoint unavailable or restarting" in message
 
 
 @pytest.mark.asyncio
