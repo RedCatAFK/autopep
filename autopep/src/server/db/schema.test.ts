@@ -11,11 +11,11 @@ import {
 	artifacts,
 	candidateScores,
 	contextReferences,
-	messages,
 	modelInferences,
 	recipes,
 	recipeVersions,
 	runRecipes,
+	threadItems,
 	threads,
 	workspaces,
 } from "./schema";
@@ -24,7 +24,7 @@ describe("Autopep schema", () => {
 	it("uses the new workspace-centered table names", () => {
 		expect(getTableName(workspaces)).toBe("autopep_workspace");
 		expect(getTableName(threads)).toBe("autopep_thread");
-		expect(getTableName(messages)).toBe("autopep_message");
+		expect(getTableName(threadItems)).toBe("autopep_thread_item");
 		expect(getTableName(agentRuns)).toBe("autopep_agent_run");
 		expect(getTableName(agentEvents)).toBe("autopep_agent_event");
 		expect(getTableName(artifacts)).toBe("autopep_artifact");

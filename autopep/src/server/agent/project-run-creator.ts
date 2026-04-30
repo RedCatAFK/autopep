@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { env } from "@/env";
 import { launchCreatedRun } from "@/server/agent/run-launcher";
@@ -6,10 +6,10 @@ import type { db as appDb } from "@/server/db";
 import {
 	agentRuns,
 	contextReferences,
-	messages,
 	recipeVersions,
 	recipes,
 	runRecipes,
+	threadItems,
 	threads,
 	workspaces,
 } from "@/server/db/schema";
@@ -62,6 +62,19 @@ type DbWithOptionalTransaction = typeof appDb & {
 };
 
 type ContextReferenceRow = typeof contextReferences.$inferSelect;
+
+export const nextThreadSequence = async (
+	db: typeof appDb,
+	threadId: string,
+): Promise<number> => {
+	const [row] = await db
+		.select({
+			next: sql<number>`COALESCE(MAX(${threadItems.sequence}), 0) + 1`,
+		})
+		.from(threadItems)
+		.where(eq(threadItems.threadId, threadId));
+	return Number(row?.next ?? 1);
+};
 
 const inferWorkspaceName = (prompt: string) => {
 	const firstLine = prompt.trim().split(/\r?\n/u)[0]?.trim();
@@ -283,20 +296,27 @@ export const createMessageRunWithLaunch = async ({
 			throw new Error("Failed to create agent run.");
 		}
 
-		const [message] = await writeDb
-			.insert(messages)
+		const sequence = await nextThreadSequence(
+			writeDb,
+			workspaceBundle.thread.id,
+		);
+
+		const [threadItem] = await writeDb
+			.insert(threadItems)
 			.values({
 				attachmentRefsJson: input.attachmentRefs ?? [],
-				content: input.prompt,
+				contentJson: { type: "input_text", text: input.prompt },
 				contextRefsJson: input.contextRefs ?? [],
+				itemType: "message",
 				recipeRefsJson: input.recipeRefs ?? [],
 				role: "user",
 				runId: run.id,
+				sequence,
 				threadId: workspaceBundle.thread.id,
 			})
 			.returning();
 
-		if (!message) {
+		if (!threadItem) {
 			throw new Error("Failed to create user message.");
 		}
 
@@ -308,9 +328,9 @@ export const createMessageRunWithLaunch = async ({
 		});
 
 		return {
-			message,
 			run,
 			thread: workspaceBundle.thread,
+			threadItem,
 			workspace: workspaceBundle.workspace,
 		};
 	};
@@ -330,9 +350,9 @@ export const createMessageRunWithLaunch = async ({
 	});
 
 	return {
-		message: created.message,
 		run: launch.run ?? created.run,
 		thread: created.thread,
+		threadItem: created.threadItem,
 		workspace: created.workspace,
 	};
 };

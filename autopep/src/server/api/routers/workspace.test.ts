@@ -676,7 +676,7 @@ describe("workspace router procedures", () => {
 				artifacts: { findMany: emptyFindMany() },
 				candidateScores: { findMany: emptyFindMany() },
 				contextReferences: { findMany: emptyFindMany() },
-				messages: { findMany: emptyFindMany() },
+				threadItems: { findMany: emptyFindMany() },
 				proteinCandidates: { findMany: emptyFindMany() },
 				recipes: { findMany: emptyFindMany() },
 				threads: { findMany: vi.fn().mockResolvedValue([thread]) },
@@ -728,10 +728,16 @@ describe("workspace router procedures", () => {
 			workspaceId: workspace.id,
 		};
 		const message = {
-			content: "Hello",
+			attachmentRefsJson: [],
+			contentJson: { text: "Hello", type: "input_text" },
+			contextRefsJson: [],
 			createdAt: new Date("2026-04-29T12:01:00.000Z"),
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
+			recipeRefsJson: [],
 			role: "user",
+			runId: null,
+			sequence: 1,
 			threadId: thread.id,
 		};
 		const event = {
@@ -751,7 +757,7 @@ describe("workspace router procedures", () => {
 				artifacts: { findMany: emptyFindMany() },
 				candidateScores: { findMany: emptyFindMany() },
 				contextReferences: { findMany: emptyFindMany() },
-				messages: { findMany: vi.fn().mockResolvedValue([message]) },
+				threadItems: { findMany: vi.fn().mockResolvedValue([message]) },
 				proteinCandidates: { findMany: emptyFindMany() },
 				recipes: { findMany: emptyFindMany() },
 				threads: { findMany: vi.fn().mockResolvedValue([thread]) },
@@ -811,7 +817,7 @@ describe("workspace router procedures", () => {
 				artifacts: { findMany: emptyFindMany() },
 				candidateScores: { findMany: emptyFindMany() },
 				contextReferences: { findMany: emptyFindMany() },
-				messages: { findMany: emptyFindMany() },
+				threadItems: { findMany: emptyFindMany() },
 				proteinCandidates: { findMany: emptyFindMany() },
 				recipes: { findMany: emptyFindMany() },
 				threads: { findMany: vi.fn().mockResolvedValue([thread]) },
@@ -1408,7 +1414,7 @@ describe("workspace router getWorkspacePayload compatibility helper", () => {
 				artifacts: { findMany: emptyFindMany() },
 				candidateScores: { findMany: candidateScoresFindMany },
 				contextReferences: { findMany: emptyFindMany() },
-				messages: { findMany: emptyFindMany() },
+				threadItems: { findMany: emptyFindMany() },
 				proteinCandidates: { findMany: emptyFindMany() },
 				recipes: { findMany: emptyFindMany() },
 				threads: {

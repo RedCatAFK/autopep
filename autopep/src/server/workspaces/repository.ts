@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 
 import type { db as appDb } from "@/server/db";
 import {
@@ -7,9 +7,9 @@ import {
 	artifacts,
 	candidateScores,
 	contextReferences,
-	messages,
 	proteinCandidates,
 	recipes,
+	threadItems,
 	threads,
 	workspaces,
 } from "@/server/db/schema";
@@ -124,9 +124,13 @@ export const getWorkspacePayload = async ({
 		contextRows,
 	] = await Promise.all([
 		activeThread
-			? db.query.messages.findMany({
-					where: eq(messages.threadId, activeThread.id),
-					orderBy: [asc(messages.createdAt)],
+			? db.query.threadItems.findMany({
+					where: and(
+						eq(threadItems.threadId, activeThread.id),
+						eq(threadItems.itemType, "message"),
+						inArray(threadItems.role, ["user", "assistant"]),
+					),
+					orderBy: [asc(threadItems.sequence)],
 				})
 			: Promise.resolve([]),
 		activeRun

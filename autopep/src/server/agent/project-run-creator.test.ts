@@ -24,6 +24,13 @@ const updateReturning = (row: unknown) => {
 	return { returning, set, where };
 };
 
+const sequenceSelect = (next: number) => {
+	const where = vi.fn().mockResolvedValue([{ next }]);
+	const from = vi.fn(() => ({ where }));
+	const select = vi.fn(() => ({ from }));
+	return { from, select, where };
+};
+
 describe("createMessageRunWithLaunch", () => {
 	it("creates a workspace and thread when missing, links the user message to the run, and launches it", async () => {
 		const workspace = {
@@ -50,11 +57,14 @@ describe("createMessageRunWithLaunch", () => {
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
-		const message = {
-			content: queuedRun.prompt,
+		const promptText = queuedRun.prompt;
+		const threadItem = {
+			contentJson: { text: promptText, type: "input_text" },
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 1,
 			threadId: thread.id,
 		};
 		const failedRun = {
@@ -65,15 +75,17 @@ describe("createMessageRunWithLaunch", () => {
 		const workspaceInsert = insertReturning(workspace);
 		const threadInsert = insertReturning(thread);
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturning(message);
+		const itemInsert = insertReturning(threadItem);
 		const workspaceUpdate = updateReturning(updatedWorkspace);
+		const seqSelect = sequenceSelect(1);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(workspaceInsert)
 				.mockReturnValueOnce(threadInsert)
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert),
+				.mockReturnValueOnce(itemInsert),
+			select: seqSelect.select,
 			update: vi.fn().mockReturnValueOnce({ set: workspaceUpdate.set }),
 		};
 		const launchRun = vi.fn().mockResolvedValue({
@@ -86,7 +98,7 @@ describe("createMessageRunWithLaunch", () => {
 		const result = await createMessageRunWithLaunch({
 			db: db as never,
 			input: {
-				prompt: message.content,
+				prompt: promptText,
 			},
 			launchRun,
 			ownerId: "user-1",
@@ -95,7 +107,7 @@ describe("createMessageRunWithLaunch", () => {
 		expect(runInsert.values).toHaveBeenCalledWith(
 			expect.objectContaining({
 				createdById: "user-1",
-				prompt: message.content,
+				prompt: promptText,
 				rootRunId: null,
 				status: "queued",
 				taskKind: "chat",
@@ -103,13 +115,15 @@ describe("createMessageRunWithLaunch", () => {
 				workspaceId: workspace.id,
 			}),
 		);
-		expect(messageInsert.values).toHaveBeenCalledWith({
+		expect(itemInsert.values).toHaveBeenCalledWith({
 			attachmentRefsJson: [],
-			content: message.content,
+			contentJson: { text: promptText, type: "input_text" },
 			contextRefsJson: [],
+			itemType: "message",
 			recipeRefsJson: [],
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 1,
 			threadId: thread.id,
 		});
 		expect(launchRun).toHaveBeenCalledWith({
@@ -119,9 +133,9 @@ describe("createMessageRunWithLaunch", () => {
 			workspaceId: workspace.id,
 		});
 		expect(result).toEqual({
-			message,
 			run: failedRun,
 			thread,
+			threadItem,
 			workspace: updatedWorkspace,
 		});
 	});
@@ -147,20 +161,24 @@ describe("createMessageRunWithLaunch", () => {
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
-		const message = {
-			content: queuedRun.prompt,
+		const promptText = queuedRun.prompt;
+		const threadItem = {
+			contentJson: { text: promptText, type: "input_text" },
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 2,
 			threadId: thread.id,
 		};
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturning(message);
+		const itemInsert = insertReturning(threadItem);
+		const seqSelect = sequenceSelect(2);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert),
+				.mockReturnValueOnce(itemInsert),
 			query: {
 				contextReferences: { findMany: vi.fn().mockResolvedValue([]) },
 				recipeVersions: { findFirst: vi.fn() },
@@ -168,6 +186,7 @@ describe("createMessageRunWithLaunch", () => {
 				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
 				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
 			},
+			select: seqSelect.select,
 		};
 		const launchRun = vi.fn().mockResolvedValue({
 			backend: "modal",
@@ -179,7 +198,7 @@ describe("createMessageRunWithLaunch", () => {
 			input: {
 				attachmentRefs: ["77777777-7777-4777-8777-777777777777"],
 				contextRefs: ["55555555-5555-4555-8555-555555555555"],
-				prompt: message.content,
+				prompt: promptText,
 				recipeRefs: ["66666666-6666-4666-8666-666666666666"],
 				taskKind: "prepare_structure",
 				workspaceId: workspace.id,
@@ -195,13 +214,15 @@ describe("createMessageRunWithLaunch", () => {
 				workspaceId: workspace.id,
 			}),
 		);
-		expect(messageInsert.values).toHaveBeenCalledWith({
+		expect(itemInsert.values).toHaveBeenCalledWith({
 			attachmentRefsJson: ["77777777-7777-4777-8777-777777777777"],
-			content: message.content,
+			contentJson: { text: promptText, type: "input_text" },
 			contextRefsJson: ["55555555-5555-4555-8555-555555555555"],
+			itemType: "message",
 			recipeRefsJson: ["66666666-6666-4666-8666-666666666666"],
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 2,
 			threadId: thread.id,
 		});
 		expect(launchRun).toHaveBeenCalledWith({
@@ -211,9 +232,9 @@ describe("createMessageRunWithLaunch", () => {
 			workspaceId: workspace.id,
 		});
 		expect(result).toEqual({
-			message,
 			run: queuedRun,
 			thread,
+			threadItem,
 			workspace,
 		});
 	});
@@ -258,26 +279,31 @@ describe("createMessageRunWithLaunch", () => {
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
-		const message = {
-			content: "Explain this region",
+		const userPrompt = "Explain this region";
+		const threadItem = {
+			contentJson: { text: userPrompt, type: "input_text" },
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 1,
 			threadId: thread.id,
 		};
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturning(message);
+		const itemInsert = insertReturning(threadItem);
 		const contextReferencesFindMany = vi.fn().mockResolvedValue([reference]);
+		const seqSelect = sequenceSelect(1);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert),
+				.mockReturnValueOnce(itemInsert),
 			query: {
 				contextReferences: { findMany: contextReferencesFindMany },
 				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
 				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
 			},
+			select: seqSelect.select,
 		};
 		const launchRun = vi.fn().mockResolvedValue({
 			backend: "modal",
@@ -288,7 +314,7 @@ describe("createMessageRunWithLaunch", () => {
 			db: db as never,
 			input: {
 				contextRefs: [reference.id],
-				prompt: message.content,
+				prompt: userPrompt,
 				workspaceId: workspace.id,
 			},
 			launchRun,
@@ -300,9 +326,9 @@ describe("createMessageRunWithLaunch", () => {
 				prompt: expectedPrompt,
 			}),
 		);
-		expect(messageInsert.values).toHaveBeenCalledWith(
+		expect(itemInsert.values).toHaveBeenCalledWith(
 			expect.objectContaining({
-				content: message.content,
+				contentJson: { text: userPrompt, type: "input_text" },
 				contextRefsJson: [reference.id],
 			}),
 		);
@@ -330,11 +356,13 @@ describe("createMessageRunWithLaunch", () => {
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
-		const message = {
-			content: queuedRun.prompt,
+		const threadItem = {
+			contentJson: { text: queuedRun.prompt, type: "input_text" },
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 1,
 			threadId: thread.id,
 		};
 		const recipe = {
@@ -349,15 +377,16 @@ describe("createMessageRunWithLaunch", () => {
 			version: 1,
 		};
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturning(message);
+		const itemInsert = insertReturning(threadItem);
 		const runRecipeInsert = insertReturning({
 			id: "88888888-8888-4888-8888-888888888888",
 		});
+		const seqSelect = sequenceSelect(1);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert)
+				.mockReturnValueOnce(itemInsert)
 				.mockReturnValueOnce(runRecipeInsert),
 			query: {
 				recipeVersions: { findFirst: vi.fn().mockResolvedValue(recipeVersion) },
@@ -365,6 +394,7 @@ describe("createMessageRunWithLaunch", () => {
 				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
 				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
 			},
+			select: seqSelect.select,
 		};
 		const launchRun = vi.fn().mockResolvedValue({
 			backend: "modal",
@@ -374,7 +404,7 @@ describe("createMessageRunWithLaunch", () => {
 		await createMessageRunWithLaunch({
 			db: db as never,
 			input: {
-				prompt: message.content,
+				prompt: queuedRun.prompt,
 				recipeRefs: [recipe.id],
 				taskKind: "chat",
 				workspaceId: workspace.id,
@@ -414,16 +444,18 @@ describe("createMessageRunWithLaunch", () => {
 			workspaceId: workspace.id,
 		};
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturningNoRows();
+		const itemInsert = insertReturningNoRows();
+		const seqSelect = sequenceSelect(1);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert),
+				.mockReturnValueOnce(itemInsert),
 			query: {
 				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
 				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
 			},
+			select: seqSelect.select,
 		};
 		const launchRun = vi.fn();
 
@@ -463,24 +495,28 @@ describe("createMessageRunWithLaunch", () => {
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
-		const message = {
-			content: queuedRun.prompt,
+		const threadItem = {
+			contentJson: { text: queuedRun.prompt, type: "input_text" },
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 1,
 			threadId: thread.id,
 		};
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturning(message);
+		const itemInsert = insertReturning(threadItem);
+		const seqSelect = sequenceSelect(1);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert),
+				.mockReturnValueOnce(itemInsert),
 			query: {
 				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
 				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
 			},
+			select: seqSelect.select,
 		};
 		const launchRun = vi.fn().mockResolvedValue({
 			backend: "modal",
@@ -532,25 +568,29 @@ describe("createProjectRunWithLaunch", () => {
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
-		const message = {
-			content: queuedRun.prompt,
+		const threadItem = {
+			contentJson: { text: queuedRun.prompt, type: "input_text" },
 			id: "44444444-4444-4444-8444-444444444444",
+			itemType: "message",
 			role: "user",
 			runId: queuedRun.id,
+			sequence: 1,
 			threadId: thread.id,
 		};
 		const workspaceInsert = insertReturning(workspace);
 		const threadInsert = insertReturning(thread);
 		const runInsert = insertReturning(queuedRun);
-		const messageInsert = insertReturning(message);
+		const itemInsert = insertReturning(threadItem);
 		const workspaceUpdate = updateReturning(updatedWorkspace);
+		const seqSelect = sequenceSelect(1);
 		const db = {
 			insert: vi
 				.fn()
 				.mockReturnValueOnce(workspaceInsert)
 				.mockReturnValueOnce(threadInsert)
 				.mockReturnValueOnce(runInsert)
-				.mockReturnValueOnce(messageInsert),
+				.mockReturnValueOnce(itemInsert),
+			select: seqSelect.select,
 			update: vi.fn().mockReturnValueOnce({ set: workspaceUpdate.set }),
 		};
 		const launchRun = vi.fn().mockResolvedValue({
@@ -561,7 +601,7 @@ describe("createProjectRunWithLaunch", () => {
 		const result = await createProjectRunWithLaunch({
 			db: db as never,
 			input: {
-				goal: message.content,
+				goal: queuedRun.prompt,
 				name: workspace.name,
 				topK: 5,
 			},
@@ -576,21 +616,21 @@ describe("createProjectRunWithLaunch", () => {
 			}),
 		);
 		expect(workspaceInsert.values).toHaveBeenCalledWith({
-			description: message.content,
+			description: queuedRun.prompt,
 			name: workspace.name,
 			ownerId: "user-1",
 		});
-		expect(messageInsert.values).toHaveBeenCalledWith(
+		expect(itemInsert.values).toHaveBeenCalledWith(
 			expect.objectContaining({
-				content: message.content,
+				contentJson: { text: queuedRun.prompt, type: "input_text" },
 				runId: queuedRun.id,
 			}),
 		);
 		expect(result).toEqual({
-			message,
 			project: updatedWorkspace,
 			run: queuedRun,
 			thread,
+			threadItem,
 			workspace: updatedWorkspace,
 		});
 	});

@@ -18,10 +18,10 @@ import {
 	agentRuns,
 	artifacts,
 	contextReferences,
-	type messages as messagesTable,
 	type proteinCandidates,
 	recipes,
 	recipeVersions,
+	type threadItems as threadItemsTable,
 	workspaces,
 } from "@/server/db/schema";
 import { inferWorkspaceNameWithAi } from "@/server/workspaces/auto-name";
@@ -199,10 +199,25 @@ const mapEvent = (event: typeof agentEvents.$inferSelect) => ({
 	payloadJson: event.displayJson,
 });
 
-const mapMessage = (message: typeof messagesTable.$inferSelect) => ({
-	...message,
-	createdAt: message.createdAt.toISOString(),
-});
+const mapThreadMessageItem = (
+	item: typeof threadItemsTable.$inferSelect,
+) => {
+	const contentJson = item.contentJson as
+		| { text?: string; type?: string }
+		| null;
+	const content = contentJson?.text ?? "";
+	return {
+		attachmentRefsJson: item.attachmentRefsJson ?? [],
+		content,
+		contextRefsJson: item.contextRefsJson ?? [],
+		createdAt: item.createdAt.toISOString(),
+		id: item.id,
+		recipeRefsJson: item.recipeRefsJson ?? [],
+		role: item.role,
+		runId: item.runId,
+		threadId: item.threadId,
+	};
+};
 
 const mapRunSummary = (run: typeof agentRuns.$inferSelect) => ({
 	id: run.id,
@@ -325,7 +340,7 @@ const getWorkspaceCompatibilityPayload = async ({
 		candidateScores: payload.candidateScores,
 		candidates: payload.candidates.map(mapCandidate),
 		events: payload.events.map(mapEvent),
-		messages: payload.messages.map(mapMessage),
+		messages: payload.messages.map(mapThreadMessageItem),
 		project,
 		runs: runSummaries,
 		targetEntities,

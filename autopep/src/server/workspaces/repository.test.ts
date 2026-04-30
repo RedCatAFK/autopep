@@ -224,7 +224,7 @@ describe("getWorkspacePayload", () => {
 				artifacts: { findMany: emptyFindMany() },
 				candidateScores: { findMany: emptyFindMany() },
 				contextReferences: { findMany: emptyFindMany() },
-				messages: { findMany: emptyFindMany() },
+				threadItems: { findMany: emptyFindMany() },
 				proteinCandidates: { findMany: emptyFindMany() },
 				recipes: { findMany: emptyFindMany() },
 				threads: {
