@@ -2,10 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api } from "@/trpc/react";
-
 export type RunEvent = {
-	id: string;
+	id?: string;
 	runId?: string | null;
 	type: string;
 	message?: string | null;
@@ -14,113 +12,164 @@ export type RunEvent = {
 	createdAt?: string | Date | null;
 };
 
+export type RunEventConnectionState =
+	| "idle"
+	| "connecting"
+	| "open"
+	| "closed"
+	| "error";
+
+export type RunEventSource = {
+	runId: string;
+	wsUrl: string;
+	wsToken: string;
+};
+
 type UseRunEventsResult = {
 	events: RunEvent[];
-	connection: "idle" | "streaming" | "polling" | "error";
+	connection: RunEventConnectionState;
 	latestSequence: number;
-	appendEvent: (event: RunEvent) => void;
 	reset: () => void;
 };
 
-export function useRunEvents(runId: string | null): UseRunEventsResult {
-	const [events, setEvents] = useState<RunEvent[]>([]);
-	const [connection, setConnection] =
-		useState<UseRunEventsResult["connection"]>("idle");
-	const latestSequenceRef = useRef(0);
-	const [latestSequence, setLatestSequence] = useState(0);
+const RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 15000;
 
-	const appendEvent = useCallback((event: RunEvent) => {
-		setEvents((current) => {
-			if (current.some((item) => item.id === event.id)) return current;
-			return [...current, event].sort((a, b) => a.sequence - b.sequence);
-		});
-		latestSequenceRef.current = Math.max(
-			latestSequenceRef.current,
-			event.sequence,
-		);
-		setLatestSequence(latestSequenceRef.current);
-	}, []);
+/**
+ * Live event subscription via WebSocket directly to the Modal worker.
+ *
+ * The browser-to-Modal connection bypasses Vercel's 60s function ceiling, so
+ * one connection lasts for the full duration of a 30+ minute protein run. On
+ * disconnect (network blip, browser tab sleep) the hook reconnects with
+ * `?after=<lastSequence>` so Modal replays missed events from Neon.
+ */
+export function useRunEvents(
+	source: RunEventSource | null,
+): UseRunEventsResult {
+	const [events, setEvents] = useState<RunEvent[]>([]);
+	const [connection, setConnection] = useState<RunEventConnectionState>("idle");
+	const [latestSequence, setLatestSequence] = useState(0);
+	const latestSequenceRef = useRef(0);
+	const closedRef = useRef(false);
+	const reconnectAttemptRef = useRef(0);
+	const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	const reset = useCallback(() => {
 		setEvents([]);
-		latestSequenceRef.current = 0;
 		setLatestSequence(0);
-		setConnection(runId ? "streaming" : "idle");
-	}, [runId]);
+		latestSequenceRef.current = 0;
+		reconnectAttemptRef.current = 0;
+	}, []);
 
 	useEffect(() => {
 		reset();
 	}, [reset]);
 
 	useEffect(() => {
-		if (!runId || typeof window === "undefined") return;
+		if (!source || typeof window === "undefined") {
+			setConnection("idle");
+			return;
+		}
 
-		let closed = false;
-		const source = new EventSource(
-			`/api/runs/${runId}/events?after=${latestSequenceRef.current}`,
-		);
-		setConnection("streaming");
+		closedRef.current = false;
+		let socket: WebSocket | null = null;
 
-		const handleEvent = (message: MessageEvent<string>) => {
-			if (!message.data || message.data === "[DONE]") return;
-			try {
-				appendEvent(JSON.parse(message.data) as RunEvent);
-			} catch {
-				setConnection("error");
+		const clearReconnectTimer = () => {
+			if (reconnectTimerRef.current) {
+				clearTimeout(reconnectTimerRef.current);
+				reconnectTimerRef.current = null;
 			}
 		};
 
-		source.onmessage = handleEvent;
-		source.addEventListener("run_event", handleEvent);
-		source.onerror = () => {
-			if (closed) return;
-			source.close();
-			setConnection("polling");
+		const scheduleReconnect = () => {
+			if (closedRef.current) return;
+			const attempt = reconnectAttemptRef.current;
+			const delay = Math.min(
+				MAX_RECONNECT_DELAY_MS,
+				RECONNECT_DELAY_MS * 2 ** attempt,
+			);
+			reconnectAttemptRef.current = attempt + 1;
+			reconnectTimerRef.current = setTimeout(connect, delay);
 		};
+
+		const connect = () => {
+			if (closedRef.current) return;
+			setConnection("connecting");
+			const url = `${source.wsUrl}?token=${encodeURIComponent(source.wsToken)}&after=${latestSequenceRef.current}`;
+			try {
+				socket = new WebSocket(url);
+			} catch {
+				setConnection("error");
+				scheduleReconnect();
+				return;
+			}
+
+			socket.onopen = () => {
+				reconnectAttemptRef.current = 0;
+				setConnection("open");
+			};
+
+			socket.onmessage = (message) => {
+				if (typeof message.data !== "string") return;
+				let payload: RunEvent | { type?: string };
+				try {
+					payload = JSON.parse(message.data) as RunEvent;
+				} catch {
+					return;
+				}
+				if (
+					payload &&
+					typeof payload === "object" &&
+					"type" in payload &&
+					payload.type === "heartbeat"
+				) {
+					return;
+				}
+				const event = payload as RunEvent;
+				if (typeof event.sequence !== "number") return;
+				latestSequenceRef.current = Math.max(
+					latestSequenceRef.current,
+					event.sequence,
+				);
+				setLatestSequence(latestSequenceRef.current);
+				setEvents((current) => {
+					if (event.id && current.some((row) => row.id === event.id))
+						return current;
+					return [...current, event].sort((a, b) => a.sequence - b.sequence);
+				});
+			};
+
+			socket.onerror = () => {
+				setConnection("error");
+			};
+
+			socket.onclose = (closeEvent) => {
+				if (closedRef.current) {
+					setConnection("closed");
+					return;
+				}
+				if (closeEvent.code === 4401 || closeEvent.code === 4503) {
+					setConnection("error");
+					return;
+				}
+				setConnection("closed");
+				scheduleReconnect();
+			};
+		};
+
+		connect();
 
 		return () => {
-			closed = true;
-			source.close();
+			closedRef.current = true;
+			clearReconnectTimer();
+			if (socket && socket.readyState <= WebSocket.OPEN) {
+				socket.close(1000, "client unmount");
+			}
 		};
-	}, [runId, appendEvent]);
-
-	const shouldPoll = Boolean(runId && connection !== "streaming");
-	const polledEvents = api.run.listEvents.useQuery(
-		{ runId: runId ?? "", after: latestSequence },
-		{
-			enabled: shouldPoll,
-			refetchInterval: shouldPoll ? 1500 : false,
-		},
-	);
-
-	useEffect(() => {
-		const nextEvents = normalizeEvents(polledEvents.data);
-		for (const event of nextEvents) appendEvent(event);
-		if (polledEvents.error) setConnection("error");
-	}, [polledEvents.data, polledEvents.error, appendEvent]);
+	}, [source]);
 
 	return useMemo(
-		() => ({
-			events,
-			connection,
-			latestSequence,
-			appendEvent,
-			reset,
-		}),
-		[events, connection, latestSequence, appendEvent, reset],
+		() => ({ events, connection, latestSequence, reset }),
+		[events, connection, latestSequence, reset],
 	);
-}
-
-function normalizeEvents(value: unknown): RunEvent[] {
-	if (!value) return [];
-	if (Array.isArray(value)) return value as RunEvent[];
-	if (
-		typeof value === "object" &&
-		value !== null &&
-		"events" in value &&
-		Array.isArray((value as { events?: unknown }).events)
-	) {
-		return (value as { events: RunEvent[] }).events;
-	}
-	return [];
 }

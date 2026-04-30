@@ -36,3 +36,12 @@ def upload_file_to_r2(client, bucket: str, path: Path | str, key: str) -> str:
     client.upload_file(str(local_path), bucket, key)
     return key
 
+
+def download_file_from_r2(client, bucket: str, key: str, dest: Path | str) -> Path:
+    if not bucket:
+        raise ValueError("R2_BUCKET is required")
+    target = Path(dest)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    client.download_file(bucket, key, str(target))
+    return target
+

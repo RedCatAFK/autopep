@@ -95,6 +95,29 @@ def insert_artifact(
         )
 
 
+def fetch_run_events(
+    database_url: str, run_id: str, after_sequence: int
+) -> list[dict[str, Any]]:
+    """Return events for `run_id` with sequence > after_sequence, ordered by sequence."""
+    with _connect(database_url) as conn:
+        rows = conn.execute(
+            """
+            select id::text as id,
+                   run_id::text as "runId",
+                   type::text as type,
+                   message,
+                   sequence,
+                   metadata,
+                   created_at as "createdAt"
+            from julia_run_events
+            where run_id = %s and sequence > %s
+            order by sequence asc
+            """,
+            (run_id, int(after_sequence)),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def load_run_context(database_url: str, run_id: str) -> dict[str, Any] | None:
     with _connect(database_url) as conn:
         row = conn.execute(
@@ -102,3 +125,30 @@ def load_run_context(database_url: str, run_id: str) -> dict[str, Any] | None:
             (run_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def load_context_artifacts(
+    database_url: str, context_reference_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Fetch artifact rows referenced by the given context reference UUIDs.
+
+    Returns one row per resolved artifact with: id, filename, r2_key, kind, project_id.
+    Missing or unreferenced ids are silently skipped.
+    """
+    if not context_reference_ids:
+        return []
+    with _connect(database_url) as conn:
+        rows = conn.execute(
+            """
+            select a.id::text as id,
+                   a.filename as filename,
+                   a.r2_key as r2_key,
+                   a.kind::text as kind,
+                   a.project_id::text as project_id
+            from julia_context_references c
+            join julia_artifacts a on a.id = c.artifact_id
+            where c.id::text = any(%s)
+            """,
+            (context_reference_ids,),
+        ).fetchall()
+    return [dict(row) for row in rows]

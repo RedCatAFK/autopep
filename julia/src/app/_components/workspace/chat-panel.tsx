@@ -8,7 +8,11 @@ import remarkGfm from "remark-gfm";
 import { api } from "@/trpc/react";
 import { ContextPills, type WorkspaceContextReference } from "./context-pills";
 import { ToolStep } from "./tool-step";
-import { type RunEvent, useRunEvents } from "./use-run-events";
+import {
+	type RunEvent,
+	type RunEventSource,
+	useRunEvents,
+} from "./use-run-events";
 
 export type WorkspaceMessage = {
 	id: string;
@@ -22,9 +26,9 @@ type ChatPanelProps = {
 	threadId?: string | null;
 	messages: WorkspaceMessage[];
 	contextReferences: WorkspaceContextReference[];
-	onRunCreated: (runId: string) => void;
+	onRunCreated: (source: RunEventSource) => void;
 	onRemoveContext: (referenceId: string) => void;
-	activeRunId: string | null;
+	runSource: RunEventSource | null;
 };
 
 export function ChatPanel({
@@ -34,16 +38,16 @@ export function ChatPanel({
 	contextReferences,
 	onRunCreated,
 	onRemoveContext,
-	activeRunId,
+	runSource,
 }: ChatPanelProps) {
 	const [prompt, setPrompt] = useState("");
 	const [localMessages, setLocalMessages] =
 		useState<WorkspaceMessage[]>(messages);
-	const runEvents = useRunEvents(activeRunId);
+	const runEvents = useRunEvents(runSource);
 	const sendMessage = api.run.sendMessage.useMutation({
 		onSuccess(data) {
-			const runId = getRunId(data);
-			if (runId) onRunCreated(runId);
+			const source = toRunEventSource(data);
+			if (source) onRunCreated(source);
 		},
 	});
 
@@ -85,7 +89,7 @@ export function ChatPanel({
 	const latestEvent = runEvents.events.at(-1);
 	const busy =
 		sendMessage.isPending ||
-		Boolean(activeRunId && !isTerminalEvent(latestEvent));
+		Boolean(runSource && !isTerminalEvent(latestEvent));
 
 	const submit = () => {
 		const content = prompt.trim();
@@ -225,22 +229,32 @@ function statusText(
 	if (isSending) return "Sending";
 	if (isTerminalEvent(event)) return terminalStatus(event) ?? "Done";
 	if (event?.type) return event.type.replaceAll("_", " ");
-	if (connection === "streaming") return "Waiting for events";
-	if (connection === "polling") return "Polling for events";
+	if (connection === "open") return "Streaming";
+	if (connection === "connecting") return "Connecting";
+	if (connection === "error") return "Connection error";
+	if (connection === "closed") return "Reconnecting";
 	return "Idle";
 }
 
-function getRunId(value: unknown): string | null {
+function toRunEventSource(value: unknown): RunEventSource | null {
 	if (!value || typeof value !== "object") return null;
 	const record = value as {
-		id?: unknown;
 		runId?: unknown;
-		run?: { id?: unknown };
+		wsUrl?: unknown;
+		wsToken?: unknown;
 	};
-	if (typeof record.runId === "string") return record.runId;
-	if (typeof record.id === "string") return record.id;
-	if (typeof record.run?.id === "string") return record.run.id;
-	return null;
+	if (
+		typeof record.runId !== "string" ||
+		typeof record.wsUrl !== "string" ||
+		typeof record.wsToken !== "string"
+	) {
+		return null;
+	}
+	return {
+		runId: record.runId,
+		wsUrl: record.wsUrl,
+		wsToken: record.wsToken,
+	};
 }
 
 function findLastAssistantMessageIndex(messages: WorkspaceMessage[]): number {

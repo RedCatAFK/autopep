@@ -11,6 +11,7 @@ import { ChatPanel, type WorkspaceMessage } from "./chat-panel";
 import type { WorkspaceContextReference } from "./context-pills";
 import { FilePanel, type WorkspaceArtifact } from "./file-panel";
 import { MolstarViewer } from "./molstar-viewer";
+import type { RunEventSource } from "./use-run-events";
 
 type WorkspaceUser = {
 	name?: string | null;
@@ -39,7 +40,6 @@ type WorkspacePayload = {
 	messages?: WorkspaceMessage[];
 	artifacts?: WorkspaceArtifact[];
 	contextReferences?: WorkspaceContextReference[];
-	activeRunId?: string | null;
 };
 
 const THREAD_COLORS = [
@@ -65,7 +65,7 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 		null,
 	);
 	const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-	const [activeRunId, setActiveRunId] = useState<string | null>(null);
+	const [runSource, setRunSource] = useState<RunEventSource | null>(null);
 	const [profileOpen, setProfileOpen] = useState(false);
 	const [signOutError, setSignOutError] = useState<string | null>(null);
 	const [isSigningOut, setIsSigningOut] = useState(false);
@@ -83,7 +83,7 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 	);
 	const createThread = api.workspace.createThread.useMutation({
 		onSuccess: (thread) => {
-			setActiveRunId(null);
+			setRunSource(null);
 			setSelectedArtifactId(null);
 			setSelectedThreadId(thread.id);
 			void utils.workspace.getLatestWorkspace.invalidate();
@@ -179,7 +179,7 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 								key={thread.id}
 								onClick={() => {
 									setSelectedThreadId(thread.id);
-									setActiveRunId(null);
+									setRunSource(null);
 									setSelectedArtifactId(null);
 								}}
 								style={
@@ -241,14 +241,14 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 				) : projectId ? (
 					<>
 						<ChatPanel
-							activeRunId={activeRunId ?? payload.activeRunId ?? null}
 							contextReferences={contextReferences}
 							messages={payload.messages ?? []}
 							onRemoveContext={(referenceId) =>
 								removeContext.mutate({ referenceId, projectId })
 							}
-							onRunCreated={setActiveRunId}
+							onRunCreated={setRunSource}
 							projectId={projectId}
+							runSource={runSource}
 							threadId={payload.thread?.id}
 						/>
 						<MolstarViewer artifact={selectedArtifact} />

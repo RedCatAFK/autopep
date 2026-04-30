@@ -17,6 +17,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-asyncio",
 ]
 
 [build-system]
@@ -29,3 +30,4 @@ packages = ["julia_agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"

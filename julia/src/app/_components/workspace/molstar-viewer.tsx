@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { TextViewer } from "./text-viewer";
+
 export type ViewerArtifact = {
 	id: string;
 	filename: string;
@@ -44,6 +46,7 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 		artifact ? "loading" : "empty",
 	);
 	const [error, setError] = useState<string | null>(null);
+	const isStructure = artifact ? isStructureFilename(artifact.filename) : false;
 
 	useEffect(() => {
 		let canceled = false;
@@ -54,11 +57,9 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 				return;
 			}
 
-			if (!isStructureFilename(artifact.filename)) {
+			if (!isStructure) {
 				setState("empty");
-				setError(
-					"Select a .cif, .mmcif, or .pdb artifact to view a structure.",
-				);
+				setError(null);
 				return;
 			}
 
@@ -132,7 +133,7 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 		return () => {
 			canceled = true;
 		};
-	}, [artifact?.viewerUrl, artifact?.filename]);
+	}, [artifact?.viewerUrl, artifact?.filename, isStructure]);
 
 	useEffect(
 		() => () => {
@@ -161,20 +162,27 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 				) : null}
 			</div>
 			<div className="molstar-frame">
-				<div className="molstar-host" ref={containerRef} />
-				{state !== "ready" ? (
+				<div
+					className="molstar-host"
+					hidden={!isStructure || state !== "ready"}
+					ref={containerRef}
+				/>
+				{!artifact ? (
 					<div className="viewer-state">
-						<strong>
-							{state === "loading"
-								? "Loading structure"
-								: state === "error"
-									? "Viewer unavailable"
-									: "Select a structure artifact"}
-						</strong>
-						<p>
-							{error ??
-								"Choose a .cif, .mmcif, or .pdb file from the artifacts panel."}
-						</p>
+						<strong>No artifact selected</strong>
+						<p>Choose a file from the artifacts panel.</p>
+					</div>
+				) : !isStructure ? (
+					<TextViewer artifact={artifact} />
+				) : state === "loading" ? (
+					<div className="viewer-state">
+						<strong>Loading structure</strong>
+						<p>{artifact.filename}</p>
+					</div>
+				) : state === "error" ? (
+					<div className="viewer-state error">
+						<strong>Viewer unavailable</strong>
+						<p>{error ?? "Failed to render structure."}</p>
 					</div>
 				) : null}
 			</div>
