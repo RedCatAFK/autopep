@@ -38,10 +38,18 @@ export const workspaceRouter = createTRPCRouter({
 	}),
 
 	getProjectState: protectedProcedure
-		.input(z.object({ projectId: z.string().uuid() }))
+		.input(
+			z.object({
+				projectId: z.string().uuid(),
+				threadId: z.string().uuid().optional(),
+			}),
+		)
 		.query(async ({ ctx, input }) => {
 			await assertProjectOwner(ctx.db, input.projectId, ctx.session.user.id);
-			return getProjectState(ctx.db, input.projectId);
+			if (input.threadId) {
+				await assertThreadInProject(ctx.db, input.threadId, input.projectId);
+			}
+			return getProjectState(ctx.db, input.projectId, input.threadId);
 		}),
 
 	createThread: protectedProcedure
@@ -56,6 +64,13 @@ export const workspaceRouter = createTRPCRouter({
 					title: DEFAULT_THREAD_TITLE,
 				})
 				.returning();
+
+			if (!thread) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "Failed to create thread",
+				});
+			}
 
 			return thread;
 		}),
@@ -183,7 +198,11 @@ export const workspaceRouter = createTRPCRouter({
 		}),
 });
 
-async function getProjectState(db: Db, projectId: string) {
+async function getProjectState(
+	db: Db,
+	projectId: string,
+	selectedThreadId?: string,
+) {
 	const [projectRows, threadRows] = await Promise.all([
 		db.select().from(projects).where(eq(projects.id, projectId)).limit(1),
 		db
@@ -193,7 +212,45 @@ async function getProjectState(db: Db, projectId: string) {
 			.orderBy(desc(threads.createdAt)),
 	]);
 
-	const currentThread = threadRows[0] ?? null;
+	const threadIds = threadRows.map((thread) => thread.id);
+	const firstPromptRows =
+		threadIds.length > 0
+			? await db
+					.select({
+						threadId: messages.threadId,
+						content: messages.content,
+					})
+					.from(messages)
+					.where(
+						and(
+							inArray(messages.threadId, threadIds),
+							eq(messages.role, "user"),
+						),
+					)
+					.orderBy(asc(messages.createdAt))
+			: [];
+	const firstPromptByThread = new Map<string, string>();
+	for (const row of firstPromptRows) {
+		if (!firstPromptByThread.has(row.threadId)) {
+			firstPromptByThread.set(row.threadId, row.content);
+		}
+	}
+	const threadShapes = threadRows.map((thread) => {
+		const firstPrompt = firstPromptByThread.get(thread.id);
+		const displayTitle = firstPrompt ?? thread.title;
+
+		return {
+			...thread,
+			displayTitle,
+			initial: displayTitle.trim().charAt(0).toUpperCase() || "N",
+		};
+	});
+	const currentThread =
+		(selectedThreadId
+			? threadShapes.find((thread) => thread.id === selectedThreadId)
+			: undefined) ??
+		threadShapes[0] ??
+		null;
 	const [messageRows, runRows, eventRows, contextReferenceRows] = currentThread
 		? await Promise.all([
 				db
@@ -236,7 +293,7 @@ async function getProjectState(db: Db, projectId: string) {
 	return {
 		project: projectRows[0],
 		thread: currentThread,
-		threads: threadRows,
+		threads: threadShapes,
 		currentThread,
 		messages: messageRows,
 		runs: runRows,

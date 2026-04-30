@@ -27,5 +27,13 @@ export default async function Home() {
 		);
 	}
 
-	return <WorkspaceShell />;
+	return (
+		<WorkspaceShell
+			user={{
+				email: session.user.email,
+				image: session.user.image,
+				name: session.user.name,
+			}}
+		/>
+	);
 }
