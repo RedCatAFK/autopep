@@ -1,32 +1,24 @@
 from __future__ import annotations
 
 import inspect
-import json
 import os
 import re
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import modal
-from agents import Agent, RunConfig, Runner
-
-try:  # OpenAI Agents SDK sandbox APIs are version-sensitive.
-    from agents.extensions.sandbox.modal import (
-        ModalSandboxClient,
-        ModalSandboxClientOptions,
-    )
-except Exception:  # pragma: no cover - exercised only with older SDK installs.
-    ModalSandboxClient = None  # type: ignore[assignment]
-    ModalSandboxClientOptions = None  # type: ignore[assignment]
-
-try:
-    from agents.sandbox import SandboxAgent, SandboxRunConfig
-except Exception:  # pragma: no cover - exercised only with older SDK installs.
-    SandboxAgent = None  # type: ignore[assignment]
-    SandboxRunConfig = None  # type: ignore[assignment]
+from agents import RunConfig, Runner
+from agents.extensions.sandbox.modal import (
+    ModalSandboxClient,
+    ModalSandboxClientOptions,
+)
+from agents.sandbox import Manifest, SandboxAgent, SandboxRunConfig
+from agents.sandbox.capabilities import Capabilities
+from agents.sandbox.entries import (
+    InContainerMountStrategy,
+    R2Mount,
+    RcloneMountPattern,
+)
 
 from autopep_agent.biology_tools import (
     fold_sequences_with_chai,
@@ -50,6 +42,7 @@ from autopep_agent.run_context import (
     reset_tool_run_context,
     set_tool_run_context,
 )
+from autopep_agent.session import PostgresSession
 from autopep_agent.smoke_agent import (
     SMOKE_MODEL,
     build_ping_agent,
@@ -181,62 +174,6 @@ async def _push_token_done(run_id: str) -> None:
         pass
 
 
-# Per-run accumulator for assistant text deltas. Keyed by run_id so a single
-# Modal worker process can serve multiple runs without cross-contamination.
-# Cleared in `_flush_assistant_message` when the run completes; if a run
-# fails before `response.completed`, the buffer is best-effort and may leak —
-# acceptable because the buffer is cheap and bounded by run lifetime.
-ASSISTANT_TEXT_BUFFERS: dict[str, list[str]] = {}
-
-
-def _accumulate_assistant_text(run_id: str, text: str) -> None:
-    """Append a token delta to the per-run assistant-text buffer."""
-    ASSISTANT_TEXT_BUFFERS.setdefault(run_id, []).append(text)
-
-
-def _flush_assistant_message(run_id: str, thread_id: str) -> None:
-    """POST the accumulated assistant text to the Next.js webhook.
-
-    Best-effort: if the webhook is unconfigured (local dev / smoke contexts)
-    or unreachable, the run still succeeds. The webhook upserts a deterministic
-    `messages` row keyed off (runId, role) so retries are idempotent.
-    """
-    text = "".join(ASSISTANT_TEXT_BUFFERS.pop(run_id, []))
-    if not text:
-        return
-    secret = os.environ.get("AUTOPEP_MODAL_WEBHOOK_SECRET", "")
-    base = os.environ.get("AUTOPEP_NEXT_PUBLIC_URL", "")
-    if not secret or not base:
-        # Local-dev / smoke / test contexts may not configure webhooks; skip
-        # silently rather than failing the run.
-        return
-    body = json.dumps(
-        {
-            "content": text,
-            "metadata": {},
-            "role": "assistant",
-            "runId": run_id,
-            "threadId": thread_id,
-        },
-    ).encode("utf-8")
-    url = f"{base.rstrip('/')}/api/agent/messages"
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {secret}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            response.read()
-    except (urllib.error.URLError, TimeoutError, OSError):
-        # Best-effort: do not fail the run if the webhook is unreachable.
-        pass
-
-
 def _extract_raw_response_payload(event: Any) -> tuple[str | None, Any]:
     """Return ``(data_type, data)`` for a ``raw_response_event`` if applicable.
 
@@ -259,15 +196,6 @@ def _extract_raw_response_payload(event: Any) -> tuple[str | None, Any]:
     if data_type is None and isinstance(data, dict):
         data_type = data.get("type")
     return data_type, data
-
-
-@dataclass(frozen=True)
-class SandboxCompatibilityConfig:
-    """Fallback used when the installed Agents SDK lacks native sandbox config."""
-
-    client: Any | None = None
-    options: Any | None = None
-    unavailable_reason: str | None = None
 
 
 def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
@@ -310,10 +238,50 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
     return "\n\n".join(sections)
 
 
-def build_autopep_agent(enabled_recipes: list[str] | None = None) -> Agent:
-    return Agent(
+def _build_workspace_manifest(*, config: WorkerConfig, workspace_id: str) -> Manifest:
+    """Build the Manifest that mounts this workspace's R2 prefix at /workspace.
+
+    The R2Mount uses InContainerMountStrategy + RcloneMountPattern, the
+    OpenAI Agents SDK's canonical pattern for cloud-bucket mounts inside a
+    sandbox. read_only=False so the agent can persist new artifacts (Proteina
+    candidates, Chai folds, scoring outputs) by writing to /workspace/.
+    """
+    return Manifest(
+        entries={
+            "workspace": R2Mount(
+                bucket=config.r2_bucket,
+                account_id=config.r2_account_id,
+                access_key_id=config.r2_access_key_id,
+                secret_access_key=config.r2_secret_access_key,
+                read_only=False,
+                mount_strategy=InContainerMountStrategy(pattern=RcloneMountPattern()),
+            ),
+        },
+    )
+
+
+def build_autopep_agent(
+    *,
+    config: WorkerConfig,
+    workspace_id: str,
+    run_id: str,
+    enabled_recipes: list[str] | None = None,
+) -> SandboxAgent:
+    """Construct the production SandboxAgent.
+
+    Capabilities.default() bundles Filesystem (apply_patch + view_image),
+    Shell (full command execution), and Compaction. R2Mount makes the
+    workspace's R2 prefix available at /workspace/ inside the sandbox so
+    tools and the agent's Shell capability read/write artifacts as plain
+    files. Skills capability lands in Phase 2.
+    """
+    return SandboxAgent(
         name="Autopep",
         instructions=build_agent_instructions(enabled_recipes),
+        default_manifest=_build_workspace_manifest(
+            config=config, workspace_id=workspace_id
+        ),
+        capabilities=Capabilities.default(),
         tools=[
             *RESEARCH_TOOLS,
             generate_binder_candidates,
@@ -323,41 +291,15 @@ def build_autopep_agent(enabled_recipes: list[str] | None = None) -> Agent:
     )
 
 
-def build_sandbox_config() -> Any:
-    if (
-        ModalSandboxClient is None
-        or ModalSandboxClientOptions is None
-        or SandboxRunConfig is None
-    ):
-        return SandboxCompatibilityConfig(
-            unavailable_reason="Installed Agents SDK does not expose Modal sandbox APIs.",
-        )
-
-    try:
-        options = ModalSandboxClientOptions(
+def _build_sandbox_run_config() -> SandboxRunConfig:
+    """Build the SandboxRunConfig binding ModalSandboxClient to the deployed app."""
+    return SandboxRunConfig(
+        client=ModalSandboxClient(),
+        options=ModalSandboxClientOptions(
             app_name=SANDBOX_APP_NAME,
             timeout=SANDBOX_TIMEOUT_SECONDS,
-        )
-    except TypeError:
-        options = ModalSandboxClientOptions(app_name=SANDBOX_APP_NAME)
-
-    client = ModalSandboxClient()
-
-    try:
-        return SandboxRunConfig(client=client, options=options)
-    except TypeError:
-        return SandboxCompatibilityConfig(
-            client=client,
-            options=options,
-            unavailable_reason="Installed Agents SDK has an incompatible SandboxRunConfig.",
-        )
-
-
-def _run_config_supports_sandbox() -> bool:
-    try:
-        return "sandbox" in inspect.signature(RunConfig).parameters
-    except (TypeError, ValueError):
-        return False
+        ),
+    )
 
 
 def _build_run_config(
@@ -367,24 +309,17 @@ def _build_run_config(
     thread_id: str,
     workspace_id: str,
 ) -> RunConfig:
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "workflow_name": "Autopep agent runtime",
-        "group_id": thread_id,
-        "trace_metadata": {
+    return RunConfig(
+        model=model,
+        workflow_name="Autopep agent runtime",
+        group_id=thread_id,
+        trace_metadata={
             "run_id": run_id,
             "thread_id": thread_id,
             "workspace_id": workspace_id,
         },
-    }
-    sandbox_config = build_sandbox_config()
-    if (
-        _run_config_supports_sandbox()
-        and SandboxRunConfig is not None
-        and isinstance(sandbox_config, SandboxRunConfig)
-    ):
-        kwargs["sandbox"] = sandbox_config
-    return RunConfig(**kwargs)
+        sandbox=_build_sandbox_run_config(),
+    )
 
 
 def _build_runner_input(
@@ -458,7 +393,6 @@ async def _append_normalized_stream_events(
     *,
     run_id: str,
     writer: EventWriter,
-    thread_id: str | None = None,
 ) -> None:
     coalescer = SandboxOutputCoalescer()
     async for event in _stream_events(streamed_run):
@@ -472,21 +406,13 @@ async def _append_normalized_stream_events(
             if delta is None and isinstance(data, dict):
                 delta = data.get("delta", "")
             if delta:
-                delta_text = str(delta)
-                await _push_token_delta(run_id, delta_text)
-                # Accumulate the same text into the per-run buffer so that
-                # `response.completed` can POST the full assistant message
-                # to the Next.js webhook for durable replay across reloads.
-                _accumulate_assistant_text(run_id, delta_text)
+                # Forward token deltas to the per-run Modal Queue so the SSE
+                # endpoint can tail them. Durable assistant-message persistence
+                # is now handled by PostgresSession.add_items (the SDK calls it
+                # with the completed message item via `response.completed`).
+                await _push_token_delta(run_id, str(delta))
         elif data_type == "response.completed":
             await _push_token_done(run_id)
-            if thread_id is not None:
-                try:
-                    _flush_assistant_message(run_id, thread_id)
-                except Exception:
-                    # Persistence is best-effort; never fail the run if the
-                    # webhook helper raises unexpectedly.
-                    pass
 
         # Sandbox events are state-y: per-chunk stdout/stderr deltas must be
         # buffered in-memory and merged into the parent ``sandbox_command_
@@ -733,7 +659,6 @@ async def _execute_smoke_run(
         streamed_run,
         run_id=run_id,
         writer=writer,
-        thread_id=thread_id,
     )
 
 
@@ -815,12 +740,22 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 display={"paths": [str(path) for path in attachment_paths]},
             )
 
-        agent = build_autopep_agent(run_context.enabled_recipes)
+        agent = build_autopep_agent(
+            config=config,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            enabled_recipes=run_context.enabled_recipes,
+        )
         run_config = _build_run_config(
             model=run_context.model or config.default_model,
             run_id=run_id,
             thread_id=thread_id,
             workspace_id=workspace_id,
+        )
+        session = PostgresSession(
+            database_url=database_url,
+            thread_id=thread_id,
+            run_id=run_id,
         )
         # Install the per-run tool context BEFORE invoking Runner.run_streamed
         # so any tool the agent calls can read URLs / API keys / DB url /
@@ -854,13 +789,13 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                         attachment_paths=attachment_paths,
                     ),
                     run_config=run_config,
+                    session=session,
                 ),
             )
             await _append_normalized_stream_events(
                 streamed_run,
                 run_id=run_id,
                 writer=writer,
-                thread_id=thread_id,
             )
         finally:
             reset_tool_run_context(ctx_token)

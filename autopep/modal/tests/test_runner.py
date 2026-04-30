@@ -7,13 +7,33 @@ from unittest.mock import MagicMock
 import pytest
 
 from autopep_agent import runner as runner_mod
+from autopep_agent.config import WorkerConfig
 from autopep_agent.db import AgentRunContext, AttachmentRow
 from autopep_agent.runner import (
+    _build_sandbox_run_config,
     build_agent_instructions,
     build_autopep_agent,
-    build_sandbox_config,
     execute_run,
 )
+
+
+def _test_config() -> WorkerConfig:
+    """Construct a WorkerConfig for tests that don't hit network/DB."""
+    return WorkerConfig(
+        database_url="postgresql://test:test@db.example/autopep",
+        r2_bucket="autopep-test",
+        r2_account_id="account",
+        r2_access_key_id="ak",
+        r2_secret_access_key="sk",
+        modal_proteina_url="https://proteina.example/run",
+        modal_proteina_api_key="p",
+        modal_chai_url="https://chai.example/run",
+        modal_chai_api_key="c",
+        modal_protein_interaction_scoring_url="https://score.example/run",
+        modal_protein_interaction_scoring_api_key="s",
+        openai_api_key="openai-test",
+        default_model="gpt-test",
+    )
 
 
 REQUIRED_RUNTIME_ENV = {
@@ -50,7 +70,12 @@ def test_build_agent_instructions_mentions_workflow_tools_and_recipes() -> None:
 
 
 def test_build_autopep_agent_includes_biology_tools() -> None:
-    agent = build_autopep_agent(enabled_recipes=[])
+    agent = build_autopep_agent(
+        config=_test_config(),
+        workspace_id="00000000-0000-0000-0000-000000000001",
+        run_id="00000000-0000-0000-0000-000000000002",
+        enabled_recipes=[],
+    )
 
     assert agent.name == "Autopep"
     assert {
@@ -61,7 +86,12 @@ def test_build_autopep_agent_includes_biology_tools() -> None:
 
 
 def test_build_autopep_agent_includes_literature_search_tools() -> None:
-    agent = build_autopep_agent(enabled_recipes=[])
+    agent = build_autopep_agent(
+        config=_test_config(),
+        workspace_id="00000000-0000-0000-0000-000000000001",
+        run_id="00000000-0000-0000-0000-000000000002",
+        enabled_recipes=[],
+    )
 
     assert {
         "search_europe_pmc_literature",
@@ -69,10 +99,43 @@ def test_build_autopep_agent_includes_literature_search_tools() -> None:
     }.issubset(_tool_names(agent.tools))
 
 
-def test_build_sandbox_config_returns_usable_object_without_network() -> None:
-    sandbox_config = build_sandbox_config()
+def test_build_autopep_agent_attaches_default_capabilities() -> None:
+    """SandboxAgent must have Capabilities.default() (Shell + Filesystem + Compaction)."""
+    agent = build_autopep_agent(
+        config=_test_config(),
+        workspace_id="00000000-0000-0000-0000-000000000001",
+        run_id="00000000-0000-0000-0000-000000000002",
+        enabled_recipes=[],
+    )
+    capability_types = {type(c).__name__ for c in agent.capabilities}
+    # Capabilities.default() includes Filesystem, Shell, Compaction
+    assert "Shell" in capability_types
+    assert "Filesystem" in capability_types
 
-    assert sandbox_config is not None
+
+def test_build_autopep_agent_mounts_r2_workspace() -> None:
+    """SandboxAgent's manifest must mount R2 at the 'workspace' entry."""
+    agent = build_autopep_agent(
+        config=_test_config(),
+        workspace_id="00000000-0000-0000-0000-000000000001",
+        run_id="00000000-0000-0000-0000-000000000002",
+        enabled_recipes=[],
+    )
+    assert agent.default_manifest is not None
+    entries = agent.default_manifest.entries
+    assert "workspace" in entries
+    workspace_mount = entries["workspace"]
+    assert workspace_mount.bucket == "autopep-test"
+    assert workspace_mount.account_id == "account"
+    # Must be writable so the agent can persist new artifacts.
+    assert workspace_mount.read_only is False
+
+
+def test_build_sandbox_run_config_targets_autopep_agent_runtime() -> None:
+    sandbox_run_config = _build_sandbox_run_config()
+
+    assert sandbox_run_config is not None
+    assert sandbox_run_config.options.app_name == "autopep-agent-runtime"
 
 
 # --- execute_run integration tests with fake DB / EventWriter / Runner ---
@@ -373,94 +436,6 @@ async def test_sandbox_stdout_truncates_at_10kb_with_truncation_flag() -> None:
     assert completed["display"]["stdoutTruncated"] is True
     assert len(completed["display"]["stdout"]) == 10_000
     assert completed["display"]["stdout"].endswith("…")
-
-
-@pytest.mark.asyncio
-async def test_response_completed_flushes_accumulated_assistant_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`response.completed` must flush the accumulated text via the webhook."""
-    writer = _FakeEventWriter("test-db")
-    streamed = _FakeStreamedRun(
-        [
-            {
-                "type": "raw_response_event",
-                "data": {"type": "response.output_text.delta", "delta": "Hel"},
-            },
-            {
-                "type": "raw_response_event",
-                "data": {"type": "response.output_text.delta", "delta": "lo!"},
-            },
-            {
-                "type": "raw_response_event",
-                "data": {"type": "response.completed"},
-            },
-        ],
-    )
-
-    flush_calls: list[tuple[str, str]] = []
-
-    def fake_flush(run_id: str, thread_id: str) -> None:
-        # Capture the buffered text BEFORE the runner pops it.
-        captured = "".join(runner_mod.ASSISTANT_TEXT_BUFFERS.get(run_id, []))
-        flush_calls.append((run_id, thread_id))
-        # Drain the buffer so module state stays clean between tests.
-        runner_mod.ASSISTANT_TEXT_BUFFERS.pop(run_id, None)
-        assert captured == "Hello!"
-
-    monkeypatch.setattr(runner_mod, "_flush_assistant_message", fake_flush)
-
-    await runner_mod._append_normalized_stream_events(
-        streamed,
-        run_id="r-flush",
-        writer=writer,
-        thread_id="t-flush",
-    )
-
-    assert flush_calls == [("r-flush", "t-flush")]
-    # Buffer should have been cleared.
-    assert "r-flush" not in runner_mod.ASSISTANT_TEXT_BUFFERS
-
-
-@pytest.mark.asyncio
-async def test_flush_assistant_message_skips_when_env_unset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No webhook POST when AUTOPEP_NEXT_PUBLIC_URL or secret is missing."""
-    runner_mod.ASSISTANT_TEXT_BUFFERS["r-noenv"] = ["partial"]
-    monkeypatch.delenv("AUTOPEP_NEXT_PUBLIC_URL", raising=False)
-    monkeypatch.delenv("AUTOPEP_MODAL_WEBHOOK_SECRET", raising=False)
-
-    calls: list[Any] = []
-
-    def fake_urlopen(*args: Any, **kwargs: Any) -> Any:
-        calls.append((args, kwargs))
-        raise AssertionError("urlopen must not be called when env is unset")
-
-    monkeypatch.setattr(runner_mod.urllib.request, "urlopen", fake_urlopen)
-    runner_mod._flush_assistant_message("r-noenv", "t-noenv")
-    assert calls == []
-    # The buffer should still be cleared.
-    assert "r-noenv" not in runner_mod.ASSISTANT_TEXT_BUFFERS
-
-
-@pytest.mark.asyncio
-async def test_flush_assistant_message_swallows_webhook_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Webhook failures must not propagate and break the run."""
-    import urllib.error as urllib_error
-
-    runner_mod.ASSISTANT_TEXT_BUFFERS["r-err"] = ["text"]
-    monkeypatch.setenv("AUTOPEP_NEXT_PUBLIC_URL", "http://localhost:3000")
-    monkeypatch.setenv("AUTOPEP_MODAL_WEBHOOK_SECRET", "secret")
-
-    def fake_urlopen(*_args: Any, **_kwargs: Any) -> Any:
-        raise urllib_error.URLError("connection refused")
-
-    monkeypatch.setattr(runner_mod.urllib.request, "urlopen", fake_urlopen)
-    # Should not raise.
-    runner_mod._flush_assistant_message("r-err", "t-err")
 
 
 @pytest.mark.asyncio
