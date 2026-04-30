@@ -9,21 +9,17 @@ from typing import Any
 import modal
 from agents import RunConfig, Runner
 from agents.extensions.sandbox.modal import (
+    ModalCloudBucketMountStrategy,
     ModalSandboxClient,
     ModalSandboxClientOptions,
 )
 from agents.sandbox import Manifest, SandboxAgent, SandboxRunConfig
-from agents.sandbox.capabilities import Capabilities
-from agents.sandbox.entries import (
-    InContainerMountStrategy,
-    R2Mount,
-    RcloneMountPattern,
-)
+from agents.sandbox.capabilities import Capabilities, Skills
+from agents.sandbox.entries import LocalDir, R2Mount
 
 from autopep_agent.biology_tools import (
-    fold_sequences_with_chai,
-    generate_binder_candidates,
-    score_candidate_interactions,
+    chai_fold_complex,
+    proteina_design,
 )
 from autopep_agent.config import WorkerConfig
 from autopep_agent.db import (
@@ -35,13 +31,15 @@ from autopep_agent.db import (
     mark_run_failed,
 )
 from autopep_agent.events import EventWriter
+from autopep_agent.literature_tools import literature_search
+from autopep_agent.pdb_tools import pdb_fetch, pdb_search
 from autopep_agent.r2_client import download_object as r2_download_object
-from autopep_agent.research_tools import RESEARCH_TOOLS
 from autopep_agent.run_context import (
     ToolRunContext,
     reset_tool_run_context,
     set_tool_run_context,
 )
+from autopep_agent.scoring_tools import score_candidates
 from autopep_agent.session import PostgresSession
 from autopep_agent.smoke_agent import (
     SMOKE_MODEL,
@@ -205,30 +203,54 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
     sections = [
         "You are Autopep, an agent for protein binder design and analysis.",
         (
-            "Use life-science-research discipline: cite uncertainty, prefer primary "
-            "biomedical evidence, and distinguish literature evidence from model output."
+            "Use life-science-research discipline: cite uncertainty, prefer "
+            "primary biomedical evidence, and distinguish literature evidence "
+            "from model output. Read /skills/life-science-research/ before "
+            "answering literature, structure-retrieval, or experimental-evidence "
+            "questions."
         ),
         (
-            "For live literature requests, use search_pubmed_literature and "
-            "search_europe_pmc_literature before answering. Do not say you lack live "
-            "database access when these tools are available; if a source call fails, "
-            "name the failed source and answer only from gathered evidence."
+            "Tool surface:\n"
+            "  - literature_search(query, max_results=8) — PubMed + Europe PMC "
+            "in parallel; covers preprints (bioRxiv/medRxiv) via Europe PMC.\n"
+            "  - pdb_search(query, max_chain_length=500, top_k=10, organism?) — "
+            "RCSB Search API; metadata only, no download.\n"
+            "  - pdb_fetch(pdb_id, chain_id?) — downloads PDB into /workspace/, "
+            "registers an artifact, returns the sandbox path + extracted sequence.\n"
+            "  - proteina_design(target_pdb_path, hotspot_residues?, binder_length_min=60, "
+            "binder_length_max=90, num_candidates=5, warm_start_structure_path?) — "
+            "5 candidates per call; optional warm-start from a prior fold.\n"
+            "  - chai_fold_complex(candidate_ids, target_sequence?, target_name='target') — "
+            "parallel target+binder folds via asyncio.gather.\n"
+            "  - score_candidates(target_name, target_sequence, candidate_ids) — "
+            "interaction (D-SCRIPT + Prodigy) + quality (solubility / aggregation_apr / "
+            "hla_presentation_risk) scorers in parallel."
         ),
         (
-            "MVP one-loop workflow: perform literature research, search PDB structures, "
-            "prepare the target, call generate_binder_candidates, call "
-            "fold_sequences_with_chai with the target sequence so Chai folds "
-            "target-binder complexes, call score_candidate_interactions, then "
-            "provide a ranked summary."
+            "Sandbox: you have Shell + Filesystem + Compaction capabilities. "
+            "The workspace R2 bucket is mounted at /workspace/. Use "
+            "`python -c \"from Bio.PDB ...\"` for ad-hoc structural analysis "
+            "(compute hotspots from SITE records, extract residue ranges, splice "
+            "motifs). BioPython, numpy, pandas, scipy, httpx, pyyaml are pre-installed."
         ),
         (
-            "Use computational screening language only. Do not claim wet-lab validation, "
-            "clinical efficacy, safety, or therapeutic readiness."
+            "Typical binder-design loop: literature_search → pdb_search → "
+            "pdb_fetch → optionally inspect with shell + BioPython for hotspots "
+            "→ proteina_design → chai_fold_complex → score_candidates → "
+            "present a ranked summary. You may iterate within the same run "
+            "(e.g., warm-start Proteina from your best fold)."
         ),
         (
-            "For binder tasks, explain target assumptions, requested hotspot residues, "
-            "candidate sequence or structure identifiers, fold confidence, interaction "
-            "scores, and practical next computational checks."
+            "Final message format for binder runs: rank candidates by combined "
+            "evidence (interaction probability, ΔG, solubility, etc.). Name the "
+            "top candidate. Justify the ranking with concrete numbers from "
+            "score_candidates. Cite the literature you retrieved with DOIs and "
+            "the PDB target ID. Distinguish what was computed (Proteina/Chai/scorers) "
+            "from what was retrieved (literature/structure)."
+        ),
+        (
+            "Use computational screening language only. Do not claim wet-lab "
+            "validation, clinical efficacy, safety, or therapeutic readiness."
         ),
     ]
 
@@ -239,12 +261,14 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
 
 
 def _build_workspace_manifest(*, config: WorkerConfig, workspace_id: str) -> Manifest:
-    """Build the Manifest that mounts this workspace's R2 prefix at /workspace.
+    """Build the Manifest that mounts this workspace's R2 bucket at /workspace.
 
-    The R2Mount uses InContainerMountStrategy + RcloneMountPattern, the
-    OpenAI Agents SDK's canonical pattern for cloud-bucket mounts inside a
-    sandbox. read_only=False so the agent can persist new artifacts (Proteina
-    candidates, Chai folds, scoring outputs) by writing to /workspace/.
+    Uses Modal's native ``ModalCloudBucketMountStrategy`` rather than
+    ``InContainerMountStrategy + RcloneMountPattern`` — the native strategy
+    bypasses the rclone-in-container path entirely and uses Modal's
+    ``CloudBucketMount.from_aws_credentials`` under the hood. read_only=False
+    so the agent can persist new artifacts (Proteina candidates, Chai folds,
+    scoring outputs) by writing to /workspace/.
     """
     return Manifest(
         entries={
@@ -254,10 +278,17 @@ def _build_workspace_manifest(*, config: WorkerConfig, workspace_id: str) -> Man
                 access_key_id=config.r2_access_key_id,
                 secret_access_key=config.r2_secret_access_key,
                 read_only=False,
-                mount_strategy=InContainerMountStrategy(pattern=RcloneMountPattern()),
+                mount_strategy=ModalCloudBucketMountStrategy(),
             ),
         },
     )
+
+
+# Skills are checked into the repo at autopep/modal/autopep_agent/skills and
+# baked into the worker image at /app/autopep_agent/skills (see autopep_worker.py
+# worker_image build). The Skills capability uses LocalDir(src=...) to
+# materialize them into the sandbox at sandbox-create time.
+SKILLS_HOST_DIR = "/app/autopep_agent/skills/life-science-research"
 
 
 def build_autopep_agent(
@@ -270,23 +301,33 @@ def build_autopep_agent(
     """Construct the production SandboxAgent.
 
     Capabilities.default() bundles Filesystem (apply_patch + view_image),
-    Shell (full command execution), and Compaction. R2Mount makes the
-    workspace's R2 prefix available at /workspace/ inside the sandbox so
+    Shell (full command execution), and Compaction. The Skills capability
+    materializes the curated life-science-research skill markdown into the
+    sandbox so the agent can read it during the run. R2Mount makes the
+    workspace's R2 bucket available at /workspace/ inside the sandbox so
     tools and the agent's Shell capability read/write artifacts as plain
-    files. Skills capability lands in Phase 2.
+    files.
     """
+    capabilities: list[Any] = list(Capabilities.default())
+    if Path(SKILLS_HOST_DIR).is_dir():
+        # Only attach Skills when the directory exists on disk. In tests /
+        # local dev where the worker image isn't mounted, skip cleanly.
+        capabilities.append(Skills(from_=LocalDir(src=SKILLS_HOST_DIR)))
+
     return SandboxAgent(
         name="Autopep",
         instructions=build_agent_instructions(enabled_recipes),
         default_manifest=_build_workspace_manifest(
             config=config, workspace_id=workspace_id
         ),
-        capabilities=Capabilities.default(),
+        capabilities=capabilities,
         tools=[
-            *RESEARCH_TOOLS,
-            generate_binder_candidates,
-            fold_sequences_with_chai,
-            score_candidate_interactions,
+            literature_search,
+            pdb_search,
+            pdb_fetch,
+            proteina_design,
+            chai_fold_complex,
+            score_candidates,
         ],
     )
 
@@ -774,6 +815,8 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 chai_api_key=config.modal_chai_api_key,
                 scoring_base_url=config.modal_protein_interaction_scoring_url,
                 scoring_api_key=config.modal_protein_interaction_scoring_api_key,
+                quality_scorers_base_url=config.modal_quality_scorers_url,
+                quality_scorers_api_key=config.modal_quality_scorers_api_key,
             ),
         )
         try:

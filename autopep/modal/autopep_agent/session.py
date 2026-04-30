@@ -101,6 +101,11 @@ class PostgresSession(Session):
         self._database_url = database_url
         self._thread_id = thread_id
         self._run_id = run_id
+        # Session protocol requires session_id and session_settings as
+        # *attributes* (not methods). The SDK reads them via attribute access
+        # (e.g. session.session_settings.limit) so they must be present.
+        self.session_id: str = thread_id
+        self.session_settings: SessionSettings = SessionSettings()
 
     async def get_items(self, limit: int | None = None) -> list[dict[str, Any]]:
         rows = await select_thread_items_for_session(
@@ -184,5 +189,3 @@ class PostgresSession(Session):
                     (self._thread_id,),
                 )
 
-    def session_settings(self) -> SessionSettings:
-        return SessionSettings()

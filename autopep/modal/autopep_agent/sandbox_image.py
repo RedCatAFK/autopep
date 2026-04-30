@@ -8,9 +8,13 @@ This module:
   1. Declares the image so it can be deployed via `modal deploy`.
   2. Exposes SANDBOX_APP_NAME for use in runner.py.
 
-The image bundles BioPython + numpy + pandas + scipy + httpx + pyyaml so
-the agent's Shell capability can run real protein-engineering code without
-per-run pip installs.
+Image contents:
+  * BioPython + numpy + pandas + scipy + httpx + pyyaml — so the agent's
+    Shell capability can run real protein-engineering code without
+    per-run pip installs.
+
+The R2 workspace mount uses Modal's native ``ModalCloudBucketMountStrategy``
+(not rclone), so we don't need rclone or fuse3 in the image.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ app = modal.App(SANDBOX_APP_NAME)
 
 sandbox_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "curl")
+    .apt_install("git", "curl", "ca-certificates")
     .pip_install(
         "biopython>=1.84",
         "numpy>=1.26",

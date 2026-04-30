@@ -31,6 +31,8 @@ def _test_config() -> WorkerConfig:
         modal_chai_api_key="c",
         modal_protein_interaction_scoring_url="https://score.example/run",
         modal_protein_interaction_scoring_api_key="s",
+        modal_quality_scorers_url="https://quality.example/run",
+        modal_quality_scorers_api_key="q",
         openai_api_key="openai-test",
         default_model="gpt-test",
     )
@@ -48,6 +50,8 @@ REQUIRED_RUNTIME_ENV = {
     "MODAL_CHAI_API_KEY": "c",
     "MODAL_PROTEIN_INTERACTION_SCORING_URL": "https://score.example/run",
     "MODAL_PROTEIN_INTERACTION_SCORING_API_KEY": "s",
+    "MODAL_QUALITY_SCORERS_URL": "https://quality.example/run",
+    "MODAL_QUALITY_SCORERS_API_KEY": "q",
     "OPENAI_API_KEY": "openai-test",
 }
 
@@ -62,14 +66,16 @@ def test_build_agent_instructions_mentions_workflow_tools_and_recipes() -> None:
     instructions = build_agent_instructions(enabled_recipes=[recipe])
 
     assert "life-science-research" in instructions
-    assert "search_pubmed_literature" in instructions
-    assert "generate_binder_candidates" in instructions
-    assert "fold_sequences_with_chai" in instructions
-    assert "score_candidate_interactions" in instructions
+    assert "literature_search" in instructions
+    assert "pdb_search" in instructions
+    assert "pdb_fetch" in instructions
+    assert "proteina_design" in instructions
+    assert "chai_fold_complex" in instructions
+    assert "score_candidates" in instructions
     assert recipe in instructions
 
 
-def test_build_autopep_agent_includes_biology_tools() -> None:
+def test_build_autopep_agent_has_full_six_tool_surface() -> None:
     agent = build_autopep_agent(
         config=_test_config(),
         workspace_id="00000000-0000-0000-0000-000000000001",
@@ -79,24 +85,13 @@ def test_build_autopep_agent_includes_biology_tools() -> None:
 
     assert agent.name == "Autopep"
     assert {
-        "generate_binder_candidates",
-        "fold_sequences_with_chai",
-        "score_candidate_interactions",
-    }.issubset(_tool_names(agent.tools))
-
-
-def test_build_autopep_agent_includes_literature_search_tools() -> None:
-    agent = build_autopep_agent(
-        config=_test_config(),
-        workspace_id="00000000-0000-0000-0000-000000000001",
-        run_id="00000000-0000-0000-0000-000000000002",
-        enabled_recipes=[],
-    )
-
-    assert {
-        "search_europe_pmc_literature",
-        "search_pubmed_literature",
-    }.issubset(_tool_names(agent.tools))
+        "literature_search",
+        "pdb_search",
+        "pdb_fetch",
+        "proteina_design",
+        "chai_fold_complex",
+        "score_candidates",
+    } == _tool_names(agent.tools)
 
 
 def test_build_autopep_agent_attaches_default_capabilities() -> None:

@@ -22,6 +22,8 @@ REQUIRED_RUNTIME_ENV = {
     "MODAL_CHAI_API_KEY": "c",
     "MODAL_PROTEIN_INTERACTION_SCORING_URL": "https://score.example/run",
     "MODAL_PROTEIN_INTERACTION_SCORING_API_KEY": "s",
+    "MODAL_QUALITY_SCORERS_URL": "https://quality.example/run",
+    "MODAL_QUALITY_SCORERS_API_KEY": "q",
     "OPENAI_API_KEY": "openai-test",
 }
 
