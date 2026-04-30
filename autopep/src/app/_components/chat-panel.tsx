@@ -15,9 +15,9 @@ import {
 	useState,
 } from "react";
 
-import type { AttachmentChip } from "./use-attachment-upload";
 import { ChatStream } from "./chat-stream";
 import type { StreamItem } from "./chat-stream-item";
+import type { AttachmentChip } from "./use-attachment-upload";
 
 export type ChatContextReference = {
 	id: string;
@@ -72,7 +72,6 @@ const chipClassNameFor = (status: AttachmentChip["status"]) => {
 			return "bg-[#fcebe6] text-[#7a2a16] border-[#e7b5a3]";
 		case "uploading":
 		case "pending":
-		default:
 			return "bg-[#f0efe8] text-[#52605a] border-[#ddd9cf]";
 	}
 };
@@ -146,7 +145,7 @@ export function ChatPanel({
 	};
 
 	return (
-		<aside className="flex min-h-0 flex-col border-[#e5e2d9] border-r bg-[#fbfaf6]">
+		<aside className="flex h-full min-h-0 flex-col border-[#e5e2d9] border-r bg-[#fbfaf6]">
 			<div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
 				{hasItems ? (
 					<>
@@ -279,7 +278,7 @@ export function ChatPanel({
 					className="mb-2 block font-medium text-[#49524d] text-xs"
 					htmlFor="autopep-chat-input"
 				>
-					Message Autopep
+					Message Julia
 				</label>
 				<textarea
 					autoComplete="off"

@@ -177,5 +177,5 @@ export const answerWorkspaceQuestion = ({
 		? `CIF artifact ${readyArtifact.fileName} is ready.`
 		: "The CIF artifact is not ready yet.";
 
-	return `Autopep is working on ${targetText}. Run status is ${status}. ${candidateText} ${artifactText} ${summarizeLiterature(topCandidate)}`;
+	return `Julia is working on ${targetText}. Run status is ${status}. ${candidateText} ${artifactText} ${summarizeLiterature(topCandidate)}`;
 };

@@ -295,8 +295,7 @@ function AccountMenu({
 	signOutError?: string | null;
 }) {
 	const label = account.email ?? account.name ?? "Account";
-	const displayName =
-		account.name?.trim() || account.email || "Autopep account";
+	const displayName = account.name?.trim() || account.email || "Julia account";
 	const displayEmail =
 		account.email && account.email !== displayName ? account.email : null;
 

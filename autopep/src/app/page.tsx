@@ -25,7 +25,7 @@ export default async function Home() {
 								<div className="absolute right-[5px] bottom-[5px] size-2 rounded-full bg-[#dfe94c]" />
 							</div>
 							<p className="font-semibold text-[21px] tracking-[-0.02em]">
-								Autopep
+								Julia
 							</p>
 						</div>
 						<div className="relative mt-14 max-w-[390px]">
@@ -48,7 +48,7 @@ export default async function Home() {
 					<section className="flex bg-[#17211e] p-6 text-white md:p-8">
 						<div className="mx-auto flex w-full max-w-sm flex-col justify-center">
 							<p className="mb-5 font-medium text-[#dbe3d9] text-sm tracking-[-0.01em]">
-								Open your Autopep workspace.
+								Open your Julia workspace.
 							</p>
 							<AuthCard />
 						</div>

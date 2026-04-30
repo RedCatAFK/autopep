@@ -73,7 +73,7 @@ describe("ChatPanel", () => {
 			/>,
 		);
 
-		fireEvent.change(screen.getByLabelText("Message Autopep"), {
+		fireEvent.change(screen.getByLabelText("Message Julia"), {
 			target: { value: "Explain this region" },
 		});
 		fireEvent.click(screen.getByLabelText("Send message"));
@@ -100,7 +100,7 @@ describe("ChatPanel", () => {
 			/>,
 		);
 
-		expect(screen.getByLabelText("Message Autopep")).toBeDisabled();
+		expect(screen.getByLabelText("Message Julia")).toBeDisabled();
 		expect(screen.getByLabelText("Send message")).toBeDisabled();
 		fireEvent.click(
 			screen.getByText("Generate a protein that binds to 3CL-protease"),
