@@ -64,17 +64,11 @@ export function ChatPanel({
 		if (!assistantDraft) return localMessages;
 		const lastAssistantIndex = findLastAssistantMessageIndex(localMessages);
 		if (lastAssistantIndex >= 0) {
-			const lastAssistant = localMessages[lastAssistantIndex];
-			if (lastAssistant?.content.trim() === assistantDraft.trim()) {
-				return localMessages;
-			}
-			if (!lastAssistant?.content.trim()) {
-				return localMessages.map((message, index) =>
-					index === lastAssistantIndex
-						? { ...message, content: assistantDraft }
-						: message,
-				);
-			}
+			return localMessages.map((message, index) =>
+				index === lastAssistantIndex
+					? { ...message, content: assistantDraft }
+					: message,
+			);
 		}
 		return [
 			...localMessages,
@@ -143,17 +137,9 @@ export function ChatPanel({
 						</article>
 					))
 				)}
-				{runEvents.events
-					.filter(
-						(event) =>
-							event.type === "tool_started" ||
-							event.type === "tool_completed" ||
-							event.type === "tool_call_started" ||
-							event.type === "tool_call_completed",
-					)
-					.map((event) => (
-						<ToolStep event={event} key={event.id} />
-					))}
+				{mergeToolEvents(runEvents.events).map((event) => (
+					<ToolStep event={event} key={event.id ?? `seq-${event.sequence}`} />
+				))}
 				{sendMessage.error ? (
 					<div className="run-error" role="alert">
 						{sendMessage.error.message}
@@ -255,6 +241,62 @@ function toRunEventSource(value: unknown): RunEventSource | null {
 		wsUrl: record.wsUrl,
 		wsToken: record.wsToken,
 	};
+}
+
+/**
+ * Pair tool_call_started with its tool_call_completed (by toolCallId) so the UI
+ * shows one row per tool call that progresses from running → completed in place.
+ */
+function mergeToolEvents(events: RunEvent[]): RunEvent[] {
+	type Bucket = {
+		started: RunEvent;
+		completed?: RunEvent;
+	};
+	const buckets = new Map<string, Bucket>();
+	const order: string[] = [];
+
+	for (const event of events) {
+		const isStarted =
+			event.type === "tool_call_started" || event.type === "tool_started";
+		const isCompleted =
+			event.type === "tool_call_completed" || event.type === "tool_completed";
+		if (!isStarted && !isCompleted) continue;
+		const metadata = event.metadata ?? {};
+		const callId =
+			(typeof metadata.toolCallId === "string" && metadata.toolCallId) ||
+			(typeof metadata.callId === "string" && metadata.callId) ||
+			`seq-${event.sequence}`;
+		if (isStarted) {
+			if (!buckets.has(callId)) {
+				buckets.set(callId, { started: event });
+				order.push(callId);
+			}
+		} else {
+			const bucket = buckets.get(callId);
+			if (bucket) {
+				bucket.completed = event;
+			} else {
+				buckets.set(callId, { started: event });
+				order.push(callId);
+			}
+		}
+	}
+
+	return order.map((id) => {
+		const bucket = buckets.get(id);
+		if (!bucket) return { type: "tool_call_started", sequence: 0 } as RunEvent;
+		if (!bucket.completed) return bucket.started;
+		const startedMeta = bucket.started.metadata ?? {};
+		const completedMeta = bucket.completed.metadata ?? {};
+		return {
+			...bucket.completed,
+			metadata: {
+				...startedMeta,
+				...completedMeta,
+				input: startedMeta.input ?? completedMeta.input,
+			},
+		};
+	});
 }
 
 function findLastAssistantMessageIndex(messages: WorkspaceMessage[]): number {

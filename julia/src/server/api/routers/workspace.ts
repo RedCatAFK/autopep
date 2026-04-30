@@ -9,7 +9,6 @@ import {
 	contextReferences,
 	messages,
 	projects,
-	runEvents,
 	runs,
 	threads,
 } from "@/server/db/schema";
@@ -251,7 +250,7 @@ async function getProjectState(
 			: undefined) ??
 		threadShapes[0] ??
 		null;
-	const [messageRows, runRows, eventRows, contextReferenceRows] = currentThread
+	const [messageRows, runRows, contextReferenceRows] = currentThread
 		? await Promise.all([
 				db
 					.select()
@@ -259,23 +258,17 @@ async function getProjectState(
 					.where(eq(messages.threadId, currentThread.id))
 					.orderBy(asc(messages.createdAt)),
 				db
-					.select()
+					.select({ id: runs.id, status: runs.status })
 					.from(runs)
 					.where(eq(runs.threadId, currentThread.id))
 					.orderBy(desc(runs.createdAt)),
-				db
-					.select()
-					.from(runEvents)
-					.innerJoin(runs, eq(runs.id, runEvents.runId))
-					.where(eq(runs.threadId, currentThread.id))
-					.orderBy(asc(runEvents.sequence)),
 				db
 					.select()
 					.from(contextReferences)
 					.where(eq(contextReferences.threadId, currentThread.id))
 					.orderBy(desc(contextReferences.createdAt)),
 			])
-		: [[], [], [], []];
+		: [[], [], []];
 
 	const runIds = runRows.map((run) => run.id);
 	const artifactRows =
@@ -297,7 +290,6 @@ async function getProjectState(
 		currentThread,
 		messages: messageRows,
 		runs: runRows,
-		events: eventRows.map(({ run_events: event }) => event),
 		artifacts: artifactRows.map(toArtifactShape),
 		contextReferences: contextReferenceRows,
 		activeRunId: activeRun?.id ?? null,

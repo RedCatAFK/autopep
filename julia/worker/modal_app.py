@@ -20,6 +20,7 @@ env_secret = modal.Secret.from_dotenv(__file__)
     secrets=[env_secret],
     timeout=60 * 60,
     scaledown_window=60 * 5,
+    min_containers=1,
 )
 @modal.concurrent(max_inputs=64)
 @modal.asgi_app()

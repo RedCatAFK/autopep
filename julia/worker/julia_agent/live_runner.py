@@ -218,16 +218,17 @@ async def _handle_run_item(state: _LiveRunState, item: Any) -> None:
 def _emit_tool_call_started(state: _LiveRunState, item: Any) -> None:
     raw_item = getattr(item, "raw_item", None)
     name = (
-        getattr(raw_item, "name", None)
-        or getattr(item, "name", None)
+        getattr(item, "tool_name", None)
+        or _maybe_get(raw_item, "name")
         or "tool"
     )
     call_id = (
-        getattr(raw_item, "call_id", None)
-        or getattr(raw_item, "id", None)
+        getattr(item, "call_id", None)
+        or _maybe_get(raw_item, "call_id")
+        or _maybe_get(raw_item, "id")
         or uuid.uuid4().hex
     )
-    arguments = _parse_tool_arguments(getattr(raw_item, "arguments", None))
+    arguments = _parse_tool_arguments(_maybe_get(raw_item, "arguments"))
     started_sequence = _persist_event(
         state,
         "tool_call_started",
@@ -249,12 +250,13 @@ def _emit_tool_call_started(state: _LiveRunState, item: Any) -> None:
 async def _emit_tool_call_completed(state: _LiveRunState, item: Any) -> None:
     raw_item = getattr(item, "raw_item", None)
     call_id = (
-        getattr(raw_item, "call_id", None)
-        or getattr(raw_item, "id", None)
+        getattr(item, "call_id", None)
+        or _maybe_get(raw_item, "call_id")
+        or _maybe_get(raw_item, "id")
     )
     pending = state.pending_tool_calls.pop(call_id, None) if call_id else None
     name = pending.name if pending else (
-        getattr(raw_item, "name", None) or getattr(item, "name", None) or "tool"
+        getattr(item, "tool_name", None) or _maybe_get(raw_item, "name") or "tool"
     )
     raw_output = getattr(item, "output", None)
     if raw_output is None and isinstance(item, dict):
@@ -454,6 +456,15 @@ def _summarize_for_event(value: Any) -> Any:
             "preview": encoded[:MAX_TOOL_OUTPUT_PREVIEW_CHARS],
         }
     return _jsonable(value)
+
+
+def _maybe_get(value: Any, key: str) -> Any:
+    """Read `key` from a dict-or-object value; returns None when absent."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return getattr(value, key, None)
 
 
 def _jsonable(value: Any) -> Any:
