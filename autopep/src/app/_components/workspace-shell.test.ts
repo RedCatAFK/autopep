@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
-import { clampPanelWidth, resizePanelWidth } from "./workspace-shell";
+import { render, screen } from "@testing-library/react";
+import { createElement } from "react";
+import { describe, expect, it, vi } from "vitest";
+
+import {
+	clampPanelWidth,
+	resizePanelWidth,
+	WorkspaceShell,
+} from "./workspace-shell";
 
 describe("workspace shell panel resizing", () => {
 	it("clamps chat and files panel widths", () => {
@@ -30,5 +38,44 @@ describe("workspace shell panel resizing", () => {
 				startX: 600,
 			}),
 		).toBe(360);
+	});
+
+	it("keeps semantic resize handles full-height despite hr preflight", () => {
+		render(
+			createElement(WorkspaceShell, {
+				activeArtifactId: null,
+				activeTabId: null,
+				activeWorkspaceId: null,
+				candidateScores: [],
+				candidates: [],
+				closeTab: vi.fn(),
+				contextReferences: [],
+				fileArtifacts: [],
+				isLoadingWorkspace: false,
+				isRecipesOpen: false,
+				isSendingMessage: false,
+				onArchiveRecipe: vi.fn(),
+				onArchiveWorkspace: vi.fn(),
+				onCloseRecipes: vi.fn(),
+				onCreateRecipe: vi.fn(),
+				onCreateWorkspace: vi.fn(),
+				onOpenRecipes: vi.fn(),
+				onSelectWorkspace: vi.fn(),
+				onSendMessage: vi.fn(),
+				onUpdateRecipe: vi.fn(),
+				openArtifactInTab: vi.fn(),
+				openCandidateInTab: vi.fn(),
+				openFileInTab: vi.fn(),
+				recipes: [],
+				runs: [],
+				setActiveTabId: vi.fn(),
+				streamItems: [],
+				tabs: [],
+				workspaces: [],
+			}),
+		);
+
+		expect(screen.getByLabelText("Resize chat panel")).toHaveClass("h-auto");
+		expect(screen.getByLabelText("Resize files panel")).toHaveClass("h-auto");
 	});
 });

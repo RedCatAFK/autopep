@@ -501,7 +501,7 @@ function PanelResizeHandle({
 			aria-valuemin={config.min}
 			aria-valuenow={width}
 			aria-valuetext={`${width}px`}
-			className={`absolute inset-y-0 z-20 m-0 hidden w-3 cursor-col-resize touch-none border-0 outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:content-[''] lg:block ${placementClass} ${activeClass}`}
+			className={`absolute inset-y-0 z-20 m-0 hidden h-auto w-3 cursor-col-resize touch-none border-0 outline-none before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:content-[''] lg:block ${placementClass} ${activeClass}`}
 			onKeyDown={(event) => onKeyDown(panel, event)}
 			onPointerCancel={onPointerCancel}
 			onPointerDown={(event) => onPointerDown(panel, event)}
