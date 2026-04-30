@@ -6,8 +6,35 @@ from autopep_agent import structure_utils
 from autopep_agent.structure_utils import (
     build_fasta,
     encode_structure_base64,
+    extract_cif_chain_order,
     extract_pdb_sequences,
+    extract_structure_chain_order,
 )
+
+
+SAMPLE_CIF = """\
+data_seed
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.auth_atom_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+ATOM 1 C CA SER A 1 ? 0.000 0.000 0.000 CA SER A 1
+ATOM 2 C CA GLY B 1 ? 1.000 0.000 0.000 CA GLY B 1
+#
+"""
 
 
 def _atom_line(
@@ -48,6 +75,21 @@ def test_extract_pdb_sequences_keeps_insertion_code_residues() -> None:
     )
 
     assert extract_pdb_sequences(pdb_text) == {"A": "AG"}
+
+
+def test_extract_cif_chain_order_reads_atom_site_auth_chain_ids() -> None:
+    assert extract_cif_chain_order(SAMPLE_CIF) == ["A", "B"]
+
+
+def test_extract_structure_chain_order_uses_cif_parser_for_cif_filename() -> None:
+    structure_format, chains = extract_structure_chain_order(
+        SAMPLE_CIF,
+        filename="7VFA_nanobody_A.cif",
+    )
+
+    assert structure_format == "cif"
+    assert chains == ["A", "B"]
+    assert "S" not in chains
 
 
 def test_build_fasta_formats_candidate_ids_and_sequences() -> None:

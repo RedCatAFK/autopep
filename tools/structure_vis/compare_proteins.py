@@ -24,7 +24,7 @@ BATCH_REFERENCE = None  # Used only when BATCH_STRATEGY = "to_reference"
 
 # Single-pair compare mode.
 REFERENCE = ROOT / "examples" / "102L.cif"
-MOBILE = ROOT / "examples" / "hot.pdb"
+MOBILE = ROOT / "examples" / "rank_1_pred.model_idx_0.cif"
 EXTRA_PROTEINS: list[Path] = []
 
 # Multi-view mode.

@@ -33,6 +33,7 @@ from autopep_agent.structure_utils import (
     build_fasta,
     encode_structure_base64,
     extract_pdb_sequences,
+    extract_structure_chain_order,
 )
 
 
@@ -90,6 +91,7 @@ async def _proteina_design(
     binder_length_max: int = 90,
     num_candidates: int = PROTEINA_BATCH_SIZE,
     warm_start_structure_path: str | None = None,
+    warm_start_chain: str | None = None,
 ) -> dict[str, Any]:
     """Generate ``num_candidates`` binders for the target at ``target_pdb_path``.
 
@@ -100,7 +102,9 @@ async def _proteina_design(
 
     ``warm_start_structure_path``, when provided, is also a ``/workspace/``-
     relative path; the tool reads it and threads it through Proteina's
-    warm-start so the diffusion is seeded from an existing pose.
+    warm-start so the diffusion is seeded from an existing pose. For clean
+    binder-only CIF/mmCIF seeds, omit ``warm_start_chain``. For multi-chain
+    seeds, pass the actual binder chain parsed from the seed file.
 
     ``hotspot_residues`` defaults to ``[]`` (unconstrained design). The
     target_input selector defaults to chain ``A`` of the target PDB,
@@ -145,6 +149,9 @@ async def _proteina_design(
     # Optional warm-start: read the seed structure from R2 too.
     warm_start_text: str | None = None
     warm_start_filename: str | None = None
+    warm_start_requested_chain = (warm_start_chain or "").strip() or None
+    warm_start_available_chains: list[str] = []
+    warm_start_sent_chain: str | None = None
     if warm_start_structure_path:
         warm_start_storage_key = _workspace_path_to_storage_key(
             ctx.workspace_id, warm_start_structure_path,
@@ -160,6 +167,29 @@ async def _proteina_design(
         warm_start_filename = (
             warm_start_structure_path.rsplit("/", 1)[-1] or "warm_start.pdb"
         )
+        warm_start_format, warm_start_available_chains = extract_structure_chain_order(
+            warm_start_text,
+            filename=warm_start_filename,
+        )
+        if warm_start_requested_chain is not None:
+            if (
+                warm_start_available_chains
+                and warm_start_requested_chain not in warm_start_available_chains
+            ):
+                raise ValueError(
+                    f"warm_start_chain {warm_start_requested_chain!r} was not found "
+                    f"in {warm_start_filename}. Available chains: "
+                    f"{warm_start_available_chains}."
+                )
+            warm_start_sent_chain = warm_start_requested_chain
+        elif len(warm_start_available_chains) > 1:
+            if warm_start_format == "cif":
+                raise ValueError(
+                    f"Warm-start CIF {warm_start_filename} has multiple chains "
+                    f"{warm_start_available_chains}. Pass warm_start_chain with "
+                    "the seed binder chain."
+                )
+            warm_start_sent_chain = warm_start_available_chains[-1]
 
     request_payload = {
         "target_filename": target_filename,
@@ -170,6 +200,9 @@ async def _proteina_design(
         "overrides": PROTEINA_FAST_GENERATION_OVERRIDES,
         "num_candidates": num_candidates,
         "warm_start_filename": warm_start_filename,
+        "warm_start_requested_chain": warm_start_requested_chain,
+        "warm_start_available_chains": warm_start_available_chains,
+        "warm_start_sent_chain": warm_start_sent_chain,
     }
     inference_id = await create_model_inference(
         ctx.database_url,
@@ -190,6 +223,7 @@ async def _proteina_design(
             binder_length=[binder_length_min, binder_length_max],
             warm_start_structure=warm_start_text,
             warm_start_filename=warm_start_filename,
+            warm_start_chain=warm_start_sent_chain,
         )
     except BaseException as exc:
         await complete_model_inference(

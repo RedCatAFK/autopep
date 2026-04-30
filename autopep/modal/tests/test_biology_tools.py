@@ -96,6 +96,53 @@ PDB_TEXT = "\n".join(
     ],
 )
 
+SINGLE_CHAIN_CIF = """\
+data_seed
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.auth_atom_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+ATOM 1 C CA SER A 1 ? 0.000 0.000 0.000 CA SER A 1
+#
+"""
+
+MULTI_CHAIN_CIF = """\
+data_seed
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.auth_atom_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+ATOM 1 C CA SER A 1 ? 0.000 0.000 0.000 CA SER A 1
+ATOM 2 C CA GLY B 1 ? 1.000 0.000 0.000 CA GLY B 1
+#
+"""
+
 
 def test_exported_biology_tools_are_agents_sdk_function_tools() -> None:
     # New names take effect; the old aliases keep pointing at the same tool
@@ -182,6 +229,7 @@ async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
             binder_length: list[int],
             warm_start_structure: str | None = None,
             warm_start_filename: str | None = None,
+            warm_start_chain: str | None = None,
         ) -> dict[str, Any]:
             calls.append(
                 {
@@ -194,6 +242,7 @@ async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
                     "binder_length": binder_length,
                     "warm_start_structure": warm_start_structure,
                     "warm_start_filename": warm_start_filename,
+                    "warm_start_chain": warm_start_chain,
                 },
             )
             return response
@@ -228,6 +277,7 @@ async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
             "binder_length": [55, 88],
             "warm_start_structure": warm_start_text,
             "warm_start_filename": "seed.pdb",
+            "warm_start_chain": None,
         },
     ]
     assert result["num_candidates"] == 1
@@ -236,6 +286,99 @@ async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
     assert candidate["target_sequence"] == "A"
     assert candidate["chain_sequences"] == {"A": "A", "B": "G"}
     assert candidate["rank"] == 1
+
+
+@pytest.mark.asyncio
+async def test_proteina_design_omits_chain_for_single_chain_cif_warm_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
+    async def _fake_get(*, key: str, **_kwargs: Any) -> bytes:
+        if key.endswith("/seeds/seed.cif"):
+            return SINGLE_CHAIN_CIF.encode("utf-8")
+        return PDB_TEXT.encode("utf-8")
+
+    monkeypatch.setattr(biology_tools, "r2_get_object", _fake_get)
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeProteinaClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def design(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"pdbs": [{"filename": "design-1.pdb", "pdb": PDB_TEXT}]}
+
+    monkeypatch.setattr(biology_tools, "ProteinaClient", FakeProteinaClient)
+
+    await biology_tools._proteina_design(
+        target_pdb_path="/workspace/runs/r1/inputs/target.pdb",
+        warm_start_structure_path="/workspace/runs/r1/seeds/seed.cif",
+    )
+
+    assert calls[0]["warm_start_filename"] == "seed.cif"
+    assert calls[0]["warm_start_chain"] is None
+
+
+@pytest.mark.asyncio
+async def test_proteina_design_sends_explicit_multi_chain_cif_warm_start_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
+    async def _fake_get(*, key: str, **_kwargs: Any) -> bytes:
+        if key.endswith("/seeds/seed.cif"):
+            return MULTI_CHAIN_CIF.encode("utf-8")
+        return PDB_TEXT.encode("utf-8")
+
+    monkeypatch.setattr(biology_tools, "r2_get_object", _fake_get)
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeProteinaClient:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def design(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"pdbs": [{"filename": "design-1.pdb", "pdb": PDB_TEXT}]}
+
+    monkeypatch.setattr(biology_tools, "ProteinaClient", FakeProteinaClient)
+
+    await biology_tools._proteina_design(
+        target_pdb_path="/workspace/runs/r1/inputs/target.pdb",
+        warm_start_structure_path="/workspace/runs/r1/seeds/seed.cif",
+        warm_start_chain="B",
+    )
+
+    assert calls[0]["warm_start_filename"] == "seed.cif"
+    assert calls[0]["warm_start_chain"] == "B"
+
+
+@pytest.mark.asyncio
+async def test_proteina_design_rejects_invalid_cif_warm_start_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
+    async def _fake_get(*, key: str, **_kwargs: Any) -> bytes:
+        if key.endswith("/seeds/seed.cif"):
+            return SINGLE_CHAIN_CIF.encode("utf-8")
+        return PDB_TEXT.encode("utf-8")
+
+    monkeypatch.setattr(biology_tools, "r2_get_object", _fake_get)
+
+    with pytest.raises(ValueError, match=r"warm_start_chain 'S'.*Available chains: \['A'\]"):
+        await biology_tools._proteina_design(
+            target_pdb_path="/workspace/runs/r1/inputs/target.pdb",
+            warm_start_structure_path="/workspace/runs/r1/seeds/seed.cif",
+            warm_start_chain="S",
+        )
 
 
 @pytest.mark.asyncio

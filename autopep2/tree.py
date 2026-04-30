@@ -454,11 +454,12 @@ Tree workflow for "generate/design a binder for X":
    fails.
 3. Call run_protein_generation at depth=0 with the target CIF, Proteina
    hotspots in format ["A41", "A145"] (never "A:HIS41"), and warm_start_path
-   when a prepared existing binder seed is available. When the warm-start file
-   contains multiple chains, pass warm_start_chain as the binder or partner
-   chain to seed from. For Proteina-generated complexes with target chains A/B
-   and binder chain C, pass warm_start_chain="C" unless inspection shows a
-   different binder chain.
+   when a prepared existing binder seed is available. For clean binder-only
+   CIF/mmCIF seeds, omit warm_start_chain. When the warm-start file contains
+   multiple chains, pass warm_start_chain as the binder or partner chain to seed
+   from. Do not infer mmCIF chain IDs with fixed-width PDB columns. For
+   Proteina-generated complexes with target chains A/B and binder chain C, pass
+   warm_start_chain="C" unless inspection shows a different binder chain.
 4. After scorers return, evaluate the three candidates. Give a short rationale
    using scorer outputs, Chai confidence, sequence sanity, and file paths.
 5. Select the best candidate. Use execute_python to create a modified PDB/CIF
