@@ -50,6 +50,13 @@
       "when": 1777501713565,
       "tag": "0006_sleepy_wildside",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777525849460,
+      "tag": "0007_nebulous_ultragirl",
+      "breakpoints": true
     }
   ]
 }

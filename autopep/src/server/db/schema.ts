@@ -1,6 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
 	type AnyPgColumn,
+	bigint,
 	boolean,
 	index,
 	integer,
@@ -185,8 +186,8 @@ export const threads = createAutopepTable(
 	(t) => [index("autopep_thread_workspace_idx").on(t.workspaceId)],
 );
 
-export const messages = createAutopepTable(
-	"message",
+export const threadItems = createAutopepTable(
+	"thread_item",
 	{
 		id: uuid("id").defaultRandom().primaryKey(),
 		threadId: uuid("thread_id")
@@ -195,29 +196,32 @@ export const messages = createAutopepTable(
 		runId: uuid("run_id").references(() => agentRuns.id, {
 			onDelete: "set null",
 		}),
-		role: text("role", { enum: ["user", "assistant", "system"] }).notNull(),
-		content: text("content").notNull(),
-		contextRefsJson: jsonb("context_refs_json")
-			.$type<string[]>()
-			.default(sql`'[]'::jsonb`)
-			.notNull(),
-		recipeRefsJson: jsonb("recipe_refs_json")
-			.$type<string[]>()
-			.default(sql`'[]'::jsonb`)
-			.notNull(),
-		attachmentRefsJson: jsonb("attachment_refs_json")
-			.$type<string[]>()
-			.default(sql`'[]'::jsonb`)
-			.notNull(),
-		metadata: jsonb("metadata")
+		sequence: bigint("sequence", { mode: "number" }).notNull(),
+		itemType: text("item_type", {
+			enum: [
+				"message",
+				"function_call",
+				"function_call_output",
+				"reasoning",
+			],
+		}).notNull(),
+		role: text("role", { enum: ["user", "assistant", "system", "tool"] }),
+		contentJson: jsonb("content_json")
 			.$type<Record<string, unknown>>()
 			.default(sql`'{}'::jsonb`)
 			.notNull(),
+		attachmentRefsJson: jsonb("attachment_refs_json").$type<string[]>(),
+		contextRefsJson: jsonb("context_refs_json").$type<string[]>(),
+		recipeRefsJson: jsonb("recipe_refs_json").$type<string[]>(),
 		createdAt: timestamp("created_at", { withTimezone: true })
 			.defaultNow()
 			.notNull(),
 	},
-	(t) => [index("autopep_message_thread_idx").on(t.threadId)],
+	(t) => [
+		index("autopep_thread_item_thread_seq_idx").on(t.threadId, t.sequence),
+		index("autopep_thread_item_run_idx").on(t.runId),
+		unique("autopep_thread_item_thread_seq_unique").on(t.threadId, t.sequence),
+	],
 );
 
 export const agentRuns = createAutopepTable(
@@ -644,17 +648,17 @@ export const threadRelations = relations(threads, ({ one, many }) => ({
 		fields: [threads.workspaceId],
 		references: [workspaces.id],
 	}),
-	messages: many(messages),
+	threadItems: many(threadItems),
 	runs: many(agentRuns),
 }));
 
-export const messageRelations = relations(messages, ({ one }) => ({
+export const threadItemRelations = relations(threadItems, ({ one }) => ({
 	thread: one(threads, {
-		fields: [messages.threadId],
+		fields: [threadItems.threadId],
 		references: [threads.id],
 	}),
 	run: one(agentRuns, {
-		fields: [messages.runId],
+		fields: [threadItems.runId],
 		references: [agentRuns.id],
 	}),
 }));
