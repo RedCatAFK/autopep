@@ -2,7 +2,7 @@ from julia_agent.config import WorkerConfig
 
 
 def test_worker_config_derives_r2_endpoint_from_account_id(monkeypatch):
-    monkeypatch.delenv("R2_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("R2_ENDPOINT_URL", "")
     monkeypatch.setenv("R2_ACCOUNT_ID", "account123")
 
     config = WorkerConfig.from_env()
