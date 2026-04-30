@@ -469,6 +469,41 @@ describe("workspace router procedures", () => {
 		});
 	});
 
+	it("creates the workspace + thread + run when sendMessage has no workspaceId", async () => {
+		const created = {
+			message: { id: "44444444-4444-4444-8444-444444444444" },
+			run: { id: "11111111-1111-4111-8111-111111111111" },
+			thread: { id: "33333333-3333-4333-8333-333333333333" },
+			workspace: { id: "22222222-2222-4222-8222-222222222222" },
+		};
+		vi.mocked(createMessageRunWithLaunch).mockResolvedValueOnce(
+			created as never,
+		);
+		const db = {};
+		const caller = createWorkspaceCaller(db);
+
+		await expect(
+			caller.sendMessage({
+				prompt: "Investigate SARS-CoV-2 spike binders",
+			}),
+		).resolves.toEqual(created);
+
+		expect(createMessageRunWithLaunch).toHaveBeenCalledWith({
+			db,
+			input: expect.objectContaining({
+				prompt: "Investigate SARS-CoV-2 spike binders",
+				workspaceId: undefined,
+			}),
+			ownerId: "user-1",
+		});
+		const callArgs = vi.mocked(createMessageRunWithLaunch).mock.calls.at(-1);
+		const inputArg = callArgs?.[0]?.input as
+			| (Record<string, unknown> | undefined)
+			| undefined;
+		expect(inputArg?.projectId).toBeUndefined();
+		expect(inputArg?.workspaceId).toBeUndefined();
+	});
+
 	it("maps legacy projectId to workspaceId when sending a message", async () => {
 		const created = {
 			message: { id: "44444444-4444-4444-8444-444444444444" },

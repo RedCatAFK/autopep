@@ -20,6 +20,7 @@ import { WorkspaceAvatar } from "./workspace-avatar";
 export type RailWorkspace = {
 	description?: string | null;
 	id: string;
+	isDraft?: boolean;
 	name: string;
 };
 
@@ -82,6 +83,28 @@ export function WorkspaceRail({
 						const active = workspace.id === activeWorkspaceId;
 						const isRenaming = workspace.id === renamingId;
 						const isMenuOpen = workspace.id === openMenuId;
+						if (workspace.isDraft) {
+							return (
+								<div className="group relative shrink-0" key={workspace.id}>
+									<HoverTooltip label="New workspace (draft)">
+										<button
+											aria-current={active ? "true" : undefined}
+											aria-label="Open draft workspace"
+											className={`flex size-10 items-center justify-center rounded-md border border-[#d7d4c9] border-dashed text-[#7a817a] transition-colors duration-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px ${active ? "ring-2 ring-[#cbd736] ring-offset-1 ring-offset-[#fbfaf6]" : ""}`}
+											onClick={() => onSelectWorkspace(workspace.id)}
+											type="button"
+										>
+											<span
+												aria-hidden="true"
+												className="font-semibold text-[15px]"
+											>
+												…
+											</span>
+										</button>
+									</HoverTooltip>
+								</div>
+							);
+						}
 						return (
 							<div className="group relative shrink-0" key={workspace.id}>
 								{isRenaming ? (
@@ -112,8 +135,8 @@ export function WorkspaceRail({
 								{!isRenaming ? (
 									<div className="absolute -top-1 -right-1" data-rail-menu>
 										<button
-											aria-haspopup="menu"
 											aria-expanded={isMenuOpen}
+											aria-haspopup="menu"
 											aria-label={`More options for ${workspace.name}`}
 											className="hidden size-5 items-center justify-center rounded bg-[#fffef9] text-[#69716b] shadow-[0_8px_24px_-16px_rgba(25,39,33,0.65)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 group-focus-within:flex group-hover:flex"
 											onClick={() =>
@@ -124,11 +147,11 @@ export function WorkspaceRail({
 											<DotsThreeVertical aria-hidden="true" size={12} />
 										</button>
 										{isMenuOpen ? (
-											<ul
+											<div
 												className="absolute top-full left-0 z-30 mt-1 min-w-[120px] rounded-md border border-[#e5e2d9] bg-[#fffef9] py-1 shadow-lg"
 												role="menu"
 											>
-												<li>
+												<div>
 													<button
 														className="block w-full px-3 py-1.5 text-left text-[#26332e] text-sm hover:bg-[#f0efe8]"
 														onClick={() => {
@@ -140,8 +163,8 @@ export function WorkspaceRail({
 													>
 														Rename
 													</button>
-												</li>
-												<li>
+												</div>
+												<div>
 													<button
 														className="block w-full px-3 py-1.5 text-left text-[#26332e] text-sm hover:bg-[#f0efe8]"
 														onClick={() => {
@@ -153,8 +176,8 @@ export function WorkspaceRail({
 													>
 														Archive
 													</button>
-												</li>
-											</ul>
+												</div>
+											</div>
 										) : null}
 									</div>
 								) : null}
@@ -166,7 +189,7 @@ export function WorkspaceRail({
 			{onOpenRecipes ? (
 				<button
 					aria-label="Open recipes"
-					className="mt-auto flex size-10 shrink-0 items-center justify-center rounded-md text-[#5a6360] transition-colors duration-200 hover:bg-[#f0efe8] hover:text-[#26332e] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px"
+					className="mt-auto flex size-10 shrink-0 items-center justify-center rounded-md text-[#5a6360] transition-colors duration-200 hover:bg-[#f0efe8] hover:text-[#26332e] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-2 active:translate-y-px lg:mb-12"
 					onClick={onOpenRecipes}
 					type="button"
 				>

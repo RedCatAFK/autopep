@@ -36,6 +36,7 @@ export function AutopepWorkspace() {
 	const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
 		null,
 	);
+	const [isDraftWorkspace, setIsDraftWorkspace] = useState(false);
 	const [tabs, setTabs] = useState<ViewerTab[]>([]);
 	const [activeTabId, setActiveTabId] = useState<string | null>(null);
 	const [isRecipesOpen, setIsRecipesOpen] = useState(false);
@@ -61,13 +62,19 @@ export function AutopepWorkspace() {
 		},
 	);
 
-	const payload = selectedWorkspace.data ?? latestWorkspace.data;
+	const payload = isDraftWorkspace
+		? null
+		: (selectedWorkspace.data ?? latestWorkspace.data);
 
 	useEffect(() => {
-		if (!activeWorkspaceId && latestWorkspace.data?.workspace.id) {
+		if (
+			!isDraftWorkspace &&
+			!activeWorkspaceId &&
+			latestWorkspace.data?.workspace.id
+		) {
 			setActiveWorkspaceId(latestWorkspace.data.workspace.id);
 		}
-	}, [activeWorkspaceId, latestWorkspace.data?.workspace.id]);
+	}, [activeWorkspaceId, isDraftWorkspace, latestWorkspace.data?.workspace.id]);
 
 	const invalidateWorkspace = async (workspaceId?: string | null) => {
 		await Promise.all([
@@ -79,15 +86,10 @@ export function AutopepWorkspace() {
 		]);
 	};
 
-	const createWorkspace = api.workspace.createWorkspace.useMutation({
-		onSuccess: async (result) => {
-			setActiveWorkspaceId(result.workspace.id);
-			await invalidateWorkspace(result.workspace.id);
-		},
-	});
 	const archiveWorkspace = api.workspace.archiveWorkspace.useMutation({
 		onSuccess: async () => {
 			setActiveWorkspaceId(null);
+			setIsDraftWorkspace(false);
 			await invalidateWorkspace();
 		},
 	});
@@ -99,6 +101,7 @@ export function AutopepWorkspace() {
 	const sendMessage = api.workspace.sendMessage.useMutation({
 		onSuccess: async (result) => {
 			setActiveWorkspaceId(result.workspace.id);
+			setIsDraftWorkspace(false);
 			await invalidateWorkspace(result.workspace.id);
 		},
 	});
@@ -282,7 +285,9 @@ export function AutopepWorkspace() {
 		) ??
 		null;
 
-	const currentWorkspaceId = activeWorkspaceId ?? payload?.workspace.id ?? null;
+	const currentWorkspaceId = isDraftWorkspace
+		? null
+		: (activeWorkspaceId ?? payload?.workspace.id ?? null);
 
 	const attachmentUpload = useAttachmentUpload({
 		confirmAttachment: confirmAttachmentMutation.mutateAsync,
@@ -372,10 +377,13 @@ export function AutopepWorkspace() {
 	};
 
 	const createWorkspaceFromRail = () => {
-		createWorkspace.mutate({
-			description: "New Autopep workspace",
-			name: "Untitled workspace",
-		});
+		setActiveWorkspaceId(null);
+		setIsDraftWorkspace(true);
+	};
+
+	const selectExistingWorkspace = (workspaceId: string) => {
+		setIsDraftWorkspace(false);
+		setActiveWorkspaceId(workspaceId);
 	};
 
 	const createRecipeForWorkspace = (input: RecipeInput) => {
@@ -398,18 +406,38 @@ export function AutopepWorkspace() {
 		archiveRecipe.mutate({ recipeId });
 	};
 
+	const persistedWorkspaces = (workspacesQuery.data ?? []).map((workspace) => ({
+		description: workspace.description,
+		id: workspace.id,
+		name: workspace.name,
+	}));
+	const railWorkspaces = isDraftWorkspace
+		? [
+				{
+					description: null,
+					id: DRAFT_WORKSPACE_ID,
+					isDraft: true as const,
+					name: "Untitled workspace",
+				},
+				...persistedWorkspaces,
+			]
+		: persistedWorkspaces;
+	const railActiveWorkspaceId = isDraftWorkspace
+		? DRAFT_WORKSPACE_ID
+		: currentWorkspaceId;
+
 	return (
 		<WorkspaceShell
 			activeArtifactId={activeArtifactId}
 			activeTabId={activeTabId}
-			activeWorkspaceId={currentWorkspaceId}
+			activeWorkspaceId={railActiveWorkspaceId}
 			candidateScores={candidateScores}
 			candidates={candidates}
 			chatAttachments={attachmentUpload.attachments}
 			closeTab={closeTab}
 			contextReferences={contextReferences}
 			fileArtifacts={fileArtifacts}
-			isChatDisabled={!currentWorkspaceId}
+			isChatDisabled={!isDraftWorkspace && !currentWorkspaceId}
 			isLoadingWorkspace={computeIsLoadingWorkspace({
 				latestIsLoading: latestWorkspace.isLoading,
 				latestIsFetching: latestWorkspace.isFetching,
@@ -424,19 +452,33 @@ export function AutopepWorkspace() {
 			}
 			isSendingMessage={sendMessage.isPending}
 			onArchiveRecipe={archiveRecipeForWorkspace}
-			onArchiveWorkspace={(workspaceId) =>
-				archiveWorkspace.mutate({ workspaceId })
-			}
+			onArchiveWorkspace={(workspaceId) => {
+				if (workspaceId === DRAFT_WORKSPACE_ID) {
+					setIsDraftWorkspace(false);
+					return;
+				}
+				archiveWorkspace.mutate({ workspaceId });
+			}}
 			onClearChatAttachments={attachmentUpload.clear}
 			onCloseRecipes={() => setIsRecipesOpen(false)}
 			onCreateRecipe={createRecipeForWorkspace}
 			onCreateWorkspace={createWorkspaceFromRail}
 			onOpenRecipes={() => setIsRecipesOpen(true)}
 			onRemoveChatAttachment={attachmentUpload.remove}
-			onRenameWorkspace={(workspaceId, name) =>
-				renameWorkspace.mutate({ name, workspaceId })
-			}
-			onSelectWorkspace={setActiveWorkspaceId}
+			onRenameWorkspace={(workspaceId, name) => {
+				if (workspaceId === DRAFT_WORKSPACE_ID) {
+					return;
+				}
+				renameWorkspace.mutate({ name, workspaceId });
+			}}
+			onSelectWorkspace={(workspaceId) => {
+				if (workspaceId === DRAFT_WORKSPACE_ID) {
+					setIsDraftWorkspace(true);
+					setActiveWorkspaceId(null);
+					return;
+				}
+				selectExistingWorkspace(workspaceId);
+			}}
 			onSendMessage={sendWorkspaceMessage}
 			onUpdateRecipe={updateRecipeForWorkspace}
 			onUploadChatAttachments={attachmentUpload.upload}
@@ -448,11 +490,9 @@ export function AutopepWorkspace() {
 			setActiveTabId={setActiveTabId}
 			streamItems={streamItems}
 			tabs={tabs}
-			workspaces={(workspacesQuery.data ?? []).map((workspace) => ({
-				description: workspace.description,
-				id: workspace.id,
-				name: workspace.name,
-			}))}
+			workspaces={railWorkspaces}
 		/>
 	);
 }
+
+export const DRAFT_WORKSPACE_ID = "__draft__";
