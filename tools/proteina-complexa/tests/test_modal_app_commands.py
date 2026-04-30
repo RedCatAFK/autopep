@@ -111,6 +111,54 @@ target_preprocessing = modules["target_preprocessing"]
 warm_start = modules["warm_start"]
 
 
+SINGLE_CHAIN_SEED_CIF = """\
+data_seed
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.auth_atom_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+ATOM 1 C CA SER A 1 ? 0.000 0.000 0.000 CA SER A 1
+#
+"""
+
+MULTI_CHAIN_SEED_CIF = """\
+data_seed
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.auth_atom_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_seq_id
+ATOM 1 C CA SER A 1 ? 0.000 0.000 0.000 CA SER A 1
+ATOM 2 C CA GLY B 1 ? 1.000 0.000 0.000 CA GLY B 1
+#
+"""
+
+
 class DesignCommandTests(unittest.TestCase):
     def test_modal_app_entrypoint_imports_thin_asgi_app(self) -> None:
         sys.modules.pop("modal_app", None)
@@ -232,6 +280,25 @@ class DesignCommandTests(unittest.TestCase):
             overrides,
         )
 
+    def test_collect_complexa_log_tails_reads_new_stage_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            complexa_root = Path(tmp) / "complexa"
+            log_root = complexa_root / "logs"
+            log_root.mkdir(parents=True)
+            old_log = log_root / "old.log"
+            old_log.write_text("old log\n")
+            existing_logs = commands.collect_log_paths(log_root)
+
+            stage_log = log_root / "design_pipeline_target_7BB2_run_Y2026_M04_D30" / "generate.log"
+            stage_log.parent.mkdir(parents=True)
+            stage_log.write_text("actual generate traceback\n")
+
+            tails = commands.collect_complexa_log_tails(complexa_root, exclude=existing_logs)
+
+        self.assertIn("logs/design_pipeline_target_7BB2_run_Y2026_M04_D30/generate.log", tails)
+        self.assertIn("actual generate traceback", tails)
+        self.assertNotIn("old log", tails)
+
     def test_run_design_runs_from_complexa_root_with_persisted_output_paths(self) -> None:
         calls = []
 
@@ -257,6 +324,30 @@ class DesignCommandTests(unittest.TestCase):
         self.assertIn("++generation.target_dict_cfg.target_102L.target_input=A1-162", command)
         self.assertTrue(any(str(Path(tmp) / "runs" / "smoke_run" / "inference") in part for part in command))
         self.assertEqual(result["warm_start"], {"mode": "cold"})
+
+    def test_run_design_includes_complexa_stage_logs_on_failure(self) -> None:
+        def fake_run(_command, *, cwd):
+            stage_log = cwd / "logs" / "design_pipeline_target_102L_smoke_run_Y2026_M04_D30" / "generate.log"
+            stage_log.parent.mkdir(parents=True)
+            stage_log.write_text("model exploded inside generate\n")
+            raise RuntimeError("boom")
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(design, "COMPLEXA_ROOT", Path(tmp) / "complexa"),
+            mock.patch.object(commands, "RUNS_DIR", Path(tmp) / "runs"),
+            mock.patch.object(design, "run_complexa", fake_run),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                design.run_design(
+                    task_name="target_102L",
+                    run_name="smoke_run",
+                    steps=["generate"],
+                )
+
+        message = str(raised.exception)
+        self.assertIn("complexa stage log tails", message)
+        self.assertIn("model exploded inside generate", message)
 
     def test_seed_binder_overrides_include_optional_controls(self) -> None:
         overrides = warm_start.seed_binder_overrides(
@@ -562,6 +653,60 @@ class DesignCommandTests(unittest.TestCase):
         self.assertEqual(run_kwargs["steps"], ["generate"])
         self.assertEqual(result["warm_start_count"], 2)
 
+    def test_http_design_request_corrects_invalid_single_chain_warm_start_chain(self) -> None:
+        preprocessed = {
+            "target_name": "target_102L",
+            "hydra_overrides": [
+                "++generation.task_name=target_102L",
+                "++generation.target_dict_cfg.target_102L.target_path=/data/target_data/preprocessed_targets/target_102L.pdb",
+            ],
+        }
+
+        with (
+            mock.patch.object(http_server, "preprocess_target_structure", return_value=preprocessed),
+            mock.patch.object(http_server, "run_design", return_value={"warm_start": {"mode": "warm"}}) as run,
+        ):
+            result = http_server.run_design_request(
+                {
+                    "action": "design-cif",
+                    "run_name": "api_warm",
+                    "target": {
+                        "structure": "data_target\n#",
+                        "filename": "102L.cif",
+                        "target_input": "A1-162",
+                    },
+                    "warm_start": {
+                        "structure": SINGLE_CHAIN_SEED_CIF,
+                        "filename": "seed.cif",
+                        "chain": "S",
+                    },
+                }
+            )
+
+        run_kwargs = run.call_args.kwargs
+        self.assertEqual(run_kwargs["seed_binder_chain"], "A")
+        self.assertEqual(result["warm_start_chain_resolution"]["requested_chain"], "S")
+        self.assertEqual(result["warm_start_chain_resolution"]["chain"], "A")
+        self.assertEqual(result["warm_start_chain_resolution"]["status"], "corrected_single_chain")
+
+    def test_http_design_request_rejects_invalid_multi_chain_warm_start_chain(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Available chains: \\['A', 'B'\\]"):
+            http_server.run_design_request(
+                {
+                    "action": "design-cif",
+                    "target": {
+                        "structure": "data_target\n#",
+                        "filename": "102L.cif",
+                        "target_input": "A1-162",
+                    },
+                    "warm_start": {
+                        "structure": MULTI_CHAIN_SEED_CIF,
+                        "filename": "seed.cif",
+                        "chain": "S",
+                    },
+                }
+            )
+
     def test_http_design_request_rejects_mixed_batch_noise_levels(self) -> None:
         with self.assertRaisesRegex(ValueError, "same noise_level"):
             http_server.run_design_request(
@@ -640,6 +785,16 @@ class DesignCommandTests(unittest.TestCase):
         headers = http_server.pdb_download_headers("../job_0.pdb")
 
         self.assertEqual(headers["Content-Disposition"], 'attachment; filename="job_0.pdb"')
+
+    def test_backend_failure_detail_is_structured_and_truncated(self) -> None:
+        detail = http_server.backend_failure_detail(RuntimeError("backend exploded"))
+
+        self.assertEqual(detail["error"], "Proteina-Complexa backend command failed")
+        self.assertEqual(detail["message"], "backend exploded")
+
+        long_detail = http_server.backend_failure_detail(RuntimeError("x" * 25000))
+        self.assertTrue(long_detail["message"].startswith("...<truncated>"))
+        self.assertLessEqual(len(long_detail["message"]), http_server.MAX_BACKEND_ERROR_DETAIL_CHARS + 16)
 
 
 if __name__ == "__main__":

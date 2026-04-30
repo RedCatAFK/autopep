@@ -1,13 +1,98 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
 from .config import COMPLEXA_ROOT, SEED_BINDER_DIR
-from .preprocessing import sanitize_name
+from .preprocessing import preprocess_structure_text, sanitize_name
 
 SEED_BINDER_OVERRIDE_PREFIX = "++generation.dataloader.dataset.conditional_features.0."
+
+
+@dataclass(frozen=True)
+class SeedBinderChainResolution:
+    requested_chain: str | None
+    chain: str | None
+    available_chains: list[str]
+    status: str
+    warning: str | None = None
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+def _normalize_optional_chain(chain: str | None) -> str | None:
+    if chain is None:
+        return None
+    normalized = str(chain).strip()
+    return normalized or None
+
+
+def resolve_seed_binder_chain(
+    *,
+    seed_binder_text: str,
+    seed_binder_chain: str | None,
+) -> SeedBinderChainResolution:
+    """Validate a requested seed-binder chain against the supplied structure.
+
+    A common client mistake is applying fixed-width PDB chain parsing to mmCIF
+    atom rows. Those rows begin with ``ATOM`` but are whitespace-delimited, so
+    a residue letter such as ``S`` can be mistaken for the chain ID. If the seed
+    has exactly one real chain, correct that unambiguous mismatch here before
+    Complexa sees it.
+    """
+
+    requested_chain = _normalize_optional_chain(seed_binder_chain)
+    try:
+        seed = preprocess_structure_text(seed_binder_text, structure_id="seed_binder")
+    except ValueError as exc:
+        if requested_chain is None:
+            return SeedBinderChainResolution(
+                requested_chain=None,
+                chain=None,
+                available_chains=[],
+                status="not_requested",
+                warning=f"Could not inspect warm-start seed binder chains: {exc}",
+            )
+        raise ValueError(f"Could not inspect warm-start seed binder chains: {exc}") from exc
+
+    available_chains = list(seed.chain_sequences)
+    if requested_chain is None:
+        return SeedBinderChainResolution(
+            requested_chain=None,
+            chain=None,
+            available_chains=available_chains,
+            status="not_requested",
+        )
+
+    if requested_chain in seed.chain_sequences:
+        return SeedBinderChainResolution(
+            requested_chain=requested_chain,
+            chain=requested_chain,
+            available_chains=available_chains,
+            status="matched",
+        )
+
+    if len(available_chains) == 1:
+        corrected_chain = available_chains[0]
+        return SeedBinderChainResolution(
+            requested_chain=requested_chain,
+            chain=corrected_chain,
+            available_chains=available_chains,
+            status="corrected_single_chain",
+            warning=(
+                f"warm_start.chain {requested_chain!r} was not found; "
+                f"using the only seed-binder chain {corrected_chain!r}."
+            ),
+        )
+
+    raise ValueError(
+        f"warm_start.chain {requested_chain!r} was not found in the seed binder. "
+        f"Available chains: {available_chains}. "
+        "Pass one of those chain IDs, or omit chain only for a single-chain seed binder."
+    )
 
 
 def _file_contains(path: Path, markers: list[str]) -> bool:

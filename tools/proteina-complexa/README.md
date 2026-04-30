@@ -52,7 +52,12 @@ Warm-start controls:
 - `noise_level`: lower stays closer to the seed; higher explores farther.
 - `start_t`: direct diffusion-time override.
 - `num_steps`: direct remaining-step override.
-- `chain`: optional chain selection within the seed binder.
+- `chain`: optional chain selection within the seed binder. Use an actual
+  chain ID present in the seed structure: for PDB this is the fixed-width chain
+  column, and for mmCIF this is the `_atom_site.auth_asym_id` value. Omit this
+  for a single-chain seed. If a single-chain seed arrives with a wrong chain
+  value, the server corrects it to the only available chain; if a multi-chain
+  seed has a wrong chain, the request is rejected with the available chain IDs.
 
 ## Modal Resources
 

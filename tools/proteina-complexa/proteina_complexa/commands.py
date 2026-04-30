@@ -119,22 +119,52 @@ def tail_text(path: Path, *, limit: int = 12000) -> str:
     return text[-limit:]
 
 
+def collect_log_paths(log_root: Path) -> set[Path]:
+    if not log_root.exists():
+        return set()
+    return {path for path in log_root.rglob("*.log") if path.is_file()}
+
+
+def collect_log_tails(
+    log_root: Path,
+    *,
+    relative_to: Path | None = None,
+    exclude: set[Path] | None = None,
+    limit: int = 12000,
+    max_files: int = 6,
+) -> str:
+    log_paths = sorted(collect_log_paths(log_root), key=lambda path: path.stat().st_mtime)
+    if exclude:
+        log_paths = [path for path in log_paths if path not in exclude]
+    if not log_paths:
+        return ""
+    sections = []
+    base_path = relative_to or log_root
+    for path in log_paths[-max_files:]:
+        try:
+            relative = path.relative_to(base_path)
+        except ValueError:
+            relative = path
+        sections.append(f"--- {relative} ---\n{tail_text(path, limit=limit)}")
+    return "\n\n".join(sections)
+
+
 def collect_run_log_tails(
     run_dir: Path,
     *,
     exclude: set[Path] | None = None,
     limit: int = 12000,
 ) -> str:
-    log_paths = sorted(run_dir.glob("logs/**/*.log"), key=lambda path: path.stat().st_mtime)
-    if exclude:
-        log_paths = [path for path in log_paths if path not in exclude]
-    if not log_paths:
-        return ""
-    sections = []
-    for path in log_paths[-6:]:
-        relative = path.relative_to(run_dir)
-        sections.append(f"--- {relative} ---\n{tail_text(path, limit=limit)}")
-    return "\n\n".join(sections)
+    return collect_log_tails(run_dir / "logs", relative_to=run_dir, exclude=exclude, limit=limit)
+
+
+def collect_complexa_log_tails(
+    complexa_root: Path = COMPLEXA_ROOT,
+    *,
+    exclude: set[Path] | None = None,
+    limit: int = 12000,
+) -> str:
+    return collect_log_tails(complexa_root / "logs", relative_to=complexa_root, exclude=exclude, limit=limit)
 
 
 def collect_generated_pdbs(

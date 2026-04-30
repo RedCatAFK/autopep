@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent
 
 # Edit this block, then run:
 #   python3 compare_proteins.py
-MODE = "batch_compare"  # "batch_compare", "compare", or "view"
+MODE = "compare"  # "batch_compare", "compare", or "view"
 VIEWER = "html"  # "html" needs no PyMOL install; "pymol" writes a .pml scene
 OPEN_VIEWER = False
 
@@ -24,7 +24,7 @@ BATCH_REFERENCE = None  # Used only when BATCH_STRATEGY = "to_reference"
 
 # Single-pair compare mode.
 REFERENCE = ROOT / "examples" / "102L.cif"
-MOBILE = ROOT / "examples" / "http_smoke"
+MOBILE = ROOT / "examples" / "hot.pdb"
 EXTRA_PROTEINS: list[Path] = []
 
 # Multi-view mode.
