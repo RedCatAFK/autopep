@@ -166,9 +166,10 @@ export function MolstarViewer({
 				);
 				if (!isCurrentLoad()) return;
 
+				const format = url.toLowerCase().endsWith(".pdb") ? "pdb" : "mmcif";
 				const trajectory = await plugin.builders.structure.parseTrajectory(
 					data,
-					"mmcif",
+					format,
 				);
 				if (!isCurrentLoad()) return;
 

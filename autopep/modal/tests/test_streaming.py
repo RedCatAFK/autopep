@@ -200,6 +200,78 @@ def test_normalize_tool_call_started_emits_call_id() -> None:
     assert normalized["display"]["callId"] == "call-99"
 
 
+def test_normalize_tool_call_started_emits_arguments() -> None:
+    # `raw_item.arguments` is a JSON-encoded string of the params the model
+    # passed. Surfacing the parsed dict on `display` lets the chat UI render
+    # each input parameter as its own row instead of only "name" + "callId".
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_called",
+        item=SimpleNamespace(
+            type="tool_call_item",
+            raw_item={
+                "type": "function_call",
+                "name": "literature_search",
+                "call_id": "call-args-1",
+                "arguments": '{"query": "beta-secretase", "max_results": 5}',
+            },
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["display"]["arguments"] == {
+        "query": "beta-secretase",
+        "max_results": 5,
+    }
+
+
+def test_normalize_tool_call_started_skips_unparseable_arguments() -> None:
+    # Bad JSON should not crash normalization; just omit `arguments` so the UI
+    # falls back to whatever else is on display.
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_called",
+        item=SimpleNamespace(
+            type="tool_call_item",
+            raw_item={
+                "type": "function_call",
+                "name": "exec_command",
+                "call_id": "call-args-2",
+                "arguments": "not json",
+            },
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert "arguments" not in normalized["display"]
+
+
+def test_normalize_tool_output_event_does_not_emit_arguments() -> None:
+    # `tool_output` items are tool *outputs*, not calls — they have no params
+    # to surface. Only the started event carries `arguments`.
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_output",
+        item=SimpleNamespace(
+            raw_item={
+                "type": "function_call_output",
+                "call_id": "call-args-3",
+                "output": "{}",
+            },
+            tool_origin=SimpleNamespace(agent_tool_name="literature_search"),
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert "arguments" not in normalized["display"]
+
+
 def test_normalize_reasoning_item_event() -> None:
     event = SimpleNamespace(
         type="run_item_stream_event",

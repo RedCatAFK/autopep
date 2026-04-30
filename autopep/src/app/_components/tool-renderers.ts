@@ -84,10 +84,41 @@ const KNOWN: Record<string, (display: Record<string, unknown>) => ToolRender> = 
 const truncate = (value: string, max = 80) =>
   value.length > max ? `${value.slice(0, max - 1)}…` : value;
 
-const fallbackFields = (display: Record<string, unknown>): Field[] =>
-  Object.entries(display)
-    .slice(0, 8)
-    .map(([key, value]) => [key, truncate(JSON.stringify(value))] as const);
+// Keys produced by the backend stream normalizer that are plumbing rather
+// than user-facing tool inputs. `name` is already shown in the card header,
+// `callId` is only used to pair started/completed events.
+const PLUMBING_KEYS = new Set(["name", "callId"]);
+
+const renderField = (key: string, value: unknown): Field => [
+  key,
+  truncate(typeof value === "string" ? value : JSON.stringify(value)),
+];
+
+const fallbackFields = (display: Record<string, unknown>): Field[] => {
+  const fields: Field[] = [];
+  for (const [key, value] of Object.entries(display)) {
+    if (PLUMBING_KEYS.has(key)) continue;
+    // Flatten an `arguments` object (the parsed function-tool params from
+    // the backend) into one row per param so each input is readable.
+    if (
+      key === "arguments" &&
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      for (const [argKey, argValue] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
+        fields.push(renderField(argKey, argValue));
+        if (fields.length >= 8) return fields;
+      }
+      continue;
+    }
+    fields.push(renderField(key, value));
+    if (fields.length >= 8) return fields;
+  }
+  return fields;
+};
 
 export const renderToolDisplay = (
   toolName: string,

@@ -31,4 +31,18 @@ describe("renderToolDisplay", () => {
     expect(result.summary).toBe("mystery_tool");
     expect(result.fields.length).toBeGreaterThan(0);
   });
+
+  it("hides plumbing keys and flattens arguments for unknown tools", () => {
+    const result = renderToolDisplay("literature_search", {
+      name: "literature_search",
+      callId: "call_abc",
+      arguments: { query: "beta-secretase", max_results: 5 },
+    });
+    const keys = result.fields.map(([key]) => key);
+    expect(keys).not.toContain("name");
+    expect(keys).not.toContain("callId");
+    expect(keys).not.toContain("arguments");
+    expect(result.fields).toContainEqual(["query", "beta-secretase"]);
+    expect(result.fields).toContainEqual(["max_results", "5"]);
+  });
 });

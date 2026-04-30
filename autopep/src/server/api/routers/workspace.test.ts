@@ -793,6 +793,78 @@ describe("workspace router procedures", () => {
 		expect(payload?.runs[1]?.startedAt).toBe(olderRun.startedAt.toISOString());
 	});
 
+	it("extracts assistant text from canonical SDK message-item content_json", async () => {
+		const workspace = {
+			activeThreadId: "33333333-3333-4333-8333-333333333335",
+			description: null,
+			id: "22222222-2222-4222-8222-222222222226",
+			name: "SDK shape workspace",
+			ownerId: "user-1",
+		};
+		const thread = {
+			id: workspace.activeThreadId,
+			title: "Main thread",
+			workspaceId: workspace.id,
+		};
+		const userMessage = {
+			attachmentRefsJson: [],
+			contentJson: { text: "what's your name?", type: "input_text" },
+			contextRefsJson: [],
+			createdAt: new Date("2026-04-30T08:44:54.000Z"),
+			id: "44444444-4444-4444-8444-444444444450",
+			itemType: "message",
+			recipeRefsJson: [],
+			role: "user",
+			runId: null,
+			sequence: 1,
+			threadId: thread.id,
+		};
+		// PostgresSession.add_items writes the canonical SDK item shape,
+		// where the visible text lives in content_json.content[].text rather
+		// than at content_json.text.
+		const assistantMessage = {
+			attachmentRefsJson: [],
+			contentJson: {
+				content: [{ text: "I'm Autopep.", type: "output_text" }],
+				role: "assistant",
+				type: "message",
+			},
+			contextRefsJson: [],
+			createdAt: new Date("2026-04-30T08:45:22.000Z"),
+			id: "44444444-4444-4444-8444-444444444451",
+			itemType: "message",
+			recipeRefsJson: [],
+			role: "assistant",
+			runId: null,
+			sequence: 2,
+			threadId: thread.id,
+		};
+		const db = {
+			query: {
+				agentEvents: { findMany: emptyFindMany() },
+				agentRuns: { findMany: emptyFindMany() },
+				artifacts: { findMany: emptyFindMany() },
+				candidateScores: { findMany: emptyFindMany() },
+				contextReferences: { findMany: emptyFindMany() },
+				threadItems: {
+					findMany: vi.fn().mockResolvedValue([userMessage, assistantMessage]),
+				},
+				proteinCandidates: { findMany: emptyFindMany() },
+				recipes: { findMany: emptyFindMany() },
+				threads: { findMany: vi.fn().mockResolvedValue([thread]) },
+				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
+			},
+		};
+		const caller = createWorkspaceCaller(db);
+
+		const payload = await caller.getWorkspace({ workspaceId: workspace.id });
+
+		expect(payload?.messages[0]?.role).toBe("user");
+		expect(payload?.messages[0]?.content).toBe("what's your name?");
+		expect(payload?.messages[1]?.role).toBe("assistant");
+		expect(payload?.messages[1]?.content).toBe("I'm Autopep.");
+	});
+
 	it("loads the latest workspace payload for the authenticated owner", async () => {
 		const workspace = {
 			activeThreadId: "33333333-3333-4333-8333-333333333333",

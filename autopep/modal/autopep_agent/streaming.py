@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -166,6 +167,29 @@ def _call_id(item: Any) -> str | None:
     return str(call_id)
 
 
+def _tool_arguments(item: Any) -> dict[str, Any] | None:
+    # Function-tool calls carry the model-supplied params as a JSON-encoded
+    # string under `raw_item.arguments`. Hosted tools (local_shell_call,
+    # web_search_call, etc.) keep their inputs under shape-specific keys like
+    # `action`/`query`, so we surface those when present too. Returning the
+    # parsed dict lets the UI render each parameter as its own row instead of
+    # only "name" and "callId".
+    raw_item = _get(item, "raw_item", {}) or {}
+    arguments = _get(raw_item, "arguments")
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    if isinstance(arguments, dict):
+        return dict(arguments)
+    action = _get(raw_item, "action")
+    if isinstance(action, dict):
+        return {"action": action}
+    return None
+
+
 SANDBOX_DELTA_EVENT_TYPES = frozenset(
     {"sandbox_stdout_delta", "sandbox_stderr_delta"},
 )
@@ -273,6 +297,9 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
         raw = _as_jsonable(event)
 
         if name == "tool_called":
+            arguments = _tool_arguments(item)
+            if arguments:
+                tool_display["arguments"] = arguments
             return {
                 "type": "tool_call_started",
                 "title": "Tool call started",

@@ -203,9 +203,23 @@ const mapThreadMessageItem = (
 	item: typeof threadItemsTable.$inferSelect,
 ) => {
 	const contentJson = item.contentJson as
-		| { text?: string; type?: string }
+		| {
+				text?: string;
+				type?: string;
+				content?: ReadonlyArray<{ text?: string; type?: string }>;
+		  }
 		| null;
-	const content = contentJson?.text ?? "";
+	// Two shapes land here. User messages and the legacy webhook flow write
+	// the simplified `{type, text}` form directly. PostgresSession.add_items
+	// (the SDK Session adapter for assistant turns) writes the canonical SDK
+	// message-item shape with text nested under `content[].text` so the SDK
+	// can read its own items back unchanged across turns.
+	const nestedText = Array.isArray(contentJson?.content)
+		? contentJson.content
+				.map((part) => part?.text ?? "")
+				.join("")
+		: "";
+	const content = contentJson?.text ?? nestedText;
 	return {
 		attachmentRefsJson: item.attachmentRefsJson ?? [],
 		content,
