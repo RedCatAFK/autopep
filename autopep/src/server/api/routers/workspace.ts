@@ -238,6 +238,21 @@ const mapArtifact = async (artifact: typeof artifacts.$inferSelect) => {
 	};
 };
 
+const shouldExposeArtifact = (
+	artifact: typeof artifacts.$inferSelect,
+	confirmedAttachmentIds: ReadonlySet<string>,
+) => {
+	if (artifact.kind !== "attachment") {
+		return true;
+	}
+
+	const metadataJson = getRecord(artifact.metadataJson);
+	return (
+		getString(metadataJson.uploadStatus) === "ready" ||
+		confirmedAttachmentIds.has(artifact.id)
+	);
+};
+
 const getLatestWorkspaceForOwner = async (db: Db, ownerId: string) =>
 	db.query.workspaces.findFirst({
 		where: and(eq(workspaces.ownerId, ownerId), isNull(workspaces.archivedAt)),
@@ -284,10 +299,20 @@ const getWorkspaceCompatibilityPayload = async ({
 			return bTime - aTime;
 		})
 		.map(mapRunSummary);
+	const confirmedAttachmentIds = new Set(
+		payload.contextReferences.flatMap((reference) =>
+			reference.kind === "artifact" && reference.artifactId
+				? [reference.artifactId]
+				: [],
+		),
+	);
+	const visibleArtifacts = payload.artifacts.filter((artifact) =>
+		shouldExposeArtifact(artifact, confirmedAttachmentIds),
+	);
 
 	return {
 		...payload,
-		artifacts: await Promise.all(payload.artifacts.map(mapArtifact)),
+		artifacts: await Promise.all(visibleArtifacts.map(mapArtifact)),
 		candidateScores: payload.candidateScores,
 		candidates: payload.candidates.map(mapCandidate),
 		events: payload.events.map(mapEvent),
@@ -475,6 +500,17 @@ export const workspaceRouter = createTRPCRouter({
 					message: "Attachment object has not been uploaded.",
 				});
 			}
+
+			await ctx.db
+				.update(artifacts)
+				.set({
+					metadataJson: {
+						...getRecord(artifact.metadataJson),
+						confirmedAt: new Date().toISOString(),
+						uploadStatus: "ready",
+					},
+				})
+				.where(eq(artifacts.id, artifact.id));
 
 			const [reference] = await ctx.db
 				.insert(contextReferences)

@@ -148,6 +148,12 @@ const deleteCapturing = () => {
 	return { where };
 };
 
+const updateCapturing = () => {
+	const where = vi.fn().mockResolvedValue(undefined);
+	const set = vi.fn(() => ({ where }));
+	return { set, where };
+};
+
 const updateReturning = (row: unknown) => {
 	const returning = vi.fn().mockResolvedValue([row]);
 	const where = vi.fn((condition: unknown) => {
@@ -1149,6 +1155,7 @@ describe("workspace router procedures", () => {
 			id: "55555555-5555-4555-8555-555555555555",
 		};
 		const referenceInsert = insertReturning(reference);
+		const artifactUpdate = updateCapturing();
 		const artifactFindFirst = vi.fn().mockResolvedValue(artifactRow);
 		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
 		const caller = createWorkspaceCaller({
@@ -1157,6 +1164,7 @@ describe("workspace router procedures", () => {
 				artifacts: { findFirst: artifactFindFirst },
 				workspaces: { findFirst: workspaceFindFirst },
 			},
+			update: vi.fn().mockReturnValueOnce(artifactUpdate),
 		});
 
 		await expect(
@@ -1169,6 +1177,18 @@ describe("workspace router procedures", () => {
 		expect(r2ArtifactStore.objectExists).toHaveBeenCalledWith({
 			key: artifactRow.storageKey,
 		});
+		expect(artifactUpdate.set).toHaveBeenCalledWith({
+			metadataJson: {
+				confirmedAt: expect.any(String),
+				uploadStatus: "ready",
+			},
+		});
+		expect(
+			expressionReferences(
+				artifactUpdate.where.mock.calls[0]?.[0],
+				artifacts.id,
+			),
+		).toBe(true);
 		expect(referenceInsert.values).toHaveBeenCalledWith({
 			artifactId: artifactRow.id,
 			candidateId: null,
@@ -1332,5 +1352,78 @@ describe("workspace router getWorkspacePayload compatibility helper", () => {
 		expect(expressionReferences(runsWhere, agentRuns.threadId)).toBe(true);
 		expect(expressionReferences(runsWhere, activeThread.id)).toBe(true);
 		expect(candidateScoresFindMany).toHaveBeenCalledOnce();
+	});
+
+	it("excludes unconfirmed attachment artifacts from the workspace payload", async () => {
+		vi.mocked(r2ArtifactStore.getReadUrl).mockClear();
+		vi.mocked(r2ArtifactStore.getReadUrl).mockImplementation(
+			async ({ key }) => `https://signed.example/${key}`,
+		);
+		const workspace = {
+			activeThreadId: null,
+			description: "Attachment smoke test",
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const staleAttachment = {
+			contentType: "application/octet-stream",
+			createdAt: new Date("2026-04-30T01:01:36Z"),
+			id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			kind: "attachment" as const,
+			metadataJson: {
+				originalFileName: "6m0j-source.cif",
+				uploadStatus: "pending",
+			},
+			name: "6m0j-source.cif",
+			runId: null,
+			sha256: null,
+			sizeBytes: 739607,
+			sourceArtifactId: null,
+			storageKey:
+				"projects/22222222-2222-4222-8222-222222222222/attachments/aaa/6m0j-source.cif",
+			storageProvider: "r2",
+			workspaceId: workspace.id,
+		};
+		const confirmedAttachment = {
+			...staleAttachment,
+			id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			storageKey:
+				"projects/22222222-2222-4222-8222-222222222222/attachments/bbb/6m0j-source.cif",
+		};
+		const db = {
+			query: {
+				artifacts: {
+					findMany: vi
+						.fn()
+						.mockResolvedValue([staleAttachment, confirmedAttachment]),
+				},
+				contextReferences: {
+					findMany: vi.fn().mockResolvedValue([
+						{
+							artifactId: confirmedAttachment.id,
+							kind: "artifact",
+						},
+					]),
+				},
+				proteinCandidates: { findMany: emptyFindMany() },
+				recipes: { findMany: emptyFindMany() },
+				threads: { findMany: emptyFindMany() },
+				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
+			},
+		};
+
+		const payload = await getWorkspacePayload(
+			db as never,
+			workspace.id,
+			workspace.ownerId,
+		);
+
+		expect(payload?.artifacts.map((artifact) => artifact.id)).toEqual([
+			confirmedAttachment.id,
+		]);
+		expect(r2ArtifactStore.getReadUrl).toHaveBeenCalledOnce();
+		expect(r2ArtifactStore.getReadUrl).toHaveBeenCalledWith({
+			key: confirmedAttachment.storageKey,
+		});
 	});
 });
