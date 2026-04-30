@@ -18,12 +18,14 @@ def test_allowed_output_path_requires_descendant() -> None:
 
 
 def test_classify_artifact_kind_from_extension_and_name() -> None:
-    assert classify_artifact_kind(Path("papers.json")) == "literature"
+    assert classify_artifact_kind(Path("papers.json")) == "json"
     assert classify_artifact_kind(Path("model.cif")) == "structure"
-    assert classify_artifact_kind(Path("metrics.csv")) == "table"
+    assert classify_artifact_kind(Path("model.pdb")) == "structure"
+    assert classify_artifact_kind(Path("seq.fasta")) == "fasta"
     assert classify_artifact_kind(Path("notes.txt")) == "text"
-    assert classify_artifact_kind(Path("plot.png")) == "image"
-    assert classify_artifact_kind(Path("unknown.bin")) == "file"
+    assert classify_artifact_kind(Path("metrics.csv")) == "text"
+    assert classify_artifact_kind(Path("run.log")) == "log"
+    assert classify_artifact_kind(Path("unknown.bin")) == "other"
 
 
 def test_generate_r2_key_is_stable_and_namespaced() -> None:

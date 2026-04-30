@@ -799,16 +799,46 @@ async def _post_modal_json(
     path: str,
     payload: Mapping[str, Any],
     timeout_seconds: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
+    max_retries: int = 4,
 ) -> Any:
+    """POST JSON to a Modal endpoint with retry-on-cold-start.
+
+    Modal endpoints often return 502/503 for the first request after the
+    function scales to zero. We retry transient gateway/timeout errors with
+    exponential backoff so the agent can wait through a cold start without
+    burning a tool call.
+    """
     request_path = path if path.startswith("/") else f"/{path}"
-    async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
-        response = await client.post(
-            f"{base_url}{request_path}",
-            headers=_auth_headers(api_key),
-            json=payload,
-        )
-    response.raise_for_status()
-    return response.json()
+    url = f"{base_url}{request_path}"
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout_seconds, follow_redirects=True
+            ) as client:
+                response = await client.post(
+                    url,
+                    headers=_auth_headers(api_key),
+                    json=payload,
+                )
+            if response.status_code in {502, 503, 504} and attempt < max_retries:
+                last_error = httpx.HTTPStatusError(
+                    f"transient {response.status_code} from {url}",
+                    request=response.request,
+                    response=response,
+                )
+                await asyncio.sleep(min(60.0, 2.0 * (2**attempt)))
+                continue
+            response.raise_for_status()
+            return response.json()
+        except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as error:
+            last_error = error
+            if attempt >= max_retries:
+                raise
+            await asyncio.sleep(min(60.0, 2.0 * (2**attempt)))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError(f"Failed to POST to {url} after {max_retries + 1} attempts")
 
 
 async def _get_json(url: str, *, params: Mapping[str, Any] | None = None, timeout: int = 60) -> Any:

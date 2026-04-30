@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 _subscribers: dict[str, set[asyncio.Queue[dict[str, Any] | None]]] = {}
 _lock = asyncio.Lock()
-_QUEUE_MAX = 256
+_QUEUE_MAX = 4096
 
 
 async def publish(run_id: str, event: dict[str, Any]) -> None:

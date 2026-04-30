@@ -44,23 +44,24 @@ def is_allowed_output_path(path: Path | str, allowed_roots: Iterable[Path | str]
 
 
 def classify_artifact_kind(path: Path | str) -> str:
+    """Classify a file into the kinds the Postgres enum supports.
+
+    The schema (julia_artifact_kind) accepts: structure, json, fasta, log, text, other.
+    """
     candidate = Path(path)
     suffix = candidate.suffix.lower()
-    name = candidate.name.lower()
 
-    if "paper" in name or "literature" in name or name.endswith(".bib"):
-        return "literature"
-    if suffix in {".cif", ".pdb", ".mmcif"}:
+    if suffix in {".cif", ".mmcif", ".pdb", ".bcif"}:
         return "structure"
-    if suffix in {".csv", ".tsv", ".xlsx", ".parquet"}:
-        return "table"
-    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
-        return "image"
-    if suffix in {".txt", ".md", ".log"}:
+    if suffix in {".fa", ".fasta", ".fna"}:
+        return "fasta"
+    if suffix in {".json", ".jsonl"}:
+        return "json"
+    if suffix in {".log",}:
+        return "log"
+    if suffix in {".txt", ".md", ".csv", ".tsv", ".yaml", ".yml", ".xml"}:
         return "text"
-    if suffix in {".json", ".jsonl", ".xml", ".yaml", ".yml"}:
-        return "data"
-    return "file"
+    return "other"
 
 
 def generate_r2_key(run_id: str, path: Path | str) -> str:
