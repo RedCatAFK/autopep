@@ -286,27 +286,62 @@ def choose_task_kind(prompt: str) -> str:
     return "chat"
 
 
+AUTOPEP_TOOLS: list[object] = [
+    *RESEARCH_TOOLS,
+    generate_binder_candidates,
+    fold_sequences_with_chai,
+    score_candidate_interactions,
+]
+
+
+def _registered_tool_names(tools: list[object]) -> list[str]:
+    return [
+        str(name)
+        for tool in tools
+        if (name := getattr(tool, "name", None))
+    ]
+
+
+def _format_available_tools(tools: list[object]) -> str:
+    return ", ".join(f"`{name}`" for name in _registered_tool_names(tools))
+
+
 def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
     recipe_bodies = [recipe.strip() for recipe in enabled_recipes or [] if recipe.strip()]
     recipes_text = "\n\n".join(f"Recipe:\n{recipe}" for recipe in recipe_bodies)
 
     sections = [
         "You are Autopep, an agent for protein binder design and analysis.",
+        f"Available tools for this run: {_format_available_tools(AUTOPEP_TOOLS)}.",
         (
             "Use life-science-research discipline: cite uncertainty, prefer primary "
             "biomedical evidence, and distinguish literature evidence from model output."
         ),
         (
-            "For live literature requests, use search_pubmed_literature and "
-            "search_europe_pmc_literature before answering. Do not say you lack live "
-            "database access when these tools are available; if a source call fails, "
-            "name the failed source and answer only from gathered evidence."
+            "For general biomedical explanations, answer from established knowledge "
+            "without calling tools. Use the literature tools when the user asks for "
+            "live, recent, or source-backed literature evidence."
         ),
         (
-            "MVP one-loop workflow: perform literature research, search PDB structures, "
-            "prepare the target, call generate_binder_candidates, call "
-            "fold_sequences_with_chai with the target sequence so Chai folds "
-            "target-binder complexes, call score_candidate_interactions, then "
+            "For live literature requests, use `search_pubmed_literature` and "
+            "`search_europe_pmc_literature` before answering. Do not say you lack "
+            "live database access when these tools are available; if a source call "
+            "fails, name the failed source and answer only from gathered evidence."
+        ),
+        (
+            "For binder workflows, use `generate_binder_candidates`, "
+            "`fold_sequences_with_chai`, and `score_candidate_interactions` only "
+            "when the user supplies enough target structure or sequence context. "
+            "If the task requires PDB/RCSB retrieval, target preparation, mutation, "
+            "visualization, web search, shell execution, or arbitrary Python, state "
+            "that the capability is not available in this runtime instead of "
+            "inventing a tool call."
+        ),
+        (
+            "When binder inputs are available, run this workflow: literature research "
+            "when useful, call `generate_binder_candidates`, call "
+            "`fold_sequences_with_chai` with the target sequence so Chai folds "
+            "target-binder complexes, call `score_candidate_interactions`, then "
             "provide a ranked summary."
         ),
         (
@@ -330,12 +365,7 @@ def build_autopep_agent(enabled_recipes: list[str] | None = None) -> Agent:
     return Agent(
         name="Autopep",
         instructions=build_agent_instructions(enabled_recipes),
-        tools=[
-            *RESEARCH_TOOLS,
-            generate_binder_candidates,
-            fold_sequences_with_chai,
-            score_candidate_interactions,
-        ],
+        tools=AUTOPEP_TOOLS,
     )
 
 

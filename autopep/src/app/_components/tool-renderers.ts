@@ -5,7 +5,49 @@ export type ToolRender = {
   summary: string;
 };
 
+const countItems = (value: unknown) =>
+  Array.isArray(value) ? String(value.length) : "";
+
+const joinItems = (value: unknown) =>
+  Array.isArray(value) ? value.map(String).join(", ") : "";
+
 const KNOWN: Record<string, (display: Record<string, unknown>) => ToolRender> = {
+  search_pubmed_literature: (display) => ({
+    summary: String(display.query ?? "PubMed literature"),
+    fields: [
+      ["query", String(display.query ?? "")],
+      ["maxResults", String(display.maxResults ?? display.max_results ?? "")],
+    ],
+  }),
+  search_europe_pmc_literature: (display) => ({
+    summary: String(display.query ?? "Europe PMC literature"),
+    fields: [
+      ["query", String(display.query ?? "")],
+      ["maxResults", String(display.maxResults ?? display.max_results ?? "")],
+    ],
+  }),
+  generate_binder_candidates: (display) => ({
+    summary: String(display.target_filename ?? "generate binders"),
+    fields: [
+      ["target", String(display.target_filename ?? "")],
+      ["hotspots", joinItems(display.hotspot_residues)],
+    ],
+  }),
+  fold_sequences_with_chai: (display) => ({
+    summary: String(display.target_name ?? "fold with Chai"),
+    fields: [
+      ["target", String(display.target_name ?? "")],
+      ["candidates", countItems(display.sequence_candidates)],
+    ],
+  }),
+  score_candidate_interactions: (display) => ({
+    summary: String(display.target_name ?? "score interactions"),
+    fields: [
+      ["target", String(display.target_name ?? "")],
+      ["candidates", countItems(display.candidates)],
+    ],
+  }),
+  // Legacy event names retained so existing workspaces still render cleanly.
   rcsb_structure_search: (display) => {
     const query = String(display.query ?? "");
     const maxResults = display.maxResults ?? display.max_results ?? "?";

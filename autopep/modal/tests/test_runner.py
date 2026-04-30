@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -60,6 +61,25 @@ def test_build_agent_instructions_mentions_workflow_tools_and_recipes() -> None:
     assert "fold_sequences_with_chai" in instructions
     assert "score_candidate_interactions" in instructions
     assert recipe in instructions
+
+
+def test_build_agent_instructions_only_advertise_registered_tool_names() -> None:
+    agent = build_autopep_agent(enabled_recipes=[])
+    instructions = build_agent_instructions(enabled_recipes=[])
+
+    backticked_names = set(re.findall(r"`([a-z][a-z0-9_]+)`", instructions))
+    assert _tool_names(agent.tools).issubset(backticked_names)
+    assert {
+        "biorxiv_search",
+        "pdb_fetch",
+        "pdb_search",
+        "pubmed_search",
+        "rcsb_structure_search",
+        "run_python",
+        "search_biorxiv",
+        "search_pdb",
+        "search_rcsb",
+    }.isdisjoint(backticked_names)
 
 
 def test_build_autopep_agent_includes_biology_tools() -> None:
