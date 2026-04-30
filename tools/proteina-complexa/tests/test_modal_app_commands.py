@@ -264,6 +264,56 @@ class DesignCommandTests(unittest.TestCase):
             overrides,
         )
 
+    def test_write_target_pdb_preserves_cif_auth_chain_and_drops_hetero_atoms(self) -> None:
+        cif_text = """\
+data_target
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM   1 C CA . SER B 2 1 ? 1.000 2.000 3.000 1.000 10.000 ? 1 SER E CA 1
+HETATM 2 O O  . HOH D 4 . ? 4.000 5.000 6.000 1.000 20.000 ? 1 HOH E O  1
+#
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            pdb_path = Path(tmp) / "target.pdb"
+            info = target_preprocessing.write_target_pdb(
+                structure_text=cif_text,
+                structure_filename="target.cif",
+                pdb_path=pdb_path,
+                chains="E",
+            )
+
+            pdb_text = pdb_path.read_text()
+
+        atom_lines = [line for line in pdb_text.splitlines() if line.startswith("ATOM")]
+        self.assertEqual(info["source"], "auth_chain_clean_pdb_writer")
+        self.assertEqual(info["atom_count"], 1)
+        self.assertEqual(info["chain_ids"], ["E"])
+        self.assertEqual(len(atom_lines), 1)
+        self.assertEqual(atom_lines[0][21], "E")
+        self.assertIn(" SER E   1", atom_lines[0])
+        self.assertNotIn("HOH", pdb_text)
+
     def test_run_output_overrides_keep_outputs_on_runs_volume(self) -> None:
         overrides = commands.run_output_overrides(
             task_name="target_102L",

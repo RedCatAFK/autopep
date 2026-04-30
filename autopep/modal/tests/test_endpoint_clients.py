@@ -55,6 +55,33 @@ async def test_proteina_design_posts_target_payload_with_api_key() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_proteina_design_posts_warm_start_chain_when_provided() -> None:
+    route = respx.post("https://proteina.example/run/design").mock(
+        return_value=httpx.Response(200, json={"pdbs": []}),
+    )
+    client = ProteinaClient("https://proteina.example/run/", "proteina-key")
+
+    await client.design(
+        target_structure="data_target",
+        target_filename="target.cif",
+        target_input="A1-162",
+        hotspot_residues=[],
+        binder_length=[60, 120],
+        warm_start_structure="data_seed",
+        warm_start_filename="seed.cif",
+        warm_start_chain="A",
+    )
+
+    payload = _request_json(route.calls.last.request)
+    assert payload["warm_start"] == {
+        "structure": "data_seed",
+        "filename": "seed.cif",
+        "chain": "A",
+    }
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_chai_predict_posts_fasta_and_sampling_options() -> None:
     route = respx.post("https://chai.example/run/predict").mock(
         return_value=httpx.Response(
