@@ -1,10 +1,11 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import { env } from "@/env";
 import { launchCreatedRun } from "@/server/agent/run-launcher";
 import type { db as appDb } from "@/server/db";
 import {
 	agentRuns,
+	contextReferences,
 	messages,
 	recipeVersions,
 	recipes,
@@ -59,6 +60,8 @@ type CreateProjectRunWithLaunchInput = {
 type DbWithOptionalTransaction = typeof appDb & {
 	transaction?: <T>(callback: (tx: typeof appDb) => Promise<T>) => Promise<T>;
 };
+
+type ContextReferenceRow = typeof contextReferences.$inferSelect;
 
 const inferWorkspaceName = (prompt: string) => {
 	const firstLine = prompt.trim().split(/\r?\n/u)[0]?.trim();
@@ -174,6 +177,63 @@ const ensureOwnedWorkspace = async ({
 	return createThreadForWorkspace({ db, workspace });
 };
 
+const findSelectedContextReferences = async ({
+	contextRefs,
+	db,
+	workspaceId,
+}: {
+	contextRefs: string[];
+	db: typeof appDb;
+	workspaceId: string;
+}) => {
+	const uniqueIds = Array.from(new Set(contextRefs));
+	if (uniqueIds.length === 0) {
+		return [];
+	}
+
+	const rows = await db.query.contextReferences.findMany({
+		where: and(
+			eq(contextReferences.workspaceId, workspaceId),
+			inArray(contextReferences.id, uniqueIds),
+		),
+	});
+	const order = new Map(uniqueIds.map((id, index) => [id, index]));
+	return rows.sort(
+		(a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0),
+	);
+};
+
+const formatContextReferenceForPrompt = (reference: ContextReferenceRow) => {
+	const targetParts = [
+		reference.artifactId ? `artifactId: ${reference.artifactId}` : null,
+		reference.candidateId ? `candidateId: ${reference.candidateId}` : null,
+	].filter(Boolean);
+	const targetSuffix =
+		targetParts.length > 0 ? ` (${targetParts.join(", ")})` : "";
+	const label = reference.label.trim().replace(/\s+/g, " ");
+
+	return [
+		`- ${label} [${reference.kind}]${targetSuffix}`,
+		`  selector: ${JSON.stringify(reference.selectorJson ?? {})}`,
+	].join("\n");
+};
+
+const appendContextToPrompt = (
+	prompt: string,
+	references: ContextReferenceRow[],
+) => {
+	if (references.length === 0) {
+		return prompt;
+	}
+
+	return [
+		prompt,
+		"",
+		"Selected workspace context:",
+		...references.map(formatContextReferenceForPrompt),
+	].join("\n");
+};
+
 export const createMessageRunWithLaunch = async ({
 	db,
 	input,
@@ -194,13 +254,22 @@ export const createMessageRunWithLaunch = async ({
 					name: input.name ?? inferWorkspaceName(input.prompt),
 					ownerId,
 				});
+		const selectedContextReferences = await findSelectedContextReferences({
+			contextRefs: input.contextRefs ?? [],
+			db: writeDb,
+			workspaceId: workspaceBundle.workspace.id,
+		});
+		const runPrompt = appendContextToPrompt(
+			input.prompt,
+			selectedContextReferences,
+		);
 
 		const [run] = await writeDb
 			.insert(agentRuns)
 			.values({
 				createdById: ownerId,
 				model: env.OPENAI_DEFAULT_MODEL,
-				prompt: input.prompt,
+				prompt: runPrompt,
 				rootRunId: null,
 				sdkStateJson: input.sdkStateJson ?? {},
 				status: "queued",

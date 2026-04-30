@@ -14,6 +14,8 @@ type Event = {
 	type: string;
 	createdAt: string;
 	displayJson: Record<string, unknown>;
+	summary?: string | null;
+	title?: string | null;
 };
 
 type BuildArgs = { messages: Message[]; events: Event[] };
@@ -61,6 +63,29 @@ export const buildStreamItems = ({
 		if (event.type === "tool_call_started") {
 			const callId = getString(event.displayJson.callId);
 			if (callId) toolCallStarts.set(callId, event);
+			continue;
+		}
+
+		if (event.type === "run_failed") {
+			const reason = getString(event.displayJson.reason);
+			ordered.push({
+				ts: Date.parse(event.createdAt),
+				render: () => ({
+					kind: "run_error",
+					id: event.id,
+					content:
+						getString(event.displayJson.message) ??
+						(reason === "openai_prompt_blocked"
+							? "Message blocked by OpenAI."
+							: "Run failed."),
+					detail:
+						getString(event.displayJson.error) ??
+						event.summary ??
+						event.title ??
+						undefined,
+					tone: reason === "openai_prompt_blocked" ? "blocked" : "error",
+				}),
+			});
 			continue;
 		}
 

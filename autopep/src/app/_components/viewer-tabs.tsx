@@ -4,11 +4,13 @@ import { X } from "@phosphor-icons/react";
 
 import { CandidatesTable } from "./candidates-table";
 import { FilePreview } from "./file-preview";
+import type { ProteinSelection } from "./molstar-viewer";
 
 export type ViewerTab =
 	| { kind: "candidates"; id: "candidates" }
 	| {
 			artifactId: string;
+			candidateId?: string | null;
 			fileName: string;
 			id: string;
 			kind: "file";
@@ -38,6 +40,7 @@ type ViewerTabsProps = {
 	candidateScores: ScoreRow[];
 	onClose: (tabId: string) => void;
 	onOpenCandidate?: (candidateId: string) => void;
+	onProteinSelection?: (selection: ProteinSelection) => void;
 	onSelect: (tabId: string) => void;
 	tabs: ViewerTab[];
 };
@@ -48,6 +51,7 @@ export function ViewerTabs({
 	candidateScores,
 	onClose,
 	onOpenCandidate,
+	onProteinSelection,
 	onSelect,
 	tabs,
 }: ViewerTabsProps) {
@@ -114,7 +118,9 @@ export function ViewerTabs({
 				) : activeTab?.kind === "file" ? (
 					<FilePreview
 						artifactId={activeTab.artifactId}
+						candidateId={activeTab.candidateId ?? null}
 						fileName={activeTab.fileName}
+						onProteinSelection={onProteinSelection}
 						signedUrl={activeTab.signedUrl}
 					/>
 				) : (

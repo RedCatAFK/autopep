@@ -65,8 +65,25 @@ def build_fasta(candidates: Sequence[Mapping[str, object]]) -> str:
     for candidate in candidates:
         candidate_id = str(candidate["id"]).strip()
         sequence = str(candidate["sequence"]).strip().upper()
-        fasta_parts.append(f">protein|name={candidate_id}\n{sequence}\n")
+        fasta_parts.append(_fasta_record(candidate_id, sequence))
     return "".join(fasta_parts)
+
+
+def build_complex_fasta(
+    *,
+    target_id: str,
+    target_sequence: str,
+    binder_id: str,
+    binder_sequence: str,
+) -> str:
+    return (
+        _fasta_record(str(target_id).strip(), str(target_sequence).strip().upper())
+        + _fasta_record(str(binder_id).strip(), str(binder_sequence).strip().upper())
+    )
+
+
+def _fasta_record(name: str, sequence: str) -> str:
+    return f">protein|name={name}\n{sequence}\n"
 
 
 def encode_structure_base64(structure_text: str) -> str:

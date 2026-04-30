@@ -177,7 +177,7 @@ async def start_run(request: Request) -> Any:
     thread_id = _require_uuid(payload, "threadId")
     run_id = _require_uuid(payload, "runId")
 
-    function_call = run_autopep_agent.spawn(
+    function_call = await run_autopep_agent.spawn.aio(
         workspace_id=workspace_id,
         thread_id=thread_id,
         run_id=run_id,

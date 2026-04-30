@@ -10,6 +10,7 @@ import {
 	agentEvents,
 	agentRuns,
 	artifacts,
+	contextReferences,
 	workspaces,
 } from "@/server/db/schema";
 import { getWorkspacePayload, workspaceRouter } from "./workspace";
@@ -184,6 +185,7 @@ describe("workspace router procedures", () => {
 				"createRecipe",
 				"createWorkspace",
 				"deleteAttachment",
+				"deleteContextReference",
 				"getLatestWorkspace",
 				"getRunEvents",
 				"getWorkspace",
@@ -365,6 +367,37 @@ describe("workspace router procedures", () => {
 		});
 	});
 
+	it("routes literature search prompts to a research run", async () => {
+		const created = {
+			message: { id: "44444444-4444-4444-8444-444444444444" },
+			run: { id: "11111111-1111-4111-8111-111111111111" },
+			thread: { id: "33333333-3333-4333-8333-333333333333" },
+			workspace: { id: "22222222-2222-4222-8222-222222222222" },
+		};
+		vi.mocked(createMessageRunWithLaunch).mockResolvedValueOnce(
+			created as never,
+		);
+		const db = {};
+		const caller = createWorkspaceCaller(db);
+
+		await caller.sendMessage({
+			prompt:
+				"search literature for what the functions of Beta-secretase are in humans",
+			workspaceId: "22222222-2222-4222-8222-222222222222",
+		});
+
+		expect(createMessageRunWithLaunch).toHaveBeenCalledWith({
+			db,
+			input: expect.objectContaining({
+				prompt:
+					"search literature for what the functions of Beta-secretase are in humans",
+				taskKind: "research",
+				workspaceId: "22222222-2222-4222-8222-222222222222",
+			}),
+			ownerId: "user-1",
+		});
+	});
+
 	it("creates a protein selection context reference in an owned workspace", async () => {
 		const workspace = {
 			id: "22222222-2222-4222-8222-222222222222",
@@ -415,6 +448,55 @@ describe("workspace router procedures", () => {
 		const where = workspaceFindFirst.mock.calls[0]?.[0].where;
 		expect(expressionReferences(where, workspaces.id)).toBe(true);
 		expect(expressionReferences(where, workspaces.ownerId)).toBe(true);
+	});
+
+	it("deletes a context reference in an owned workspace", async () => {
+		const workspace = {
+			id: "22222222-2222-4222-8222-222222222222",
+			ownerId: "user-1",
+		};
+		const reference = {
+			artifactId: "11111111-1111-4111-8111-111111111111",
+			candidateId: "33333333-3333-4333-8333-333333333333",
+			id: "55555555-5555-4555-8555-555555555555",
+			kind: "protein_selection",
+			label: "6M0J chain A residues 41-145",
+			workspaceId: workspace.id,
+		};
+		const referenceDelete = deleteCapturing();
+		const referenceFindFirst = vi.fn().mockResolvedValue(reference);
+		const workspaceFindFirst = vi.fn().mockResolvedValue(workspace);
+		const db = {
+			delete: vi.fn().mockReturnValueOnce(referenceDelete),
+			query: {
+				contextReferences: { findFirst: referenceFindFirst },
+				workspaces: { findFirst: workspaceFindFirst },
+			},
+		};
+		const caller = createWorkspaceCaller(db);
+
+		await expect(
+			caller.deleteContextReference({
+				contextReferenceId: reference.id,
+			}),
+		).resolves.toEqual({ ok: true });
+
+		expect(db.delete).toHaveBeenCalledWith(contextReferences);
+		expect(
+			expressionReferences(
+				referenceFindFirst.mock.calls[0]?.[0].where,
+				contextReferences.id,
+			),
+		).toBe(true);
+		const workspaceWhere = workspaceFindFirst.mock.calls[0]?.[0].where;
+		expect(expressionReferences(workspaceWhere, workspaces.id)).toBe(true);
+		expect(expressionReferences(workspaceWhere, workspaces.ownerId)).toBe(true);
+		expect(
+			expressionReferences(
+				referenceDelete.where.mock.calls[0]?.[0],
+				contextReferences.id,
+			),
+		).toBe(true);
 	});
 
 	it("creates a recipe and first version for an owned workspace", async () => {

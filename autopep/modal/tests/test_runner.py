@@ -55,6 +55,7 @@ def test_build_agent_instructions_mentions_workflow_tools_and_recipes() -> None:
     instructions = build_agent_instructions(enabled_recipes=[recipe])
 
     assert "life-science-research" in instructions
+    assert "search_pubmed_literature" in instructions
     assert "generate_binder_candidates" in instructions
     assert "fold_sequences_with_chai" in instructions
     assert "score_candidate_interactions" in instructions
@@ -69,6 +70,15 @@ def test_build_autopep_agent_includes_biology_tools() -> None:
         "generate_binder_candidates",
         "fold_sequences_with_chai",
         "score_candidate_interactions",
+    }.issubset(_tool_names(agent.tools))
+
+
+def test_build_autopep_agent_includes_literature_search_tools() -> None:
+    agent = build_autopep_agent(enabled_recipes=[])
+
+    assert {
+        "search_europe_pmc_literature",
+        "search_pubmed_literature",
     }.issubset(_tool_names(agent.tools))
 
 
@@ -172,6 +182,20 @@ class _FakeStreamedRun:
 
     def stream_events(self) -> Any:
         return iter(self._events)
+
+
+class _FailingAsyncStreamedRun:
+    """Streamed-run double whose async event stream raises once consumed."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def stream_events(self) -> Any:
+        async def _events() -> Any:
+            raise self.error
+            yield None
+
+        return _events()
 
 
 def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -748,3 +772,76 @@ async def test_execute_run_happy_path_writes_normalized_events_and_completes(
     assert "tool_call_completed" in types
     assert types[-1] == "run_completed"
     assert completed == ["r4"]
+
+
+@pytest.mark.asyncio
+async def test_execute_run_surfaces_openai_prompt_block_without_reraising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    writer = _wire_fake_writer(monkeypatch)
+    blocked_error = RuntimeError(
+        "Invalid prompt: we've limited access to this content for safety reasons.",
+    )
+    _wire_fake_runner(
+        monkeypatch,
+        streamed=_FailingAsyncStreamedRun(blocked_error),
+    )
+
+    async def fake_get_run_context(*_args: Any, **_kwargs: Any) -> AgentRunContext:
+        return AgentRunContext(
+            prompt="blocked prompt",
+            model="gpt-5.5",
+            task_kind="chat",
+            enabled_recipes=[],
+        )
+
+    async def fake_claim_run(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    failed_calls: list[tuple[str, str]] = []
+
+    async def fake_mark_failed(
+        _database_url: str,
+        run_id: str,
+        error_summary: str,
+    ) -> None:
+        failed_calls.append((run_id, error_summary))
+
+    done_calls: list[str] = []
+
+    async def fake_push_token_done(run_id: str) -> None:
+        done_calls.append(run_id)
+
+    monkeypatch.setattr(runner_mod, "get_run_context", fake_get_run_context)
+    monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
+    monkeypatch.setattr(runner_mod, "mark_run_failed", fake_mark_failed)
+    monkeypatch.setattr(
+        runner_mod,
+        "mark_run_completed",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not mark completed for a blocked prompt"),
+        ),
+    )
+    monkeypatch.setattr(runner_mod, "_push_token_done", fake_push_token_done)
+    _stub_get_run_attachments(monkeypatch)
+
+    await execute_run(run_id="r-blocked", thread_id="t1", workspace_id="w1")
+
+    failure_event = next(
+        (event for event in writer.events if event["type"] == "run_failed"),
+        None,
+    )
+    assert failure_event is not None
+    assert failure_event["title"] == "Message blocked by OpenAI"
+    assert failure_event["summary"] == "OpenAI blocked this message for safety reasons."
+    assert failure_event["display"] == {
+        "error": str(blocked_error),
+        "message": "Message blocked by OpenAI.",
+        "provider": "openai",
+        "reason": "openai_prompt_blocked",
+    }
+    assert failed_calls == [
+        ("r-blocked", "OpenAI blocked this message for safety reasons."),
+    ]
+    assert done_calls == ["r-blocked"]

@@ -61,6 +61,11 @@ textarea {
 	transform-origin: left;
 }
 
+.autopep-status-dot-pulse {
+	animation: autopep-status-dot-pulse 1.4s cubic-bezier(0.16, 1, 0.3, 1)
+		infinite;
+}
+
 @keyframes molstar-loading {
 	0% {
 		transform: translateX(-100%) scaleX(0.7);
@@ -73,6 +78,21 @@ textarea {
 	}
 }
 
+@keyframes autopep-status-dot-pulse {
+	0% {
+		opacity: 0.7;
+		transform: scale(1);
+	}
+	75% {
+		opacity: 0;
+		transform: scale(2.4);
+	}
+	100% {
+		opacity: 0;
+		transform: scale(2.4);
+	}
+}
+
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,
@@ -81,5 +101,11 @@ textarea {
 		animation-iteration-count: 1;
 		scroll-behavior: auto;
 		transition-duration: 0.01ms;
+	}
+
+	.autopep-status-dot-pulse,
+	.molstar-loading-bar {
+		animation-duration: 2.4s;
+		animation-iteration-count: infinite;
 	}
 }

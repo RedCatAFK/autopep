@@ -10,6 +10,7 @@ import {
 import {
 	type ChangeEvent,
 	type FormEvent,
+	useEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -38,6 +39,7 @@ export type ChatPanelSendInput = {
 };
 
 type ChatPanelProps = {
+	activeRunStatus?: string | null;
 	attachments?: AttachmentChip[];
 	contextReferences: ChatContextReference[];
 	isDisabled?: boolean;
@@ -47,6 +49,7 @@ type ChatPanelProps = {
 	onOpenArtifact?: (artifactId: string) => void;
 	onOpenCandidate?: (candidateId: string) => void;
 	onRemoveAttachment?: (chipId: string) => void;
+	onRemoveContextReference?: (referenceId: string) => void;
 	onSend: (input: ChatPanelSendInput) => void;
 	onUploadAttachments?: (files: File[]) => void;
 	recipes: ChatRecipe[];
@@ -76,7 +79,127 @@ const chipClassNameFor = (status: AttachmentChip["status"]) => {
 	}
 };
 
+type ChatProgressPhase =
+	| "tool"
+	| "exec"
+	| "compose"
+	| "thinking"
+	| "queued"
+	| "dispatch";
+
+type ChatProgressState = {
+	phase: ChatProgressPhase;
+	label: string;
+	subject: string;
+};
+
+const truncateCommand = (command: string, max = 48): string => {
+	const trimmed = command.replace(/\s+/g, " ").trim();
+	if (!trimmed) return "$";
+	return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+};
+
+export const getChatProgressState = (
+	items: StreamItem[],
+	isSending: boolean,
+	activeRunStatus: string | null = null,
+): ChatProgressState | null => {
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const item = items[index];
+		if (!item) continue;
+		if (item.kind !== "tool_call" && item.kind !== "sandbox_command") continue;
+		if (item.status !== "running") continue;
+
+		if (item.kind === "tool_call") {
+			return { phase: "tool", label: "Calling", subject: item.tool };
+		}
+
+		return {
+			phase: "exec",
+			label: "Running",
+			subject: truncateCommand(item.command),
+		};
+	}
+
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const item = items[index];
+		if (!item) continue;
+		if (item.kind === "assistant_message" && item.streaming) {
+			return { phase: "compose", label: "Composing reply", subject: "" };
+		}
+	}
+
+	if (activeRunStatus === "running") {
+		return { phase: "thinking", label: "Thinking", subject: "" };
+	}
+
+	if (activeRunStatus === "queued") {
+		return { phase: "queued", label: "Queued", subject: "" };
+	}
+
+	if (isSending) {
+		return { phase: "dispatch", label: "Starting run", subject: "" };
+	}
+
+	return null;
+};
+
+const formatElapsed = (seconds: number): string => {
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds % 60;
+	return `${minutes}m ${remainder.toString().padStart(2, "0")}s`;
+};
+
+function useElapsedSeconds(resetKey: string | null): number {
+	const [seconds, setSeconds] = useState(0);
+
+	useEffect(() => {
+		setSeconds(0);
+		if (resetKey === null) return;
+		const startedAt = Date.now();
+		const id = setInterval(() => {
+			setSeconds(Math.floor((Date.now() - startedAt) / 1000));
+		}, 500);
+		return () => {
+			clearInterval(id);
+		};
+	}, [resetKey]);
+
+	return seconds;
+}
+
+function ChatProgressStatus({ progress }: { progress: ChatProgressState }) {
+	const elapsed = useElapsedSeconds(`${progress.phase}:${progress.subject}`);
+
+	return (
+		<div
+			aria-live="polite"
+			className="flex items-center gap-2 rounded-md border border-[#dedbd2] bg-[#fffef9] px-2.5 py-1.5 text-[#3c4741] text-xs"
+			data-phase={progress.phase}
+			data-testid="chat-progress-status"
+			role="status"
+		>
+			<span className="autopep-status-dot relative inline-flex size-2 shrink-0 rounded-full bg-[#cbd736]">
+				<span className="autopep-status-dot-pulse absolute inset-0 rounded-full bg-[#cbd736]/60" />
+			</span>
+			<span className="font-medium">{progress.label}</span>
+			{progress.subject ? (
+				<span className="min-w-0 flex-1 truncate font-mono text-[#26332e] text-[11px]">
+					{progress.subject}
+				</span>
+			) : (
+				<span className="min-w-0 flex-1" />
+			)}
+			<span className="shrink-0 font-mono text-[#7a817a] text-[11px] tabular-nums">
+				{formatElapsed(elapsed)}
+			</span>
+		</div>
+	);
+}
+
 export function ChatPanel({
+	activeRunStatus = null,
 	attachments = [],
 	contextReferences,
 	isDisabled = false,
@@ -86,6 +209,7 @@ export function ChatPanel({
 	onOpenArtifact,
 	onOpenCandidate,
 	onRemoveAttachment,
+	onRemoveContextReference,
 	onSend,
 	onUploadAttachments,
 	recipes,
@@ -112,6 +236,7 @@ export function ChatPanel({
 	);
 	const canSend =
 		draft.trim().length > 0 && !isSending && !isDisabled && !hasUploading;
+	const progress = getChatProgressState(items, isSending, activeRunStatus);
 
 	const handlePaperclipClick = () => {
 		if (isDisabled) return;
@@ -155,20 +280,16 @@ export function ChatPanel({
 							onOpenArtifact={onOpenArtifact}
 							onOpenCandidate={onOpenCandidate}
 						/>
-						{isSending ? (
-							<div
-								aria-live="polite"
-								className="mt-3 mr-8 rounded-md border border-[#e1ded4] bg-[#fffef9] px-3 py-2 text-[#4e5953] text-sm"
-							>
-								<CircleNotch
-									aria-hidden="true"
-									className="mr-1.5 inline animate-spin"
-									size={14}
-								/>
-								Writing…
+						{progress ? (
+							<div className="mt-3 mr-8">
+								<ChatProgressStatus progress={progress} />
 							</div>
 						) : null}
 					</>
+				) : progress ? (
+					<div className="pt-1">
+						<ChatProgressStatus progress={progress} />
+					</div>
 				) : (
 					<div className="space-y-2" data-testid="chat-empty-state">
 						<p className="mb-3 text-[#7a817a] text-xs">Start With A Goal</p>
@@ -195,11 +316,21 @@ export function ChatPanel({
 					<div className="mb-3 flex flex-wrap gap-1.5">
 						{contextReferences.map((reference) => (
 							<span
-								className="max-w-full truncate rounded-md bg-[#eaf4cf] px-2 py-1 text-[#315419] text-xs"
+								className="flex max-w-full items-center gap-1.5 rounded-md bg-[#eaf4cf] px-2 py-1 text-[#315419] text-xs"
 								key={reference.id}
 								title={reference.label}
 							>
-								{reference.label}
+								<span className="truncate">{reference.label}</span>
+								{onRemoveContextReference ? (
+									<button
+										aria-label={`Remove ${reference.label}`}
+										className="ml-0.5 rounded-sm p-0.5 hover:bg-black/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#cbd736] focus-visible:outline-offset-1"
+										onClick={() => onRemoveContextReference(reference.id)}
+										type="button"
+									>
+										<X aria-hidden="true" size={11} />
+									</button>
+								) : null}
 							</span>
 						))}
 						{recipes

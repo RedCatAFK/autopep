@@ -1,19 +1,22 @@
 "use client";
 
 import { WarningCircle } from "@phosphor-icons/react";
+import { StructureElement, StructureProperties } from "molstar/lib/mol-model/structure";
 import type { PluginUIContext } from "molstar/lib/mol-plugin-ui/context";
 import { useEffect, useRef, useState } from "react";
+
+export type ProteinSelection = {
+	artifactId: string;
+	candidateId: string | null;
+	label: string;
+	selector: Record<string, unknown>;
+};
 
 type MolstarViewerProps = {
 	artifactId?: string | null;
 	candidateId?: string | null;
 	label: string;
-	onProteinSelection?: (selection: {
-		artifactId: string;
-		candidateId: string | null;
-		label: string;
-		selector: Record<string, unknown>;
-	}) => void;
+	onProteinSelection?: (selection: ProteinSelection) => void;
 	url: string | null;
 };
 
@@ -246,7 +249,28 @@ export function MolstarViewer({
 	);
 }
 
+type ResidueSelection = {
+	authAsymId: string;
+	authSeqId: number;
+	insertionCode: string;
+	labelAsymId: string;
+	labelSeqId: number;
+	residueName: string;
+};
+
+type ResidueRange = {
+	authAsymId: string;
+	end: number;
+	labelAsymId: string;
+	start: number;
+};
+
 function serializeLoci(loci: unknown): Record<string, unknown> {
+	const residueSelector = serializeStructureElementLoci(loci);
+	if (residueSelector) {
+		return residueSelector;
+	}
+
 	const seen = new WeakSet<object>();
 	try {
 		const raw = JSON.parse(
@@ -276,10 +300,107 @@ function serializeLoci(loci: unknown): Record<string, unknown> {
 	}
 }
 
+function serializeStructureElementLoci(loci: unknown): Record<string, unknown> | null {
+	if (!StructureElement.Loci.is(loci)) {
+		return null;
+	}
+	if (StructureElement.Loci.isEmpty(loci)) {
+		return { kind: "empty-loci" };
+	}
+
+	const residues = new Map<string, ResidueSelection>();
+	let atomCount = 0;
+
+	StructureElement.Loci.forEachLocation(loci, (location) => {
+		atomCount += 1;
+		const authAsymId = StructureProperties.chain.auth_asym_id(location);
+		const labelAsymId = StructureProperties.chain.label_asym_id(location);
+		const authSeqId = StructureProperties.residue.auth_seq_id(location);
+		const labelSeqId = StructureProperties.residue.label_seq_id(location);
+		const insertionCode =
+			StructureProperties.residue.pdbx_PDB_ins_code(location) || "";
+		const residueName =
+			StructureProperties.residue.auth_comp_id(location) ||
+			StructureProperties.residue.label_comp_id(location);
+		const key = `${authAsymId}:${authSeqId}:${insertionCode}`;
+
+		if (!residues.has(key)) {
+			residues.set(key, {
+				authAsymId,
+				authSeqId,
+				insertionCode,
+				labelAsymId,
+				labelSeqId,
+				residueName,
+			});
+		}
+	});
+
+	const sortedResidues = [...residues.values()].sort((a, b) => {
+		if (a.authAsymId !== b.authAsymId) {
+			return a.authAsymId.localeCompare(b.authAsymId);
+		}
+		return a.authSeqId - b.authSeqId;
+	});
+
+	return {
+		atomCount,
+		kind: "protein_selection",
+		residueCount: sortedResidues.length,
+		residueRanges: compactResidueRanges(sortedResidues),
+		residues: sortedResidues.slice(0, 50),
+		truncatedResidues: sortedResidues.length > 50,
+	};
+}
+
+function compactResidueRanges(residues: ResidueSelection[]): ResidueRange[] {
+	const ranges: ResidueRange[] = [];
+	for (const residue of residues) {
+		const previous = ranges.at(-1);
+		if (
+			previous &&
+			previous.authAsymId === residue.authAsymId &&
+			previous.labelAsymId === residue.labelAsymId &&
+			previous.end + 1 === residue.authSeqId &&
+			residue.insertionCode === ""
+		) {
+			previous.end = residue.authSeqId;
+			continue;
+		}
+
+		ranges.push({
+			authAsymId: residue.authAsymId,
+			end: residue.authSeqId,
+			labelAsymId: residue.labelAsymId,
+			start: residue.authSeqId,
+		});
+	}
+	return ranges;
+}
+
 function formatSelectionLabel(
 	artifactLabel: string,
 	selector: Record<string, unknown>,
 ) {
+	const ranges = Array.isArray(selector.residueRanges)
+		? (selector.residueRanges as ResidueRange[])
+		: [];
+	if (selector.kind === "protein_selection" && ranges.length > 0) {
+		if (ranges.length === 1) {
+			const range = ranges[0];
+			if (!range) {
+				return `${artifactLabel} protein selection`;
+			}
+			const residueLabel =
+				range.start === range.end
+					? `residue ${range.start}`
+					: `residues ${range.start}-${range.end}`;
+			return `${artifactLabel} chain ${range.authAsymId} ${residueLabel}`;
+		}
+
+		return `${artifactLabel} ${ranges.length} residue ranges`;
+	}
+
 	if (typeof selector.kind === "string" && selector.kind !== "molstar_loci") {
 		return `${artifactLabel} ${selector.kind.replaceAll("-", " ")}`;
 	}

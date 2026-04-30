@@ -25,6 +25,7 @@ from autopep_agent.events import EventWriter
 from autopep_agent.r2_client import put_object as r2_put_object
 from autopep_agent.run_context import get_tool_run_context
 from autopep_agent.structure_utils import (
+    build_complex_fasta,
     build_fasta,
     encode_structure_base64,
     extract_pdb_sequences,
@@ -127,6 +128,7 @@ async def _generate_binder_candidates(
             pdb_text = pdb_record["pdb"]
             filename = pdb_record["filename"]
             sequences = extract_pdb_sequences(pdb_text)
+            target_sequence = sequences.get("A")
             sequence = sequences.get("B") or next(iter(sequences.values()), "")
             body = pdb_text.encode("utf-8")
             storage_key = _candidate_artifact_key(
@@ -193,6 +195,8 @@ async def _generate_binder_candidates(
                     "filename": filename,
                     "pdb": pdb_text,
                     "sequence": sequence,
+                    "target_sequence": target_sequence,
+                    "chain_sequences": sequences,
                     "candidate_id": candidate_db_id,
                     "artifact_id": artifact_id,
                 },
@@ -224,6 +228,8 @@ async def _generate_binder_candidates(
 
 async def _fold_sequences_with_chai(
     sequence_candidates: list[dict[str, Any]],
+    target_sequence: str | None = None,
+    target_name: str = "target",
 ) -> Any:
     """Fold sequence candidates with Chai.
 
@@ -233,11 +239,82 @@ async def _fold_sequences_with_chai(
         sequence_candidates: Candidate dictionaries with ``id`` and
             ``sequence``. Pass ``candidate_id`` to link the resulting fold
             artifact back to the persisted protein_candidate row.
+        target_sequence: Optional target protein sequence. When provided, Chai
+            receives one target+binder FASTA per candidate so it predicts the
+            complex rather than a binder-only monomer.
+        target_name: FASTA record name for the target chain.
     """
 
     ctx = get_tool_run_context()
     config = _r2_config_from_env()
     writer = EventWriter(ctx.database_url)
+
+    complex_requests = _complex_fold_requests(
+        sequence_candidates=sequence_candidates,
+        target_sequence=target_sequence,
+        target_name=target_name,
+    )
+    if complex_requests:
+        request_payload = {
+            "complexes": [
+                {
+                    "candidate_id": request["candidate_id"],
+                    "id": request["candidate_name"],
+                    "fasta": request["fasta"],
+                }
+                for request in complex_requests
+            ],
+            "num_diffn_samples": 1,
+        }
+        inference_id = await create_model_inference(
+            ctx.database_url,
+            workspace_id=ctx.workspace_id,
+            run_id=ctx.run_id,
+            model_name="chai_1",
+            request_json=request_payload,
+            endpoint_url=ctx.chai_base_url,
+        )
+
+        try:
+            client = ChaiClient(ctx.chai_base_url, ctx.chai_api_key)
+            results: list[dict[str, Any]] = []
+            for request in complex_requests:
+                response = await client.predict(
+                    fasta=str(request["fasta"]),
+                    num_diffn_samples=1,
+                )
+                results.append(
+                    {
+                        "candidate_id": request["candidate_id"],
+                        "raw": response,
+                    },
+                )
+                await _persist_chai_response(
+                    ctx=ctx,
+                    config=config,
+                    writer=writer,
+                    response=response,
+                    candidate_db_id=request["candidate_id"],
+                    filename_prefix=str(request["candidate_name"]),
+                )
+        except BaseException as exc:
+            await complete_model_inference(
+                ctx.database_url,
+                inference_id=inference_id,
+                status="failed",
+                response_json={},
+                error_summary=_summarize_error(exc),
+            )
+            raise
+
+        combined_response = {"results": results}
+        await complete_model_inference(
+            ctx.database_url,
+            inference_id=inference_id,
+            status="completed",
+            response_json=combined_response,
+        )
+        return combined_response
 
     fasta = build_fasta(sequence_candidates)
     request_payload = {
@@ -291,6 +368,10 @@ async def _fold_sequences_with_chai(
     for index, cif_record in enumerate(_extract_cif_records(response), start=1):
         filename = cif_record["filename"]
         cif_text = cif_record["cif"]
+        match_key = _match_candidate_key(cif_record, fallback_index=index)
+        candidate_db_id = candidate_id_by_name.get(match_key)
+        if candidate_db_id is None and index <= len(candidate_ids_by_index):
+            candidate_db_id = candidate_ids_by_index[index - 1]
         body = cif_text.encode("utf-8")
         storage_key = _fold_artifact_key(
             workspace_id=ctx.workspace_id,
@@ -316,6 +397,11 @@ async def _fold_sequences_with_chai(
             content_type="chemical/x-cif",
             size_bytes=len(body),
             sha256=sha256,
+            metadata_json=(
+                {"candidateId": str(candidate_db_id)}
+                if candidate_db_id is not None
+                else None
+            ),
         )
         await writer.append_event(
             run_id=ctx.run_id,
@@ -325,10 +411,6 @@ async def _fold_sequences_with_chai(
             display={"artifactId": artifact_id, "kind": "chai_result"},
         )
 
-        match_key = _match_candidate_key(cif_record, fallback_index=index)
-        candidate_db_id = candidate_id_by_name.get(match_key)
-        if candidate_db_id is None and index <= len(candidate_ids_by_index):
-            candidate_db_id = candidate_ids_by_index[index - 1]
         if candidate_db_id is not None:
             await update_candidate_fold_artifact(
                 ctx.database_url,
@@ -470,6 +552,135 @@ score_candidate_interactions = function_tool(
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+def _complex_fold_requests(
+    *,
+    sequence_candidates: list[dict[str, Any]],
+    target_sequence: str | None,
+    target_name: str,
+) -> list[dict[str, Any]]:
+    shared_target_sequence = _clean_sequence(target_sequence)
+    candidate_targets = [
+        _clean_sequence(_candidate_target_sequence(candidate))
+        for candidate in sequence_candidates
+    ]
+    if shared_target_sequence is None and not any(candidate_targets):
+        return []
+
+    requests: list[dict[str, Any]] = []
+    target_id = target_name.strip() or "target"
+    for index, candidate in enumerate(sequence_candidates, start=1):
+        candidate_target_sequence = shared_target_sequence or candidate_targets[index - 1]
+        if candidate_target_sequence is None:
+            raise ValueError(
+                "target_sequence is required for every candidate when folding "
+                "target-binder complexes with Chai.",
+            )
+
+        candidate_name = _candidate_id(candidate, index)
+        requests.append(
+            {
+                "candidate_id": candidate.get("candidate_id"),
+                "candidate_name": candidate_name,
+                "fasta": build_complex_fasta(
+                    target_id=target_id,
+                    target_sequence=candidate_target_sequence,
+                    binder_id=candidate_name,
+                    binder_sequence=str(candidate["sequence"]),
+                ),
+            },
+        )
+    return requests
+
+
+def _candidate_target_sequence(candidate: Mapping[str, Any]) -> str | None:
+    for key in ("target_sequence", "targetSequence"):
+        value = candidate.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
+def _clean_sequence(value: str | None) -> str | None:
+    if value is None:
+        return None
+    sequence = value.strip().upper()
+    return sequence or None
+
+
+async def _persist_chai_response(
+    *,
+    ctx: Any,
+    config: Mapping[str, str],
+    writer: EventWriter,
+    response: Any,
+    candidate_db_id: Any,
+    filename_prefix: str | None = None,
+) -> None:
+    for cif_record in _extract_cif_records(response):
+        filename = _prefixed_fold_filename(
+            cif_record["filename"],
+            filename_prefix=filename_prefix,
+        )
+        cif_text = cif_record["cif"]
+        body = cif_text.encode("utf-8")
+        storage_key = _fold_artifact_key(
+            workspace_id=ctx.workspace_id,
+            run_id=ctx.run_id,
+            filename=filename,
+        )
+        sha256 = await r2_put_object(
+            bucket=config["bucket"],
+            account_id=config["account_id"],
+            access_key_id=config["access_key_id"],
+            secret_access_key=config["secret_access_key"],
+            key=storage_key,
+            body=body,
+            content_type="chemical/x-cif",
+        )
+        artifact_id = await create_artifact(
+            ctx.database_url,
+            workspace_id=ctx.workspace_id,
+            run_id=ctx.run_id,
+            kind="chai_result",
+            name=filename,
+            storage_key=storage_key,
+            content_type="chemical/x-cif",
+            size_bytes=len(body),
+            sha256=sha256,
+            metadata_json=(
+                {"candidateId": str(candidate_db_id)}
+                if candidate_db_id is not None
+                else None
+            ),
+        )
+        await writer.append_event(
+            run_id=ctx.run_id,
+            event_type="artifact_created",
+            title=f"Stored {filename}",
+            summary=f"Saved Chai fold {filename} to R2.",
+            display={"artifactId": artifact_id, "kind": "chai_result"},
+        )
+
+        if candidate_db_id is not None:
+            await update_candidate_fold_artifact(
+                ctx.database_url,
+                workspace_id=ctx.workspace_id,
+                run_id=ctx.run_id,
+                candidate_id=str(candidate_db_id),
+                fold_artifact_id=artifact_id,
+            )
+
+
+def _prefixed_fold_filename(filename: str, *, filename_prefix: str | None) -> str:
+    safe_filename = filename.replace("/", "-").lstrip(".") or "chai-result.cif"
+    if not filename_prefix:
+        return safe_filename
+    safe_prefix = filename_prefix.replace("/", "-").lstrip(".") or "candidate"
+    if safe_filename.startswith(f"{safe_prefix}-"):
+        return safe_filename
+    return f"{safe_prefix}-{safe_filename}"
 
 
 def _r2_config_from_env() -> dict[str, str]:

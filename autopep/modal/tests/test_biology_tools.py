@@ -190,6 +190,8 @@ async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_
     assert result["candidates"][0]["filename"] == "design-1.pdb"
     assert result["candidates"][0]["pdb"] == PDB_TEXT
     assert result["candidates"][0]["sequence"] == "G"
+    assert result["candidates"][0]["target_sequence"] == "A"
+    assert result["candidates"][0]["chain_sequences"] == {"A": "A", "B": "G"}
     assert result["candidates"][0]["rank"] == 1
 
 
@@ -235,6 +237,61 @@ async def test_fold_sequences_with_chai_uses_candidate_fasta(
             "base_url": "https://chai.example/run",
             "api_key": "chai-key",
             "fasta": ">protein|name=candidate-1\nACDE\n",
+            "num_diffn_samples": 1,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fold_sequences_with_chai_uses_target_binder_fasta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_test_run_context()
+    _disable_persistence(monkeypatch)
+
+    calls: list[dict[str, Any]] = []
+    response = {"cifs": ["prediction.cif"]}
+
+    class FakeChaiClient:
+        def __init__(self, base_url: str, api_key: str) -> None:
+            self.base_url = base_url
+            self.api_key = api_key
+
+        async def predict(
+            self,
+            fasta: str,
+            num_diffn_samples: int = 1,
+        ) -> dict[str, Any]:
+            calls.append(
+                {
+                    "base_url": self.base_url,
+                    "api_key": self.api_key,
+                    "fasta": fasta,
+                    "num_diffn_samples": num_diffn_samples,
+                },
+            )
+            return response
+
+    monkeypatch.setattr(biology_tools, "ChaiClient", FakeChaiClient)
+
+    result = await biology_tools._fold_sequences_with_chai(
+        target_sequence=" aaaa ",
+        target_name="target",
+        sequence_candidates=[
+            {
+                "candidate_id": "db-candidate-1",
+                "id": "candidate-1",
+                "sequence": " gg ",
+            },
+        ],
+    )
+
+    assert result == {"results": [{"candidate_id": "db-candidate-1", "raw": response}]}
+    assert calls == [
+        {
+            "base_url": "https://chai.example/run",
+            "api_key": "chai-key",
+            "fasta": ">protein|name=target\nAAAA\n>protein|name=candidate-1\nGG\n",
             "num_diffn_samples": 1,
         },
     ]

@@ -7,6 +7,7 @@ import type { ChatPanelSendInput } from "@/app/_components/chat-panel";
 import { authClient } from "@/server/better-auth/client";
 import { api } from "@/trpc/react";
 import { buildStreamItems } from "./build-stream-items";
+import type { ProteinSelection } from "./molstar-viewer";
 import type { RecipeInput } from "./recipes-dialog";
 import { useAttachmentUpload } from "./use-attachment-upload";
 import type { ViewerTab } from "./viewer-tabs";
@@ -76,9 +77,19 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 		},
 	);
 
+	// Only fall back to latestWorkspace.data when it actually matches the
+	// active id (or no id is selected yet). Otherwise the previous workspace's
+	// stale data leaks through during transitions — e.g. just after sending the
+	// first message in a fresh workspace, before the new workspace's query
+	// has resolved.
+	const fallbackLatest =
+		activeWorkspaceId === null ||
+		latestWorkspace.data?.workspace.id === activeWorkspaceId
+			? latestWorkspace.data
+			: null;
 	const payload = isDraftWorkspace
 		? null
-		: (selectedWorkspace.data ?? latestWorkspace.data);
+		: (selectedWorkspace.data ?? fallbackLatest);
 	const currentWorkspaceId = isDraftWorkspace
 		? null
 		: (activeWorkspaceId ?? payload?.workspace.id ?? null);
@@ -145,6 +156,18 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 			await invalidateWorkspace(currentWorkspaceId);
 		},
 	});
+	const createContextReferenceMutation =
+		api.workspace.createContextReference.useMutation({
+			onSuccess: async () => {
+				await invalidateWorkspace(currentWorkspaceId);
+			},
+		});
+	const deleteContextReferenceMutation =
+		api.workspace.deleteContextReference.useMutation({
+			onSuccess: async () => {
+				await invalidateWorkspace(currentWorkspaceId);
+			},
+		});
 
 	const candidates = useMemo<WorkspaceCandidate[]>(
 		() =>
@@ -208,6 +231,7 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 				kind: artifact.kind ?? artifact.type,
 				runId: artifact.runId ?? null,
 				signedUrl: artifact.signedUrl,
+				type: artifact.type,
 			})),
 		[artifacts],
 	);
@@ -282,6 +306,8 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 					displayJson: event.displayJson ?? {},
 					id: event.id,
 					sequence: event.sequence,
+					summary: event.summary,
+					title: event.title,
 					type: event.type,
 				})),
 				messages: messages.map((message) => ({
@@ -295,6 +321,11 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 	);
 
 	const findCifArtifact = (candidateId?: string) =>
+		artifacts.find(
+			(artifact) =>
+				(!candidateId || artifact.candidateId === candidateId) &&
+				(artifact.type === "chai_result" || artifact.kind === "chai_result"),
+		) ??
 		artifacts.find(
 			(artifact) =>
 				(!candidateId || artifact.candidateId === candidateId) &&
@@ -347,6 +378,7 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 				...prev,
 				{
 					artifactId: artifact.id,
+					candidateId: artifact.candidateId,
 					fileName: artifact.fileName,
 					id: tabId,
 					kind: "file",
@@ -428,6 +460,25 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 		deleteAttachmentMutation.mutate({ artifactId });
 	};
 
+	const addProteinSelectionToContext = (selection: ProteinSelection) => {
+		if (!currentWorkspaceId) {
+			return;
+		}
+
+		createContextReferenceMutation.mutate({
+			artifactId: selection.artifactId,
+			candidateId: selection.candidateId,
+			kind: "protein_selection",
+			label: selection.label,
+			selector: selection.selector,
+			workspaceId: currentWorkspaceId,
+		});
+	};
+
+	const removeContextReference = (contextReferenceId: string) => {
+		deleteContextReferenceMutation.mutate({ contextReferenceId });
+	};
+
 	const signOut = async () => {
 		setSignOutError(null);
 		setIsSigningOut(true);
@@ -470,6 +521,7 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 		<WorkspaceShell
 			account={account}
 			activeArtifactId={activeArtifactId}
+			activeRunStatus={payload?.activeRun?.status ?? null}
 			activeTabId={activeTabId}
 			activeWorkspaceId={railActiveWorkspaceId}
 			candidateScores={candidateScores}
@@ -506,7 +558,9 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 			onCreateWorkspace={createWorkspaceFromRail}
 			onDeleteAttachment={deleteWorkspaceAttachment}
 			onOpenRecipes={() => setIsRecipesOpen(true)}
+			onProteinSelection={addProteinSelectionToContext}
 			onRemoveChatAttachment={attachmentUpload.remove}
+			onRemoveContextReference={removeContextReference}
 			onRenameWorkspace={(workspaceId, name) => {
 				if (workspaceId === DRAFT_WORKSPACE_ID) {
 					return;

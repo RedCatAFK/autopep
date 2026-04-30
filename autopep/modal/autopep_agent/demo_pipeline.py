@@ -158,6 +158,8 @@ async def execute_demo_one_loop(
         raise RuntimeError("Proteina did not return a persisted candidate with sequence.")
 
     await _fold_sequences_with_chai(
+        target_sequence=target_sequence,
+        target_name="target",
         sequence_candidates=[
             {
                 "candidate_id": candidate["candidate_id"],

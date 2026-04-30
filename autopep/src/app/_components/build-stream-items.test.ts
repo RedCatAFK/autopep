@@ -68,4 +68,36 @@ describe("buildStreamItems", () => {
 		});
 		expect(items).toEqual([]);
 	});
+
+	it("surfaces an OpenAI prompt block as a blocked chat item", () => {
+		const items = buildStreamItems({
+			messages: [],
+			events: [
+				{
+					id: "e-blocked",
+					sequence: 2,
+					type: "run_failed",
+					createdAt: "2026-04-30T10:00:03Z",
+					displayJson: {
+						error:
+							"Invalid prompt: we've limited access to this content for safety reasons.",
+						message: "Message blocked by OpenAI.",
+						provider: "openai",
+						reason: "openai_prompt_blocked",
+					},
+				},
+			],
+		});
+
+		expect(items).toEqual([
+			{
+				kind: "run_error",
+				id: "e-blocked",
+				content: "Message blocked by OpenAI.",
+				detail:
+					"Invalid prompt: we've limited access to this content for safety reasons.",
+				tone: "blocked",
+			},
+		]);
+	});
 });

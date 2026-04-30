@@ -17,6 +17,7 @@ import {
 } from "./chat-panel";
 import type { StreamItem } from "./chat-stream-item";
 import { FilesPanel } from "./files-panel";
+import type { ProteinSelection } from "./molstar-viewer";
 import {
 	type RecipeInput,
 	type RecipeRow,
@@ -94,6 +95,7 @@ export type WorkspaceFileArtifact = {
 	kind: string;
 	runId: string | null;
 	signedUrl: string | null;
+	type?: string;
 };
 
 export type WorkspaceRunSummary = {
@@ -105,6 +107,7 @@ export type WorkspaceRunSummary = {
 type WorkspaceShellProps = {
 	account?: RailAccount;
 	activeArtifactId: string | null;
+	activeRunStatus?: string | null;
 	activeTabId: string | null;
 	activeWorkspaceId: string | null;
 	chatAttachments?: AttachmentChip[];
@@ -126,7 +129,9 @@ type WorkspaceShellProps = {
 	onCreateWorkspace: () => void;
 	onDeleteAttachment?: (artifactId: string) => void;
 	onOpenRecipes: () => void;
+	onProteinSelection?: (selection: ProteinSelection) => void;
 	onRemoveChatAttachment?: (chipId: string) => void;
+	onRemoveContextReference?: (referenceId: string) => void;
 	onRenameWorkspace?: (workspaceId: string, name: string) => void;
 	onSelectWorkspace: (workspaceId: string) => void;
 	onSendMessage: (input: ChatPanelSendInput) => void;
@@ -185,6 +190,7 @@ export function resizePanelWidth({
 export function WorkspaceShell({
 	account,
 	activeArtifactId,
+	activeRunStatus = null,
 	activeTabId,
 	activeWorkspaceId,
 	chatAttachments,
@@ -206,7 +212,9 @@ export function WorkspaceShell({
 	onCreateWorkspace,
 	onDeleteAttachment,
 	onOpenRecipes,
+	onProteinSelection,
 	onRemoveChatAttachment,
+	onRemoveContextReference,
 	onRenameWorkspace,
 	onSelectWorkspace,
 	onSendMessage,
@@ -383,6 +391,7 @@ export function WorkspaceShell({
 			/>
 			<div className="relative min-h-0">
 				<ChatPanel
+					activeRunStatus={activeRunStatus}
 					attachments={chatAttachments}
 					contextReferences={contextReferences}
 					isDisabled={isChatDisabled}
@@ -392,6 +401,7 @@ export function WorkspaceShell({
 					onOpenArtifact={openArtifactInTab}
 					onOpenCandidate={openCandidateInTab}
 					onRemoveAttachment={onRemoveChatAttachment}
+					onRemoveContextReference={onRemoveContextReference}
 					onSend={onSendMessage}
 					onUploadAttachments={onUploadChatAttachments}
 					recipes={chatRecipes}
@@ -420,6 +430,7 @@ export function WorkspaceShell({
 					candidates={tabCandidates}
 					onClose={closeTab}
 					onOpenCandidate={openCandidateInTab}
+					onProteinSelection={onProteinSelection}
 					onSelect={setActiveTabId}
 					tabs={tabs}
 				/>

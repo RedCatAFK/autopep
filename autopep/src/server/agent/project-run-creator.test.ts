@@ -162,6 +162,7 @@ describe("createMessageRunWithLaunch", () => {
 				.mockReturnValueOnce(runInsert)
 				.mockReturnValueOnce(messageInsert),
 			query: {
+				contextReferences: { findMany: vi.fn().mockResolvedValue([]) },
 				recipeVersions: { findFirst: vi.fn() },
 				recipes: { findFirst: vi.fn() },
 				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
@@ -215,6 +216,97 @@ describe("createMessageRunWithLaunch", () => {
 			thread,
 			workspace,
 		});
+	});
+
+	it("materializes selected context references into the launched run prompt", async () => {
+		const workspace = {
+			activeThreadId: "33333333-3333-4333-8333-333333333333",
+			id: "22222222-2222-4222-8222-222222222222",
+			name: "3CL protease",
+			ownerId: "user-1",
+		};
+		const thread = {
+			id: workspace.activeThreadId,
+			title: "Main thread",
+			workspaceId: workspace.id,
+		};
+		const reference = {
+			artifactId: "11111111-1111-4111-8111-111111111111",
+			candidateId: "33333333-3333-4333-8333-333333333333",
+			id: "55555555-5555-4555-8555-555555555555",
+			kind: "protein_selection",
+			label: "6M0J chain A residue 145",
+			selectorJson: {
+				authAsymId: "A",
+				residueRanges: [{ end: 145, start: 145 }],
+			},
+			workspaceId: workspace.id,
+		};
+		const expectedPrompt = [
+			"Explain this region",
+			"",
+			"Selected workspace context:",
+			"- 6M0J chain A residue 145 [protein_selection] (artifactId: 11111111-1111-4111-8111-111111111111, candidateId: 33333333-3333-4333-8333-333333333333)",
+			'  selector: {"authAsymId":"A","residueRanges":[{"end":145,"start":145}]}',
+		].join("\n");
+		const queuedRun = {
+			createdById: "user-1",
+			id: "11111111-1111-4111-8111-111111111111",
+			prompt: expectedPrompt,
+			status: "queued",
+			taskKind: "chat",
+			threadId: thread.id,
+			workspaceId: workspace.id,
+		};
+		const message = {
+			content: "Explain this region",
+			id: "44444444-4444-4444-8444-444444444444",
+			role: "user",
+			runId: queuedRun.id,
+			threadId: thread.id,
+		};
+		const runInsert = insertReturning(queuedRun);
+		const messageInsert = insertReturning(message);
+		const contextReferencesFindMany = vi.fn().mockResolvedValue([reference]);
+		const db = {
+			insert: vi
+				.fn()
+				.mockReturnValueOnce(runInsert)
+				.mockReturnValueOnce(messageInsert),
+			query: {
+				contextReferences: { findMany: contextReferencesFindMany },
+				threads: { findFirst: vi.fn().mockResolvedValue(thread) },
+				workspaces: { findFirst: vi.fn().mockResolvedValue(workspace) },
+			},
+		};
+		const launchRun = vi.fn().mockResolvedValue({
+			backend: "modal",
+			launched: true,
+		});
+
+		await createMessageRunWithLaunch({
+			db: db as never,
+			input: {
+				contextRefs: [reference.id],
+				prompt: message.content,
+				workspaceId: workspace.id,
+			},
+			launchRun,
+			ownerId: "user-1",
+		});
+
+		expect(runInsert.values).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expectedPrompt,
+			}),
+		);
+		expect(messageInsert.values).toHaveBeenCalledWith(
+			expect.objectContaining({
+				content: message.content,
+				contextRefsJson: [reference.id],
+			}),
+		);
+		expect(contextReferencesFindMany).toHaveBeenCalledOnce();
 	});
 
 	it("snapshots selected recipe versions onto the run", async () => {

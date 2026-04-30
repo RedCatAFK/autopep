@@ -66,4 +66,62 @@ describe("FilePreview", () => {
 		);
 		expect(screen.getByText(/no signed url available/i)).toBeInTheDocument();
 	});
+
+	it("passes protein selections from structure viewers", () => {
+		const onProteinSelection = vi.fn();
+		const FakeViewer = ({
+			artifactId,
+			candidateId,
+			onProteinSelection: onSelection,
+		}: {
+			artifactId?: string | null;
+			candidateId?: string | null;
+			onProteinSelection?: (selection: {
+				artifactId: string;
+				candidateId: string | null;
+				label: string;
+				selector: Record<string, unknown>;
+			}) => void;
+		}) => (
+			<button
+				onClick={() =>
+					onSelection?.({
+						artifactId: artifactId ?? "",
+						candidateId: candidateId ?? null,
+						label: "6M0J chain A residue 145",
+						selector: {
+							authAsymId: "A",
+							residueRanges: [{ end: 145, start: 145 }],
+						},
+					})
+				}
+				type="button"
+			>
+				Select residue
+			</button>
+		);
+
+		render(
+			<FilePreview
+				artifactId="artifact-1"
+				candidateId="candidate-1"
+				fileName="6m0j.cif"
+				onProteinSelection={onProteinSelection}
+				signedUrl="https://example.com/6m0j.cif"
+				viewerComponent={FakeViewer}
+			/>,
+		);
+
+		screen.getByRole("button", { name: "Select residue" }).click();
+
+		expect(onProteinSelection).toHaveBeenCalledWith({
+			artifactId: "artifact-1",
+			candidateId: "candidate-1",
+			label: "6M0J chain A residue 145",
+			selector: {
+				authAsymId: "A",
+				residueRanges: [{ end: 145, start: 145 }],
+			},
+		});
+	});
 });

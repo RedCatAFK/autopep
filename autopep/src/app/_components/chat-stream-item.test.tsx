@@ -27,6 +27,46 @@ describe("ChatStreamItem", () => {
 		expect(screen.getByText("hi there")).toBeInTheDocument();
 	});
 
+	it("renders assistant message markdown", () => {
+		const item: StreamItem = {
+			kind: "assistant_message",
+			id: "markdown",
+			content:
+				"## Result\n\n- Folded **candidate A**\n- Score: `-9.2 kcal/mol`\n\n[Open PDB](https://example.com)",
+			streaming: false,
+		};
+
+		render(<ChatStreamItem item={item} />);
+
+		expect(screen.getByRole("heading", { name: "Result" })).toBeInTheDocument();
+		expect(screen.getByText("candidate A").tagName).toBe("STRONG");
+		expect(screen.getByText("-9.2 kcal/mol").tagName).toBe("CODE");
+		expect(screen.getByRole("link", { name: "Open PDB" })).toHaveAttribute(
+			"href",
+			"https://example.com",
+		);
+	});
+
+	it("renders blocked run errors as a red alert", () => {
+		const item: StreamItem = {
+			kind: "run_error",
+			id: "blocked",
+			content: "Message blocked by OpenAI.",
+			detail: "OpenAI blocked this prompt for safety reasons.",
+			tone: "blocked",
+		};
+
+		render(<ChatStreamItem item={item} />);
+
+		const alert = screen.getByRole("alert");
+		expect(alert).toHaveTextContent("Message blocked by OpenAI.");
+		expect(alert).toHaveTextContent(
+			"OpenAI blocked this prompt for safety reasons.",
+		);
+		expect(alert).toHaveAttribute("data-tone", "blocked");
+		expect(alert.className).toContain("text-[#7c2f1c]");
+	});
+
 	it("renders tool call collapsed by default and expands on click", async () => {
 		const user = userEvent.setup();
 		const item: StreamItem = {

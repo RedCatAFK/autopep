@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 
+from autopep_agent import structure_utils
 from autopep_agent.structure_utils import (
     build_fasta,
     encode_structure_base64,
@@ -53,6 +54,16 @@ def test_build_fasta_formats_candidate_ids_and_sequences() -> None:
     assert build_fasta([{"id": "candidate-1", "sequence": "ACDE"}]) == (
         ">protein|name=candidate-1\nACDE\n"
     )
+
+
+def test_build_complex_fasta_formats_target_then_binder() -> None:
+    assert hasattr(structure_utils, "build_complex_fasta")
+    assert structure_utils.build_complex_fasta(
+        target_id="target",
+        target_sequence=" aa ",
+        binder_id="candidate-1",
+        binder_sequence=" gg ",
+    ) == ">protein|name=target\nAA\n>protein|name=candidate-1\nGG\n"
 
 
 def test_encode_structure_base64_encodes_utf8_text() -> None:

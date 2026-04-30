@@ -7,12 +7,22 @@ import {
 	WarningCircle,
 } from "@phosphor-icons/react";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { type ComponentType, useEffect, useMemo, useState } from "react";
+
+import type { ProteinSelection } from "./molstar-viewer";
+
+type StructureViewerProps = {
+	artifactId?: string | null;
+	candidateId?: string | null;
+	label: string;
+	onProteinSelection?: (selection: ProteinSelection) => void;
+	url: string | null;
+};
 
 const MolstarViewer = dynamic(
 	() => import("./molstar-viewer").then((mod) => mod.MolstarViewer),
 	{ ssr: false },
-);
+) as ComponentType<StructureViewerProps>;
 
 const STRUCTURE_EXTENSIONS = new Set(["cif", "mmcif", "pdb"]);
 const TEXT_EXTENSIONS = new Set([
@@ -31,14 +41,20 @@ const IMAGE_EXTENSIONS = new Set(["jpeg", "jpg", "png", "svg"]);
 
 type FilePreviewProps = {
 	artifactId: string;
+	candidateId?: string | null;
 	fileName: string;
+	onProteinSelection?: (selection: ProteinSelection) => void;
 	signedUrl: string | null;
+	viewerComponent?: ComponentType<StructureViewerProps>;
 };
 
 export function FilePreview({
 	artifactId,
+	candidateId = null,
 	fileName,
+	onProteinSelection,
 	signedUrl,
+	viewerComponent: StructureViewer = MolstarViewer,
 }: FilePreviewProps) {
 	const extension = useMemo(() => extractExtension(fileName), [fileName]);
 
@@ -53,9 +69,11 @@ export function FilePreview({
 	if (STRUCTURE_EXTENSIONS.has(extension)) {
 		return (
 			<div className="h-full min-h-0">
-				<MolstarViewer
+				<StructureViewer
 					artifactId={artifactId}
+					candidateId={candidateId}
 					label={fileName}
+					onProteinSelection={onProteinSelection}
 					url={signedUrl}
 				/>
 			</div>

@@ -9,7 +9,9 @@ import {
 } from "@phosphor-icons/react";
 import { type ComponentType, useRef, useState } from "react";
 
-import { MolstarViewer } from "./molstar-viewer";
+import { MolstarViewer, type ProteinSelection } from "./molstar-viewer";
+
+export type { ProteinSelection } from "./molstar-viewer";
 
 export type StageArtifact = {
 	id: string;
@@ -21,13 +23,6 @@ export type StageArtifact = {
 export type StageCandidate = {
 	id: string;
 	title: string;
-};
-
-export type ProteinSelection = {
-	artifactId: string;
-	candidateId: string | null;
-	label: string;
-	selector: Record<string, unknown>;
 };
 
 type StageViewerProps = {

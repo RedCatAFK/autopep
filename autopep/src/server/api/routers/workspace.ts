@@ -100,6 +100,10 @@ const attachmentIdInput = z.object({
 	artifactId: z.string().uuid(),
 });
 
+const contextReferenceIdInput = z.object({
+	contextReferenceId: z.string().uuid(),
+});
+
 const sanitizeAttachmentFileName = (name: string) => {
 	const cleaned = name
 		.trim()
@@ -118,6 +122,11 @@ const sendMessageInput = z.object({
 	taskKind: publicTaskKindSchema.default("chat"),
 	workspaceId: z.string().uuid().optional(),
 });
+
+const shouldRouteChatPromptAsResearch = (prompt: string) =>
+	/\b(literature|papers?|pubmed|pmc|biorxiv|preprints?|studies)\b/iu.test(
+		prompt,
+	);
 
 const getRecord = (value: unknown): Record<string, unknown> =>
 	value && typeof value === "object" && !Array.isArray(value)
@@ -608,6 +617,42 @@ export const workspaceRouter = createTRPCRouter({
 			return reference;
 		}),
 
+	deleteContextReference: protectedProcedure
+		.input(contextReferenceIdInput)
+		.mutation(async ({ ctx, input }) => {
+			const reference = await ctx.db.query.contextReferences.findFirst({
+				where: eq(contextReferences.id, input.contextReferenceId),
+			});
+
+			if (!reference) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Context reference not found.",
+				});
+			}
+
+			const workspace = await ctx.db.query.workspaces.findFirst({
+				where: and(
+					eq(workspaces.id, reference.workspaceId),
+					eq(workspaces.ownerId, ctx.session.user.id),
+					isNull(workspaces.archivedAt),
+				),
+			});
+
+			if (!workspace) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Context reference not found.",
+				});
+			}
+
+			await ctx.db
+				.delete(contextReferences)
+				.where(eq(contextReferences.id, reference.id));
+
+			return { ok: true as const };
+		}),
+
 	listRecipes: protectedProcedure
 		.input(workspaceIdInput)
 		.query(async ({ ctx, input }) => {
@@ -781,10 +826,16 @@ export const workspaceRouter = createTRPCRouter({
 		.input(sendMessageInput)
 		.mutation(async ({ ctx, input }) => {
 			const wasFreshlyCreated = !(input.workspaceId ?? input.projectId);
+			const taskKind =
+				input.taskKind === "chat" &&
+				shouldRouteChatPromptAsResearch(input.prompt)
+					? "research"
+					: input.taskKind;
 			const result = await createMessageRunWithLaunch({
 				db: ctx.db,
 				input: {
 					...input,
+					taskKind,
 					workspaceId: input.workspaceId ?? input.projectId,
 				},
 				ownerId: ctx.session.user.id,

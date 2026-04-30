@@ -45,6 +45,7 @@ from autopep_agent.db import (
 from autopep_agent.demo_pipeline import execute_demo_one_loop
 from autopep_agent.events import EventWriter
 from autopep_agent.r2_client import download_object as r2_download_object
+from autopep_agent.research_tools import RESEARCH_TOOLS
 from autopep_agent.run_context import (
     ToolRunContext,
     reset_tool_run_context,
@@ -66,6 +67,9 @@ from autopep_agent.streaming import (
 SANDBOX_APP_NAME = "autopep-agent-runtime"
 SANDBOX_TIMEOUT_SECONDS = 60 * 60
 SMOKE_TASK_KINDS = {"smoke_chat", "smoke_tool", "smoke_sandbox"}
+OPENAI_PROMPT_BLOCKED_REASON = "openai_prompt_blocked"
+OPENAI_PROMPT_BLOCKED_MESSAGE = "Message blocked by OpenAI."
+OPENAI_PROMPT_BLOCKED_SUMMARY = "OpenAI blocked this message for safety reasons."
 
 # Mount path of the ``autopep-workspaces`` Modal volume. Attachments are
 # downloaded into ``{WORKSPACE_DIR}/{workspace_id}/inputs/`` so the agent
@@ -293,10 +297,17 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
             "biomedical evidence, and distinguish literature evidence from model output."
         ),
         (
+            "For live literature requests, use search_pubmed_literature and "
+            "search_europe_pmc_literature before answering. Do not say you lack live "
+            "database access when these tools are available; if a source call fails, "
+            "name the failed source and answer only from gathered evidence."
+        ),
+        (
             "MVP one-loop workflow: perform literature research, search PDB structures, "
             "prepare the target, call generate_binder_candidates, call "
-            "fold_sequences_with_chai, call score_candidate_interactions, then provide "
-            "a ranked summary."
+            "fold_sequences_with_chai with the target sequence so Chai folds "
+            "target-binder complexes, call score_candidate_interactions, then "
+            "provide a ranked summary."
         ),
         (
             "Use computational screening language only. Do not claim wet-lab validation, "
@@ -320,6 +331,7 @@ def build_autopep_agent(enabled_recipes: list[str] | None = None) -> Agent:
         name="Autopep",
         instructions=build_agent_instructions(enabled_recipes),
         tools=[
+            *RESEARCH_TOOLS,
             generate_binder_candidates,
             fold_sequences_with_chai,
             score_candidate_interactions,
@@ -426,6 +438,14 @@ def _build_runner_input(
 def _summarize_error(error: BaseException) -> str:
     summary = str(error).strip() or error.__class__.__name__
     return summary[:1400]
+
+
+def _is_openai_prompt_block_summary(error_summary: str) -> bool:
+    normalized = error_summary.lower()
+    return "invalid prompt" in normalized and (
+        "limited access to this content for safety reasons" in normalized
+        or ("content" in normalized and "safety reasons" in normalized)
+    )
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -557,8 +577,26 @@ async def _append_failure_event(
     *,
     run_id: str,
     error_summary: str,
+    blocked_by_openai: bool = False,
+    raw_error_summary: str | None = None,
 ) -> None:
     try:
+        if blocked_by_openai:
+            await writer.append_event(
+                run_id=run_id,
+                event_type="run_failed",
+                title="Message blocked by OpenAI",
+                summary=OPENAI_PROMPT_BLOCKED_SUMMARY,
+                display={
+                    "error": raw_error_summary or error_summary,
+                    "message": OPENAI_PROMPT_BLOCKED_MESSAGE,
+                    "provider": "openai",
+                    "reason": OPENAI_PROMPT_BLOCKED_REASON,
+                },
+                raw={"error": raw_error_summary or error_summary},
+            )
+            return
+
         await writer.append_event(
             run_id=run_id,
             event_type="run_failed",
@@ -884,7 +922,11 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
         )
         await mark_run_completed(database_url, run_id)
     except Exception as exc:
-        error_summary = _summarize_error(exc)
+        raw_error_summary = _summarize_error(exc)
+        blocked_by_openai = _is_openai_prompt_block_summary(raw_error_summary)
+        error_summary = (
+            OPENAI_PROMPT_BLOCKED_SUMMARY if blocked_by_openai else raw_error_summary
+        )
 
         # Best-effort failure recording. If config loading itself failed before
         # we got `database_url`, fall back to the raw env var so the run still
@@ -899,6 +941,8 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 failure_writer,
                 run_id=run_id,
                 error_summary=error_summary,
+                blocked_by_openai=blocked_by_openai,
+                raw_error_summary=raw_error_summary,
             )
         if failure_db_url is not None:
             await _mark_failure(
@@ -906,4 +950,7 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 run_id=run_id,
                 error_summary=error_summary,
             )
+        if blocked_by_openai:
+            await _push_token_done(run_id)
+            return
         raise
