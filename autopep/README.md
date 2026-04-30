@@ -40,3 +40,27 @@ bun run scripts/smoke-roundtrip.ts branch_design
 ```
 
 The three `smoke_*` modes use `gpt-5.4-mini` and only verify launch, streaming, tool, sandbox, Neon, and event plumbing. `branch_design` seeds the one-loop 3CL-protease demo recipe, calls the deployed Proteina, Chai-1, and protein interaction scoring endpoints, and verifies required Neon rows plus R2 object existence. The script creates a Better Auth smoke user, workspace, and thread if `AUTOPEP_SMOKE_OWNER_ID`, `AUTOPEP_SMOKE_WORKSPACE_ID`, and `AUTOPEP_SMOKE_THREAD_ID` are unset. It prints those IDs for reuse, launches through `createMessageRunWithLaunch`, waits for completion, and checks contiguous event sequencing plus required events.
+
+## Cheap CI Evals
+
+The PR-safe orchestration eval is deterministic and does not touch Modal, R2, Neon, or model endpoints:
+
+```sh
+bun run test:ci-evals
+```
+
+It checks the minimum full-loop trace contract: run lifecycle, ordered tool calls for literature/PDB/generation/folding/scoring, completed tool pairs, artifact persistence events, candidate ranking events, and a final assistant response after scoring. The same evaluator can later be pointed at real `agent_events` rows for deployed canaries.
+
+## Nightly Live Science Canaries
+
+The deployed-stack canary suite creates real Modal-backed agent runs for a fixed target set, then checks the persisted Neon trace, artifacts, candidates, model inferences, score rows, latency, and final assistant evidence:
+
+```sh
+AUTOPEP_RUNNER_BACKEND=modal \
+AUTOPEP_MODAL_START_URL="https://..." \
+AUTOPEP_MODAL_WEBHOOK_SECRET="..." \
+DATABASE_URL="postgresql://..." \
+bun run eval:live-canaries -- --target prod --limit 1
+```
+
+Defaults run three bounded targets (`sars-cov-2-3clpro`, `pd-l1`, `ace2`) with `num_candidates=3` prompts. Set `AUTOPEP_LIVE_CANARIES` to a comma-separated subset, `AUTOPEP_LIVE_CANARY_OUTPUT` to write a JSON report, and `AUTOPEP_LIVE_CANARY_CLEANUP=success` to delete passing canary workspaces after evaluation. The GitHub Actions workflow `.github/workflows/live-science-canaries.yml` runs nightly when the canary database and Modal webhook secrets are configured.

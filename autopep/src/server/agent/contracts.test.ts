@@ -71,6 +71,9 @@ describe("Autopep runtime contracts", () => {
 		expect(endpointModelNameSchema.parse("protein_interaction_scoring")).toBe(
 			"protein_interaction_scoring",
 		);
+		expect(endpointModelNameSchema.parse("quality_scorers")).toBe(
+			"quality_scorers",
+		);
 	});
 
 	it("validates candidate score rows for D-SCRIPT, PRODIGY, and aggregate labels", () => {
@@ -117,6 +120,21 @@ describe("Autopep runtime contracts", () => {
 		).toMatchObject({
 			label: "possible_binder",
 			scorer: "protein_interaction_aggregate",
+		});
+		expect(
+			candidateScoreSchema.parse({
+				candidateId: "33333333-3333-4333-8333-333333333333",
+				label: null,
+				scorer: "solubility",
+				status: "ok",
+				unit: "probability",
+				value: 0.78,
+				values: { solubility: 0.78 },
+			}),
+		).toMatchObject({
+			scorer: "solubility",
+			unit: "probability",
+			value: 0.78,
 		});
 		expect(scoreLabelSchema.parse("insufficient_data")).toBe(
 			"insufficient_data",

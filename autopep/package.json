@@ -19,6 +19,8 @@
 		"preview": "next build --webpack && next start",
 		"start": "next start",
 		"test": "vitest run --passWithNoTests",
+		"test:ci-evals": "PYTHONPATH=modal python3 -m autopep_agent.ci_evals",
+		"eval:live-canaries": "bun scripts/live-science-canaries.ts",
 		"test:watch": "vitest",
 		"worker:cif": "tsx workers/cif-retrieval-worker.ts",
 		"typecheck": "tsc --noEmit"

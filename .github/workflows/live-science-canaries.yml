@@ -1,0 +1,78 @@
+name: Live science canaries
+
+on:
+  schedule:
+    # 02:00 Australia/Sydney during standard time.
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+    inputs:
+      canaries:
+        description: "Comma-separated canary ids; empty uses the default set."
+        required: false
+        type: string
+      limit:
+        default: "3"
+        description: "Number of default canaries to run when canaries is empty."
+        required: false
+        type: string
+      cleanup:
+        default: "never"
+        description: "Cleanup mode: never, success, or always."
+        required: false
+        type: string
+
+concurrency:
+  group: live-science-canaries
+  cancel-in-progress: false
+
+jobs:
+  live-science-canaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Check live canary secrets
+        id: secrets
+        env:
+          DATABASE_URL: ${{ secrets.AUTOPEP_CANARY_DATABASE_URL }}
+          AUTOPEP_MODAL_START_URL: ${{ secrets.AUTOPEP_MODAL_START_URL }}
+          AUTOPEP_MODAL_WEBHOOK_SECRET: ${{ secrets.AUTOPEP_MODAL_WEBHOOK_SECRET }}
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$AUTOPEP_MODAL_START_URL" ] || [ -z "$AUTOPEP_MODAL_WEBHOOK_SECRET" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Live science canaries skipped: configure AUTOPEP_CANARY_DATABASE_URL, AUTOPEP_MODAL_START_URL, and AUTOPEP_MODAL_WEBHOOK_SECRET secrets."
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: autopep
+        run: bun install --frozen-lockfile
+
+      - name: Run live science canaries
+        if: steps.secrets.outputs.ready == 'true'
+        working-directory: autopep
+        env:
+          AUTOPEP_LIVE_CANARIES: ${{ inputs.canaries }}
+          AUTOPEP_LIVE_CANARY_CLEANUP: ${{ inputs.cleanup || 'never' }}
+          AUTOPEP_LIVE_CANARY_LIMIT: ${{ inputs.limit || '3' }}
+          AUTOPEP_LIVE_CANARY_OUTPUT: live-canary-report.json
+          AUTOPEP_MODAL_START_URL: ${{ secrets.AUTOPEP_MODAL_START_URL }}
+          AUTOPEP_MODAL_WEBHOOK_SECRET: ${{ secrets.AUTOPEP_MODAL_WEBHOOK_SECRET }}
+          AUTOPEP_RUNNER_BACKEND: modal
+          DATABASE_URL: ${{ secrets.AUTOPEP_CANARY_DATABASE_URL }}
+          NODE_ENV: test
+          OPENAI_DEFAULT_MODEL: ${{ vars.OPENAI_DEFAULT_MODEL || 'gpt-5.5' }}
+        run: bun run eval:live-canaries -- --target prod
+
+      - name: Upload live canary report
+        if: always() && steps.secrets.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-canary-report
+          path: autopep/live-canary-report.json
+          if-no-files-found: ignore
