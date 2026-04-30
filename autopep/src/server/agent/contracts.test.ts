@@ -27,7 +27,6 @@ describe("Autopep runtime contracts", () => {
 	it("accepts task kinds for production and smoke agent runs", () => {
 		for (const taskKind of [
 			"chat",
-			"branch_design",
 			"smoke_chat",
 			"smoke_tool",
 			"smoke_sandbox",
@@ -43,7 +42,6 @@ describe("Autopep runtime contracts", () => {
 			"structure_search",
 			"prepare_structure",
 			"mutate_structure",
-			"branch_design",
 		]) {
 			expect(publicTaskKindSchema.parse(taskKind)).toBe(taskKind);
 		}

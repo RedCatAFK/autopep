@@ -326,7 +326,7 @@ describe("createMessageRunWithLaunch", () => {
 			id: "11111111-1111-4111-8111-111111111111",
 			prompt: "Generate a protein that binds to 3CL-protease",
 			status: "queued",
-			taskKind: "branch_design",
+			taskKind: "chat",
 			threadId: thread.id,
 			workspaceId: workspace.id,
 		};
@@ -376,7 +376,7 @@ describe("createMessageRunWithLaunch", () => {
 			input: {
 				prompt: message.content,
 				recipeRefs: [recipe.id],
-				taskKind: "branch_design",
+				taskKind: "chat",
 				workspaceId: workspace.id,
 			},
 			launchRun,

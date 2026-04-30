@@ -15,7 +15,6 @@ export const publicTaskKindSchema = z.enum([
 	"structure_search",
 	"prepare_structure",
 	"mutate_structure",
-	"branch_design",
 ]);
 
 export const taskKindSchema = z.enum([
@@ -24,7 +23,6 @@ export const taskKindSchema = z.enum([
 	"structure_search",
 	"prepare_structure",
 	"mutate_structure",
-	"branch_design",
 	"smoke_chat",
 	"smoke_tool",
 	"smoke_sandbox",

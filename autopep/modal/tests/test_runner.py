@@ -8,12 +8,10 @@ import pytest
 
 from autopep_agent import runner as runner_mod
 from autopep_agent.db import AgentRunContext, AttachmentRow
-from autopep_agent.run_context import get_tool_run_context
 from autopep_agent.runner import (
     build_agent_instructions,
     build_autopep_agent,
     build_sandbox_config,
-    choose_task_kind,
     execute_run,
 )
 
@@ -36,17 +34,6 @@ REQUIRED_RUNTIME_ENV = {
 
 def _tool_names(tools: list[object]) -> set[str]:
     return {str(getattr(tool, "name", "")) for tool in tools}
-
-
-def test_choose_task_kind_routes_branch_design_prompt() -> None:
-    assert (
-        choose_task_kind("Generate a protein that binds to 3CL-protease")
-        == "branch_design"
-    )
-
-
-def test_choose_task_kind_routes_general_explanation_to_chat() -> None:
-    assert choose_task_kind("Explain this residue selection") == "chat"
 
 
 def test_build_agent_instructions_mentions_workflow_tools_and_recipes() -> None:
@@ -80,60 +67,6 @@ def test_build_autopep_agent_includes_literature_search_tools() -> None:
         "search_europe_pmc_literature",
         "search_pubmed_literature",
     }.issubset(_tool_names(agent.tools))
-
-
-@pytest.mark.asyncio
-async def test_execute_run_routes_branch_design_to_demo_pipeline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_required_env(monkeypatch)
-    writer = _wire_fake_writer(monkeypatch)
-    runner_double, _streamed = _wire_fake_runner(monkeypatch)
-
-    async def fake_get_run_context(*_args: Any, **_kwargs: Any) -> AgentRunContext:
-        return AgentRunContext(
-            prompt="Generate a protein that binds to 3CL-protease",
-            model=None,
-            task_kind="branch_design",
-            enabled_recipes=["run the demo recipe"],
-        )
-
-    async def fake_claim_run(*_args: Any, **_kwargs: Any) -> bool:
-        return True
-
-    demo_calls: list[dict[str, Any]] = []
-
-    async def fake_execute_demo_one_loop(**kwargs: Any) -> dict[str, Any]:
-        demo_calls.append(kwargs)
-        assert get_tool_run_context().run_id == "r-demo"
-        await kwargs["writer"].append_event(
-            run_id=kwargs["run_id"],
-            event_type="assistant_message_completed",
-            title="MVP loop complete",
-        )
-        return {"candidate_count": 1}
-
-    completed: list[str] = []
-
-    async def fake_mark_completed(_url: str, run_id: str) -> None:
-        completed.append(run_id)
-
-    monkeypatch.setattr(runner_mod, "get_run_context", fake_get_run_context)
-    monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
-    monkeypatch.setattr(runner_mod, "execute_demo_one_loop", fake_execute_demo_one_loop)
-    monkeypatch.setattr(runner_mod, "mark_run_completed", fake_mark_completed)
-
-    await execute_run(run_id="r-demo", thread_id="t1", workspace_id="w1")
-
-    assert len(demo_calls) == 1
-    assert demo_calls[0]["run_id"] == "r-demo"
-    assert [event["type"] for event in writer.events] == [
-        "run_started",
-        "assistant_message_completed",
-        "run_completed",
-    ]
-    runner_double.run_streamed.assert_not_called()
-    assert completed == ["r-demo"]
 
 
 def test_build_sandbox_config_returns_usable_object_without_network() -> None:
@@ -263,63 +196,6 @@ def _wire_fake_writer(
     # Pre-create on first call by triggering construction explicitly so the
     # caller can grab it; lazy creation via make_writer also works.
     return captured.setdefault("writer", _FakeEventWriter(""))
-
-
-@pytest.mark.asyncio
-async def test_execute_run_uses_persisted_task_kind_not_prompt_heuristic(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_required_env(monkeypatch)
-    writer = _wire_fake_writer(monkeypatch)
-    _wire_fake_runner(monkeypatch)
-
-    async def fake_get_run_context(
-        _database_url: str,
-        *,
-        run_id: str,
-        thread_id: str,
-        workspace_id: str,
-    ) -> AgentRunContext:
-        # Prompt heuristic would route this to "branch_design" because of
-        # "generate" + "bind" + "3cl"; the persisted task_kind is different.
-        return AgentRunContext(
-            prompt="Generate a protein that binds to 3CL-protease.",
-            model=None,
-            task_kind="prepare_structure",
-            enabled_recipes=[],
-        )
-
-    async def fake_claim_run(_database_url: str, *, run_id: str) -> bool:
-        return True
-
-    completed_calls: list[str] = []
-
-    async def fake_mark_completed(_database_url: str, run_id: str) -> None:
-        completed_calls.append(run_id)
-
-    async def fake_mark_failed(
-        _database_url: str,
-        run_id: str,
-        error_summary: str,
-    ) -> None:
-        raise AssertionError("mark_run_failed should not be called on happy path")
-
-    monkeypatch.setattr(runner_mod, "get_run_context", fake_get_run_context)
-    monkeypatch.setattr(runner_mod, "claim_run", fake_claim_run)
-    monkeypatch.setattr(runner_mod, "mark_run_completed", fake_mark_completed)
-    monkeypatch.setattr(runner_mod, "mark_run_failed", fake_mark_failed)
-    _stub_get_run_attachments(monkeypatch)
-
-    spy_choose_task_kind = MagicMock(side_effect=lambda prompt: "branch_design")
-    monkeypatch.setattr(runner_mod, "choose_task_kind", spy_choose_task_kind)
-
-    await execute_run(run_id="r1", thread_id="t1", workspace_id="w1")
-
-    started = next(e for e in writer.events if e["type"] == "run_started")
-    assert started["display"] == {"taskKind": "prepare_structure"}
-    assert "prepare_structure" in (started["summary"] or "")
-    spy_choose_task_kind.assert_not_called()
-    assert completed_calls == ["r1"]
 
 
 @pytest.mark.asyncio

@@ -116,7 +116,6 @@ export const agentTaskKind = pgEnum("agent_task_kind", [
 	"structure_search",
 	"prepare_structure",
 	"mutate_structure",
-	"branch_design",
 	"smoke_chat",
 	"smoke_tool",
 	"smoke_sandbox",

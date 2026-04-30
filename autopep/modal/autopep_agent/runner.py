@@ -42,7 +42,6 @@ from autopep_agent.db import (
     mark_run_completed,
     mark_run_failed,
 )
-from autopep_agent.demo_pipeline import execute_demo_one_loop
 from autopep_agent.events import EventWriter
 from autopep_agent.r2_client import download_object as r2_download_object
 from autopep_agent.research_tools import RESEARCH_TOOLS
@@ -269,21 +268,6 @@ class SandboxCompatibilityConfig:
     client: Any | None = None
     options: Any | None = None
     unavailable_reason: str | None = None
-
-
-def choose_task_kind(prompt: str) -> str:
-    normalized = prompt.lower()
-    has_design_intent = "generate" in normalized or "design" in normalized
-    has_binding_intent = "bind" in normalized or "binder" in normalized
-    mentions_protease = "3cl" in normalized or "protease" in normalized
-
-    if has_design_intent and has_binding_intent and mentions_protease:
-        return "branch_design"
-    if "mutate" in normalized or "mutation" in normalized:
-        return "mutate_structure"
-    if "pdb" in normalized or "structure" in normalized:
-        return "structure_search"
-    return "chat"
 
 
 def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
@@ -807,39 +791,6 @@ async def execute_run(run_id: str, thread_id: str, workspace_id: str) -> None:
                 event_type="run_completed",
                 title="Run completed",
                 summary="Autopep completed the smoke agent run.",
-            )
-            await mark_run_completed(database_url, run_id)
-            return
-
-        if task_kind == "branch_design":
-            ctx_token = set_tool_run_context(
-                ToolRunContext(
-                    workspace_id=workspace_id,
-                    run_id=run_id,
-                    database_url=database_url,
-                    proteina_base_url=config.modal_proteina_url,
-                    proteina_api_key=config.modal_proteina_api_key,
-                    chai_base_url=config.modal_chai_url,
-                    chai_api_key=config.modal_chai_api_key,
-                    scoring_base_url=config.modal_protein_interaction_scoring_url,
-                    scoring_api_key=config.modal_protein_interaction_scoring_api_key,
-                ),
-            )
-            try:
-                await execute_demo_one_loop(
-                    config=config,
-                    database_url=database_url,
-                    run_id=run_id,
-                    workspace_id=workspace_id,
-                    writer=writer,
-                )
-            finally:
-                reset_tool_run_context(ctx_token)
-            await writer.append_event(
-                run_id=run_id,
-                event_type="run_completed",
-                title="Run completed",
-                summary="Autopep completed the one-loop binder design workflow.",
             )
             await mark_run_completed(database_url, run_id)
             return
