@@ -452,6 +452,16 @@ async def run_proteina(
     run_slug = safe_slug(run_name or f"proteina_{target_file.stem}_{_utc_slug()}", "proteina")
     count = _clamp_count(num_candidates, default=5, upper=20)
     base_url, api_key = _modal_config("MODAL_PROTEINA_URL", "MODAL_PROTEINA_API_KEY")
+    target_payload: dict[str, Any] = {
+        "structure": target_structure,
+        "filename": target_file.name,
+        "name": target_file.stem,
+        "target_input": target_input,
+        "hotspot_residues": normalized_hotspots,
+        "binder_length": [int(binder_length_min), int(binder_length_max)],
+    }
+    if target_chains is not None and str(target_chains).strip():
+        target_payload["chains"] = target_chains
     payload: dict[str, Any] = {
         "action": "design-cif",
         "run_name": run_slug,
@@ -463,15 +473,7 @@ async def run_proteina(
             f"++generation.dataloader.dataset.nres.nsamples={count}",
             f"++generation.args.nsteps={int(nsteps)}",
         ],
-        "target": {
-            "structure": target_structure,
-            "filename": target_file.name,
-            "name": target_file.stem,
-            "chains": target_chains,
-            "target_input": target_input,
-            "hotspot_residues": normalized_hotspots,
-            "binder_length": [int(binder_length_min), int(binder_length_max)],
-        },
+        "target": target_payload,
     }
     if warm_start is not None:
         payload["warm_start"] = warm_start

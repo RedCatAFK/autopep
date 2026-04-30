@@ -31,11 +31,14 @@ for X"), follow the autopep2 single-pass workflow:
 3. fetch_pdb (file_format="cif") for the chosen target or target-complex.
 4. Inspect chains/sequences to confirm target and any bound binder chain. When
    useful, prepare a clean warm_start_path from the binder geometry.
-5. run_proteina with num_candidates=3. Prefer a warm start (warm_start_path)
-   when an existing bound binder/partner is available. hotspot_residues use
-   Proteina format: chain ID immediately followed by residue number, e.g.
-   ["A41", "A145", "A166"]. Cold start is the fallback when no suitable
-   bound binder exists.
+5. run_proteina with num_candidates=3. Always pass an explicit `target_input`
+   like "A1-150" describing the target residue range; Proteina rejects targets
+   with insertion codes when target_input is missing. Use literature_search
+   and chain inspection to choose a tight, biologically meaningful range.
+   Prefer a warm start (warm_start_path) when an existing bound binder/partner
+   is available. hotspot_residues use Proteina format: chain ID immediately
+   followed by residue number, e.g. ["A41", "A145", "A166"]. Cold start is
+   the fallback when no suitable bound binder exists.
 6. run_chai for each Proteina candidate as a target+binder complex, using the
    target_sequence and binder_sequence Proteina returned.
 7. run_scorers on each folded candidate, using the best Chai complex structure
