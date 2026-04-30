@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { env } from "@/env";
 import type { db as dbClient } from "@/server/db";
 import {
+	artifacts,
 	messages,
 	projects,
 	runEvents,
@@ -120,9 +121,16 @@ export async function createRunForPrompt({
 			assistantMessageId: created.assistantMessageId,
 			content,
 			contextReferenceIds,
+			dryRun: env.NODE_ENV !== "production",
 		});
 	} else if (env.NODE_ENV !== "production") {
-		await insertLocalDryRunEvents(db, created.runId);
+		await insertLocalDryRunEvents(
+			db,
+			created.runId,
+			projectId,
+			threadId,
+			created.assistantMessageId,
+		);
 	}
 
 	return created;
@@ -135,6 +143,7 @@ async function startWorkerRun(payload: {
 	assistantMessageId: string;
 	content: string;
 	contextReferenceIds: string[];
+	dryRun: boolean;
 }) {
 	if (!env.JULIA_WORKER_START_URL || !env.JULIA_WORKER_WEBHOOK_SECRET) return;
 
@@ -158,7 +167,17 @@ async function startWorkerRun(payload: {
 	}
 }
 
-async function insertLocalDryRunEvents(db: Database, runId: string) {
+async function insertLocalDryRunEvents(
+	db: Database,
+	runId: string,
+	projectId: string,
+	threadId: string,
+	assistantMessageId: string,
+) {
+	const assistantText = "Local dry run response.";
+	const artifactFilename = "julia-dry-run-summary.json";
+	const artifactKey = `dry-run/${runId}/${artifactFilename}`;
+
 	await db.transaction(async (tx) => {
 		await tx
 			.update(runs)
@@ -168,6 +187,30 @@ async function insertLocalDryRunEvents(db: Database, runId: string) {
 				completedAt: new Date(),
 			})
 			.where(eq(runs.id, runId));
+
+		await tx
+			.update(messages)
+			.set({
+				content: assistantText,
+				metadata: { status: "completed", source: "local-dry-run" },
+			})
+			.where(eq(messages.id, assistantMessageId));
+
+		await tx.insert(artifacts).values({
+			projectId,
+			runId,
+			kind: "json",
+			filename: artifactFilename,
+			contentType: "application/json",
+			r2Key: artifactKey,
+			metadata: {
+				dryRun: true,
+				source: "tool_result",
+				threadId,
+				assistantMessageId,
+				r2Skipped: true,
+			},
+		});
 
 		await tx.insert(runEvents).values([
 			{
@@ -188,8 +231,8 @@ async function insertLocalDryRunEvents(db: Database, runId: string) {
 				runId,
 				type: "text_delta",
 				sequence: 4,
-				message: "Local dry run response.",
-				metadata: { delta: "Local dry run response." },
+				message: assistantText,
+				metadata: { delta: assistantText, text: assistantText },
 			},
 			{
 				runId,
@@ -203,7 +246,17 @@ async function insertLocalDryRunEvents(db: Database, runId: string) {
 				type: "tool_call_completed",
 				sequence: 6,
 				message: "literature_research completed",
-				metadata: { toolName: "literature_research" },
+				metadata: {
+					toolName: "literature_research",
+					artifacts: [
+						{
+							filename: artifactFilename,
+							r2Key: artifactKey,
+							source: "tool_result",
+							dryRun: true,
+						},
+					],
+				},
 			},
 			{
 				runId,

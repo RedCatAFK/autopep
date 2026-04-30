@@ -13,8 +13,11 @@ export function ToolStep({ event }: ToolStepProps) {
 	const [expanded, setExpanded] = useState(false);
 	const metadata = event.metadata ?? {};
 	const toolName =
-		getString(metadata.name) ?? getString(metadata.tool) ?? "tool";
-	const status = event.type === "tool_completed" ? "completed" : "running";
+		getString(metadata.name) ??
+		getString(metadata.toolName) ??
+		getString(metadata.tool) ??
+		"tool";
+	const status = event.type.endsWith("completed") ? "completed" : "running";
 	const error = getString(metadata.error);
 
 	return (
@@ -39,7 +42,10 @@ export function ToolStep({ event }: ToolStepProps) {
 					<Detail label="Completed" value={formatDate(metadata.completedAt)} />
 					{error ? <Detail label="Error" value={error} /> : null}
 					<JsonBlock label="Args" value={metadata.args ?? metadata.input} />
-					<JsonBlock label="Output" value={metadata.output ?? event.message} />
+					<JsonBlock
+						label="Output"
+						value={metadata.output ?? metadata.result ?? event.message}
+					/>
 					<ArtifactLinks value={metadata.artifacts} />
 				</div>
 			) : null}

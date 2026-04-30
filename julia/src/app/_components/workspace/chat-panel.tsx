@@ -39,7 +39,6 @@ export function ChatPanel({
 	const [prompt, setPrompt] = useState("");
 	const [localMessages, setLocalMessages] =
 		useState<WorkspaceMessage[]>(messages);
-	const [assistantDraft, setAssistantDraft] = useState("");
 	const runEvents = useRunEvents(activeRunId);
 	const sendMessage = api.run.sendMessage.useMutation({
 		onSuccess(data) {
@@ -52,13 +51,10 @@ export function ChatPanel({
 		setLocalMessages(messages);
 	}, [messages]);
 
-	useEffect(() => {
-		for (const event of runEvents.events) {
-			if (event.type !== "message") continue;
-			const delta = getTextDelta(event);
-			if (delta) setAssistantDraft((value) => value + delta);
-		}
-	}, [runEvents.events]);
+	const assistantDraft = useMemo(
+		() => runEvents.events.map(getTextDelta).filter(Boolean).join(""),
+		[runEvents.events],
+	);
 
 	const visibleMessages = useMemo(() => {
 		if (!assistantDraft) return localMessages;
@@ -75,14 +71,13 @@ export function ChatPanel({
 	const latestEvent = runEvents.events.at(-1);
 	const busy =
 		sendMessage.isPending ||
-		Boolean(activeRunId && latestEvent?.type !== "completed");
+		Boolean(activeRunId && !isTerminalEvent(latestEvent));
 
 	const submit = () => {
 		const content = prompt.trim();
 		if (!content || sendMessage.isPending) return;
 
 		setPrompt("");
-		setAssistantDraft("");
 		setLocalMessages((current) => [
 			...current,
 			{
@@ -133,7 +128,10 @@ export function ChatPanel({
 				{runEvents.events
 					.filter(
 						(event) =>
-							event.type === "tool_started" || event.type === "tool_completed",
+							event.type === "tool_started" ||
+							event.type === "tool_completed" ||
+							event.type === "tool_call_started" ||
+							event.type === "tool_call_completed",
 					)
 					.map((event) => (
 						<ToolStep event={event} key={event.id} />
@@ -198,7 +196,7 @@ function RunStatus({
 	return (
 		<div className="run-status">
 			<span
-				className={`status-dot ${event?.type === "completed" ? "completed" : "running"}`}
+				className={`status-dot ${isTerminalEvent(event) ? "completed" : "running"}`}
 			/>
 			<span>{event?.type ? event.type.replaceAll("_", " ") : connection}</span>
 		</div>
@@ -211,7 +209,7 @@ function statusText(
 	isSending: boolean,
 ): string {
 	if (isSending) return "Sending";
-	if (event?.type === "completed") return "Done";
+	if (isTerminalEvent(event)) return terminalStatus(event) ?? "Done";
 	if (event?.type) return event.type.replaceAll("_", " ");
 	if (connection === "streaming") return "Waiting for events";
 	if (connection === "polling") return "Polling for events";
@@ -232,9 +230,27 @@ function getRunId(value: unknown): string | null {
 }
 
 function getTextDelta(event: RunEvent): string | null {
+	if (event.type !== "message" && event.type !== "text_delta") return null;
 	const metadata = event.metadata ?? {};
-	const delta = metadata.text_delta ?? metadata.delta ?? metadata.content_delta;
+	const delta =
+		metadata.text_delta ??
+		metadata.delta ??
+		metadata.content_delta ??
+		metadata.text;
 	if (typeof delta === "string") return delta;
 	if (event.message && metadata.final !== true) return event.message;
 	return null;
+}
+
+function isTerminalEvent(event: RunEvent | undefined): boolean {
+	const status = terminalStatus(event);
+	return status === "completed" || status === "failed" || status === "canceled";
+}
+
+function terminalStatus(event: RunEvent | undefined): string | null {
+	if (!event) return null;
+	if (event.type === "completed") return "completed";
+	if (event.type === "run_error") return "failed";
+	const metadata = event.metadata ?? {};
+	return typeof metadata.status === "string" ? metadata.status : null;
 }
