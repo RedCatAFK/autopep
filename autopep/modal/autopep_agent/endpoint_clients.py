@@ -49,6 +49,7 @@ class ProteinaClient(ModalEndpointClient):
         binder_length: Sequence[int],
         warm_start_structure: str | None = None,
         warm_start_filename: str | None = None,
+        warm_start_chain: str | None = None,
     ) -> Any:
         payload: dict[str, Any] = {
             "action": "design-cif",
@@ -71,6 +72,8 @@ class ProteinaClient(ModalEndpointClient):
                 "structure": warm_start_structure,
                 "filename": warm_start_filename or "warm_start.pdb",
             }
+            if warm_start_chain:
+                payload["warm_start"]["chain"] = warm_start_chain
         return await self.post_json("/design", payload)
 
 
