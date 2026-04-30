@@ -141,11 +141,29 @@ def _tool_name(item: Any) -> str | None:
     if name is None:
         # Hosted tools (local_shell_call, web_search_call, file_search_call,
         # computer_call, code_interpreter_call, image_generation_call) carry
-        # their identity in `raw_item.type` rather than `.name`.
-        name = _get(raw_item, "type")
+        # their identity in `raw_item.type` rather than `.name`. The
+        # `function_call_output` item type, however, is a tool *output* (the
+        # message we send back to the model) and has no name of its own — its
+        # tool name lives on the matching `function_call` looked up by
+        # `call_id`. Return None so the UI resolves the name from the paired
+        # tool_call_started event instead of rendering "function_call_output".
+        raw_type = _get(raw_item, "type")
+        if raw_type == "function_call_output":
+            return None
+        name = raw_type
     if name is None:
         return None
     return str(name)
+
+
+def _call_id(item: Any) -> str | None:
+    raw_item = _get(item, "raw_item", {}) or {}
+    call_id = _get(raw_item, "call_id")
+    if call_id is None:
+        call_id = _get(raw_item, "id")
+    if call_id is None:
+        return None
+    return str(call_id)
 
 
 SANDBOX_DELTA_EVENT_TYPES = frozenset(
@@ -238,10 +256,20 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
         name = _get(event, "name", "")
         item = _get(event, "item")
         tool_name = _tool_name(item)
+        call_id = _call_id(item)
         # Omit `name` from display when we couldn't resolve one — emitting
         # `{"name": null}` causes the frontend to render a literal "name: null"
         # row instead of falling through to the unknown-tool view.
-        tool_display = {"name": tool_name} if tool_name is not None else {}
+        tool_display: dict[str, Any] = {}
+        if tool_name is not None:
+            tool_display["name"] = tool_name
+        # Emit `callId` so the frontend can pair tool_call_started with its
+        # matching tool_call_completed event (for duration + name lookup).
+        # The completed event's raw_item is a `function_call_output` with no
+        # `name`, so the UI relies on this correlation to display the real
+        # tool name from the started event.
+        if call_id is not None:
+            tool_display["callId"] = call_id
         raw = _as_jsonable(event)
 
         if name == "tool_called":

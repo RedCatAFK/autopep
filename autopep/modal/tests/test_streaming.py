@@ -146,6 +146,60 @@ def test_normalize_tool_output_event() -> None:
     assert normalized["display"]["name"] == "search_structures"
 
 
+def test_normalize_tool_output_event_without_tool_origin_omits_name() -> None:
+    # Regression: when the SDK item has no tool_origin (the production shape
+    # for function tool outputs), `raw_item.type == "function_call_output"`
+    # must NOT be used as the tool name. Returning the literal item type as a
+    # name caused every completed tool card in the UI to render as
+    # "function_call_output". The name should be omitted so the UI resolves
+    # it from the matching tool_call_started event via callId.
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_output",
+        item=SimpleNamespace(
+            raw_item={
+                "type": "function_call_output",
+                "call_id": "call-42",
+                "output": "{}",
+            },
+            tool_origin=None,
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "tool_call_completed"
+    assert "name" not in normalized["display"]
+    assert normalized["display"]["callId"] == "call-42"
+
+
+def test_normalize_tool_call_started_emits_call_id() -> None:
+    # The UI pairs tool_call_started with tool_call_completed via `callId`
+    # to compute duration and (when the completed event has no name) resolve
+    # the tool name. Without callId on the started event, the UI cannot pair
+    # them and the started event vanishes from the timeline.
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_called",
+        item=SimpleNamespace(
+            type="tool_call_item",
+            raw_item={
+                "type": "function_call",
+                "name": "search_structures",
+                "call_id": "call-99",
+            },
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "tool_call_started"
+    assert normalized["display"]["name"] == "search_structures"
+    assert normalized["display"]["callId"] == "call-99"
+
+
 def test_normalize_reasoning_item_event() -> None:
     event = SimpleNamespace(
         type="run_item_stream_event",
