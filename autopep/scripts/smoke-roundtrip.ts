@@ -47,7 +47,7 @@ const requiredEventTypes = (taskKind: SmokeTaskKind) => {
 		required.push("tool_call_completed");
 	}
 	if (taskKind === "smoke_sandbox") {
-		required.push("sandbox_command_completed", "sandbox_stdout_delta");
+		required.push("sandbox_command_completed");
 	}
 	if (taskKind === "branch_design") {
 		required.push(
@@ -285,12 +285,20 @@ const assertEvents = async ({
 	}
 
 	if (taskKind === "smoke_sandbox") {
+		// Stdout deltas are no longer ledgered as separate rows; the runner
+		// coalesces them into the parent sandbox_command_completed event's
+		// display.stdout (Task 2.8). Look there instead.
 		const stdout = events
-			.filter((event) => event.type === "sandbox_stdout_delta")
-			.map((event) => JSON.stringify(event.displayJson ?? {}))
+			.filter((event) => event.type === "sandbox_command_completed")
+			.map((event) => {
+				const display = (event.displayJson ?? {}) as Record<string, unknown>;
+				return typeof display.stdout === "string" ? display.stdout : "";
+			})
 			.join("\n");
 		if (!stdout.includes("sandbox-ok")) {
-			throw new Error("Smoke sandbox stdout did not contain sandbox-ok.");
+			throw new Error(
+				"Smoke sandbox stdout did not contain sandbox-ok (checked sandbox_command_completed.display.stdout).",
+			);
 		}
 	}
 
