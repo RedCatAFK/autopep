@@ -1,6 +1,6 @@
 "use client";
 
-import { Database, MessageSquare, PanelRight, Workflow } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { api } from "@/trpc/react";
@@ -34,6 +34,13 @@ export function WorkspaceShell() {
 		null,
 	);
 	const [activeRunId, setActiveRunId] = useState<string | null>(null);
+	const createThread = api.workspace.createThread.useMutation({
+		onSuccess: () => {
+			setActiveRunId(null);
+			setSelectedArtifactId(null);
+			void utils.workspace.getLatestWorkspace.invalidate();
+		},
+	});
 	const addContext = api.workspace.addContextReference.useMutation({
 		onSuccess: () => {
 			void utils.workspace.getLatestWorkspace.invalidate();
@@ -73,17 +80,18 @@ export function WorkspaceShell() {
 		<main className="workspace-root">
 			<nav aria-label="Workspace navigation" className="left-rail">
 				<div className="rail-brand">J</div>
-				<button className="rail-button active" type="button">
-					<MessageSquare aria-hidden="true" size={18} />
-				</button>
-				<button className="rail-button" type="button">
-					<Workflow aria-hidden="true" size={18} />
-				</button>
-				<button className="rail-button" type="button">
-					<Database aria-hidden="true" size={18} />
-				</button>
-				<button className="rail-button bottom" type="button">
-					<PanelRight aria-hidden="true" size={18} />
+				<button
+					aria-label="New chat"
+					className="rail-button"
+					disabled={!projectId || createThread.isPending}
+					onClick={() => {
+						if (!projectId) return;
+						createThread.mutate({ projectId });
+					}}
+					title="New chat"
+					type="button"
+				>
+					<Plus aria-hidden="true" size={18} />
 				</button>
 			</nav>
 			<div className="workspace-grid">

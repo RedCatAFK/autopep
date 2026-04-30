@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
@@ -184,51 +184,51 @@ export const workspaceRouter = createTRPCRouter({
 });
 
 async function getProjectState(db: Db, projectId: string) {
-	const [
-		projectRows,
-		threadRows,
-		messageRows,
-		runRows,
-		eventRows,
-		artifactRows,
-		contextReferenceRows,
-	] = await Promise.all([
+	const [projectRows, threadRows] = await Promise.all([
 		db.select().from(projects).where(eq(projects.id, projectId)).limit(1),
 		db
 			.select()
 			.from(threads)
 			.where(eq(threads.projectId, projectId))
 			.orderBy(desc(threads.createdAt)),
-		db
-			.select()
-			.from(messages)
-			.innerJoin(threads, eq(threads.id, messages.threadId))
-			.where(eq(threads.projectId, projectId))
-			.orderBy(asc(messages.createdAt)),
-		db
-			.select()
-			.from(runs)
-			.where(eq(runs.projectId, projectId))
-			.orderBy(desc(runs.createdAt)),
-		db
-			.select()
-			.from(runEvents)
-			.innerJoin(runs, eq(runs.id, runEvents.runId))
-			.where(eq(runs.projectId, projectId))
-			.orderBy(asc(runEvents.sequence)),
-		db
-			.select()
-			.from(artifacts)
-			.where(eq(artifacts.projectId, projectId))
-			.orderBy(desc(artifacts.createdAt)),
-		db
-			.select()
-			.from(contextReferences)
-			.where(eq(contextReferences.projectId, projectId))
-			.orderBy(desc(contextReferences.createdAt)),
 	]);
 
 	const currentThread = threadRows[0] ?? null;
+	const [messageRows, runRows, eventRows, contextReferenceRows] = currentThread
+		? await Promise.all([
+				db
+					.select()
+					.from(messages)
+					.where(eq(messages.threadId, currentThread.id))
+					.orderBy(asc(messages.createdAt)),
+				db
+					.select()
+					.from(runs)
+					.where(eq(runs.threadId, currentThread.id))
+					.orderBy(desc(runs.createdAt)),
+				db
+					.select()
+					.from(runEvents)
+					.innerJoin(runs, eq(runs.id, runEvents.runId))
+					.where(eq(runs.threadId, currentThread.id))
+					.orderBy(asc(runEvents.sequence)),
+				db
+					.select()
+					.from(contextReferences)
+					.where(eq(contextReferences.threadId, currentThread.id))
+					.orderBy(desc(contextReferences.createdAt)),
+			])
+		: [[], [], [], []];
+
+	const runIds = runRows.map((run) => run.id);
+	const artifactRows =
+		runIds.length > 0
+			? await db
+					.select()
+					.from(artifacts)
+					.where(inArray(artifacts.runId, runIds))
+					.orderBy(desc(artifacts.createdAt))
+			: [];
 	const activeRun = runRows.find((run) =>
 		["queued", "running"].includes(run.status),
 	);
@@ -238,7 +238,7 @@ async function getProjectState(db: Db, projectId: string) {
 		thread: currentThread,
 		threads: threadRows,
 		currentThread,
-		messages: messageRows.map(({ messages: message }) => message),
+		messages: messageRows,
 		runs: runRows,
 		events: eventRows.map(({ run_events: event }) => event),
 		artifacts: artifactRows.map(toArtifactShape),

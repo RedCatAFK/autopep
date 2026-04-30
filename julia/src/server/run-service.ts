@@ -4,7 +4,6 @@ import { and, eq } from "drizzle-orm";
 import { env } from "@/env";
 import type { db as dbClient } from "@/server/db";
 import {
-	artifacts,
 	messages,
 	projects,
 	runEvents,
@@ -113,7 +112,18 @@ export async function createRunForPrompt({
 		return { runId: run.id, assistantMessageId: assistantMessage.id };
 	});
 
-	if (env.JULIA_WORKER_START_URL && env.JULIA_WORKER_WEBHOOK_SECRET) {
+	if (shouldRunProteinWorkflow(content)) {
+		if (!env.JULIA_WORKER_START_URL || !env.JULIA_WORKER_WEBHOOK_SECRET) {
+			await completeAssistantRun({
+				db,
+				runId: created.runId,
+				assistantMessageId: created.assistantMessageId,
+				text: "The protein-design worker is not configured yet.",
+				source: "worker-not-configured",
+			});
+			return created;
+		}
+
 		await startWorkerRun({
 			runId: created.runId,
 			projectId,
@@ -123,14 +133,15 @@ export async function createRunForPrompt({
 			contextReferenceIds,
 			dryRun: env.NODE_ENV !== "production",
 		});
-	} else if (env.NODE_ENV !== "production") {
-		await insertLocalDryRunEvents(
+	} else {
+		const responseText = await createDirectChatResponse(content);
+		await completeAssistantRun({
 			db,
-			created.runId,
-			projectId,
-			threadId,
-			created.assistantMessageId,
-		);
+			runId: created.runId,
+			assistantMessageId: created.assistantMessageId,
+			text: responseText,
+			source: env.OPENAI_API_KEY ? "openai-responses" : "local-fallback",
+		});
 	}
 
 	return created;
@@ -167,17 +178,19 @@ async function startWorkerRun(payload: {
 	}
 }
 
-async function insertLocalDryRunEvents(
-	db: Database,
-	runId: string,
-	projectId: string,
-	threadId: string,
-	assistantMessageId: string,
-) {
-	const assistantText = "Local dry run response.";
-	const artifactFilename = "julia-dry-run-summary.json";
-	const artifactKey = `dry-run/${runId}/${artifactFilename}`;
-
+async function completeAssistantRun({
+	db,
+	runId,
+	assistantMessageId,
+	text,
+	source,
+}: {
+	db: Database;
+	runId: string;
+	assistantMessageId: string;
+	text: string;
+	source: string;
+}) {
 	await db.transaction(async (tx) => {
 		await tx
 			.update(runs)
@@ -191,26 +204,10 @@ async function insertLocalDryRunEvents(
 		await tx
 			.update(messages)
 			.set({
-				content: assistantText,
-				metadata: { status: "completed", source: "local-dry-run" },
+				content: text,
+				metadata: { status: "completed", source },
 			})
 			.where(eq(messages.id, assistantMessageId));
-
-		await tx.insert(artifacts).values({
-			projectId,
-			runId,
-			kind: "json",
-			filename: artifactFilename,
-			contentType: "application/json",
-			r2Key: artifactKey,
-			metadata: {
-				dryRun: true,
-				source: "tool_result",
-				threadId,
-				assistantMessageId,
-				r2Skipped: true,
-			},
-		});
 
 		await tx.insert(runEvents).values([
 			{
@@ -218,53 +215,94 @@ async function insertLocalDryRunEvents(
 				type: "run_status",
 				sequence: 2,
 				message: "starting",
-				metadata: { status: "starting", source: "local-dry-run" },
+				metadata: { status: "starting", source },
 			},
 			{
 				runId,
 				type: "run_status",
 				sequence: 3,
 				message: "running",
-				metadata: { status: "running", source: "local-dry-run" },
+				metadata: { status: "running", source },
 			},
 			{
 				runId,
 				type: "text_delta",
 				sequence: 4,
-				message: assistantText,
-				metadata: { delta: assistantText, text: assistantText },
-			},
-			{
-				runId,
-				type: "tool_call_started",
-				sequence: 5,
-				message: "literature_research started",
-				metadata: { toolName: "literature_research" },
-			},
-			{
-				runId,
-				type: "tool_call_completed",
-				sequence: 6,
-				message: "literature_research completed",
-				metadata: {
-					toolName: "literature_research",
-					artifacts: [
-						{
-							filename: artifactFilename,
-							r2Key: artifactKey,
-							source: "tool_result",
-							dryRun: true,
-						},
-					],
-				},
+				message: text,
+				metadata: { delta: text, text, source },
 			},
 			{
 				runId,
 				type: "run_status",
-				sequence: 7,
+				sequence: 5,
 				message: "completed",
-				metadata: { status: "completed", source: "local-dry-run" },
+				metadata: { status: "completed", source },
 			},
 		]);
 	});
+}
+
+function shouldRunProteinWorkflow(content: string): boolean {
+	const normalized = content.toLowerCase();
+	const hasGenerationIntent =
+		/\b(generate|design|create|engineer|build|make|discover|optimi[sz]e)\b/.test(
+			normalized,
+		);
+	const hasProteinObject =
+		/\b(protein|peptide|binder|binders|miniprotein|miniproteins|nanobody)\b/.test(
+			normalized,
+		);
+	const hasBindingTarget =
+		/\b(bind|binds|binding|target|against|inhibit|inhibitor)\b/.test(
+			normalized,
+		);
+
+	return hasGenerationIntent && hasProteinObject && hasBindingTarget;
+}
+
+async function createDirectChatResponse(content: string): Promise<string> {
+	if (!env.OPENAI_API_KEY) {
+		return "I'm Julia, a protein-design workspace assistant. Ask me a general question, or ask me to generate a protein binder to start the design workflow.";
+	}
+
+	const response = await fetch("https://api.openai.com/v1/responses", {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${env.OPENAI_API_KEY}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			model: env.OPENAI_DEFAULT_MODEL,
+			instructions:
+				"You are Julia, a concise protein-design workspace assistant. For general chat, answer directly and briefly. If the user wants a protein binder generated, explain that the design workflow will run in the workspace.",
+			input: content,
+			max_output_tokens: 500,
+		}),
+	});
+
+	if (!response.ok) {
+		return `I'm Julia. I could not reach the chat model for that message (status ${response.status}).`;
+	}
+
+	const data = (await response.json()) as {
+		output_text?: unknown;
+		output?: Array<{
+			type?: string;
+			content?: Array<{ type?: string; text?: unknown }>;
+		}>;
+	};
+
+	if (typeof data.output_text === "string" && data.output_text.trim()) {
+		return data.output_text.trim();
+	}
+
+	const text = data.output
+		?.flatMap((item) => item.content ?? [])
+		.map((contentItem) =>
+			typeof contentItem.text === "string" ? contentItem.text : "",
+		)
+		.join("")
+		.trim();
+
+	return text || "I'm Julia.";
 }

@@ -58,6 +58,20 @@ export function ChatPanel({
 
 	const visibleMessages = useMemo(() => {
 		if (!assistantDraft) return localMessages;
+		const lastAssistantIndex = findLastAssistantMessageIndex(localMessages);
+		if (lastAssistantIndex >= 0) {
+			const lastAssistant = localMessages[lastAssistantIndex];
+			if (lastAssistant?.content.trim() === assistantDraft.trim()) {
+				return localMessages;
+			}
+			if (!lastAssistant?.content.trim()) {
+				return localMessages.map((message, index) =>
+					index === lastAssistantIndex
+						? { ...message, content: assistantDraft }
+						: message,
+				);
+			}
+		}
 		return [
 			...localMessages,
 			{
@@ -227,6 +241,13 @@ function getRunId(value: unknown): string | null {
 	if (typeof record.id === "string") return record.id;
 	if (typeof record.run?.id === "string") return record.run.id;
 	return null;
+}
+
+function findLastAssistantMessageIndex(messages: WorkspaceMessage[]): number {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		if (messages[index]?.role === "assistant") return index;
+	}
+	return -1;
 }
 
 function getTextDelta(event: RunEvent): string | null {

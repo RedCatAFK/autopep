@@ -69,7 +69,7 @@ button:disabled {
 	position: sticky;
 	top: 0;
 	display: grid;
-	grid-template-rows: 52px repeat(3, 40px) 1fr 40px;
+	grid-template-rows: 52px 40px 1fr;
 	gap: 8px;
 	height: 100dvh;
 	border-right: 1px solid var(--workspace-border);
@@ -101,11 +101,6 @@ button:disabled {
 .rail-button:hover {
 	border-color: #334155;
 	background: #1f2937;
-}
-
-.rail-button.bottom {
-	align-self: end;
-	grid-row: 6;
 }
 
 .workspace-grid {
