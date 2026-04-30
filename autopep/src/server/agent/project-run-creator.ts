@@ -12,6 +12,7 @@ import {
 	threads,
 	workspaces,
 } from "@/server/db/schema";
+import { inferWorkspaceNameWithAi } from "@/server/workspaces/auto-name";
 import { createWorkspaceWithThread } from "@/server/workspaces/repository";
 
 type AgentRunInsert = typeof agentRuns.$inferInsert;
@@ -284,6 +285,18 @@ export const createProjectRunWithLaunch = async ({
 		},
 		launchRun,
 		ownerId,
+	});
+
+	const newWorkspaceId = result.workspace.id;
+	void inferWorkspaceNameWithAi({ prompt: input.goal }).then(async (name) => {
+		try {
+			await db
+				.update(workspaces)
+				.set({ name, autoNamedAt: new Date() })
+				.where(eq(workspaces.id, newWorkspaceId));
+		} catch {
+			// Best-effort; don't fail the request.
+		}
 	});
 
 	return {

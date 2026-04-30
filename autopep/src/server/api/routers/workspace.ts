@@ -24,6 +24,7 @@ import {
 	recipeVersions,
 	workspaces,
 } from "@/server/db/schema";
+import { inferWorkspaceNameWithAi } from "@/server/workspaces/auto-name";
 import {
 	createWorkspaceWithThread,
 	getWorkspacePayload as getRepositoryWorkspacePayload,
@@ -742,16 +743,35 @@ export const workspaceRouter = createTRPCRouter({
 
 	sendMessage: protectedProcedure
 		.input(sendMessageInput)
-		.mutation(async ({ ctx, input }) =>
-			createMessageRunWithLaunch({
+		.mutation(async ({ ctx, input }) => {
+			const wasFreshlyCreated = !(input.workspaceId ?? input.projectId);
+			const result = await createMessageRunWithLaunch({
 				db: ctx.db,
 				input: {
 					...input,
 					workspaceId: input.workspaceId ?? input.projectId,
 				},
 				ownerId: ctx.session.user.id,
-			}),
-		),
+			});
+
+			if (wasFreshlyCreated) {
+				const newWorkspaceId = result.workspace.id;
+				void inferWorkspaceNameWithAi({ prompt: input.prompt }).then(
+					async (name) => {
+						try {
+							await ctx.db
+								.update(workspaces)
+								.set({ name, autoNamedAt: new Date() })
+								.where(eq(workspaces.id, newWorkspaceId));
+						} catch {
+							// Best-effort; don't fail the request.
+						}
+					},
+				);
+			}
+
+			return result;
+		}),
 
 	getRunEvents: protectedProcedure
 		.input(runEventsInput)
