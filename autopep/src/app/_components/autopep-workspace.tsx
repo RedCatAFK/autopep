@@ -79,6 +79,9 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 	const payload = isDraftWorkspace
 		? null
 		: (selectedWorkspace.data ?? latestWorkspace.data);
+	const currentWorkspaceId = isDraftWorkspace
+		? null
+		: (activeWorkspaceId ?? payload?.workspace.id ?? null);
 
 	useEffect(() => {
 		if (
@@ -137,6 +140,11 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 	const createAttachmentMutation = api.workspace.createAttachment.useMutation();
 	const confirmAttachmentMutation =
 		api.workspace.confirmAttachment.useMutation();
+	const deleteAttachmentMutation = api.workspace.deleteAttachment.useMutation({
+		onSuccess: async () => {
+			await invalidateWorkspace(currentWorkspaceId);
+		},
+	});
 
 	const candidates = useMemo<WorkspaceCandidate[]>(
 		() =>
@@ -299,10 +307,6 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 		) ??
 		null;
 
-	const currentWorkspaceId = isDraftWorkspace
-		? null
-		: (activeWorkspaceId ?? payload?.workspace.id ?? null);
-
 	const attachmentUpload = useAttachmentUpload({
 		confirmAttachment: confirmAttachmentMutation.mutateAsync,
 		createAttachment: createAttachmentMutation.mutateAsync,
@@ -420,6 +424,10 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 		archiveRecipe.mutate({ recipeId });
 	};
 
+	const deleteWorkspaceAttachment = (artifactId: string) => {
+		deleteAttachmentMutation.mutate({ artifactId });
+	};
+
 	const signOut = async () => {
 		setSignOutError(null);
 		setIsSigningOut(true);
@@ -496,6 +504,7 @@ export function AutopepWorkspace({ account }: AutopepWorkspaceProps) {
 			onCloseRecipes={() => setIsRecipesOpen(false)}
 			onCreateRecipe={createRecipeForWorkspace}
 			onCreateWorkspace={createWorkspaceFromRail}
+			onDeleteAttachment={deleteWorkspaceAttachment}
 			onOpenRecipes={() => setIsRecipesOpen(true)}
 			onRemoveChatAttachment={attachmentUpload.remove}
 			onRenameWorkspace={(workspaceId, name) => {

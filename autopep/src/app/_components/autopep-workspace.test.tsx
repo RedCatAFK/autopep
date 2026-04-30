@@ -1,6 +1,183 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
 
-import { computeIsLoadingWorkspace } from "./autopep-workspace";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+	archiveRecipeMutate: vi.fn(),
+	archiveWorkspaceMutate: vi.fn(),
+	confirmAttachmentMutateAsync: vi.fn(),
+	createAttachmentMutateAsync: vi.fn(),
+	createRecipeMutate: vi.fn(),
+	deleteAttachmentMutate: vi.fn(),
+	deleteAttachmentOptions: undefined as
+		| { onSuccess?: (...args: unknown[]) => Promise<void> | void }
+		| undefined,
+	getLatestWorkspaceInvalidate: vi.fn().mockResolvedValue(undefined),
+	getWorkspaceInvalidate: vi.fn().mockResolvedValue(undefined),
+	listWorkspacesInvalidate: vi.fn().mockResolvedValue(undefined),
+	renameWorkspaceMutate: vi.fn(),
+	routerRefresh: vi.fn(),
+	sendMessageMutate: vi.fn(),
+	signOut: vi.fn(),
+	updateRecipeMutate: vi.fn(),
+}));
+
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({ refresh: mocks.routerRefresh }),
+}));
+
+vi.mock("@/server/better-auth/client", () => ({
+	authClient: { signOut: mocks.signOut },
+}));
+
+vi.mock("@/trpc/react", () => ({
+	api: {
+		useUtils: () => ({
+			workspace: {
+				getLatestWorkspace: { invalidate: mocks.getLatestWorkspaceInvalidate },
+				getWorkspace: { invalidate: mocks.getWorkspaceInvalidate },
+				listWorkspaces: { invalidate: mocks.listWorkspacesInvalidate },
+			},
+		}),
+		workspace: {
+			archiveRecipe: {
+				useMutation: () => ({
+					isPending: false,
+					mutate: mocks.archiveRecipeMutate,
+				}),
+			},
+			archiveWorkspace: {
+				useMutation: () => ({
+					isPending: false,
+					mutate: mocks.archiveWorkspaceMutate,
+				}),
+			},
+			confirmAttachment: {
+				useMutation: () => ({
+					isPending: false,
+					mutateAsync: mocks.confirmAttachmentMutateAsync,
+				}),
+			},
+			createAttachment: {
+				useMutation: () => ({
+					isPending: false,
+					mutateAsync: mocks.createAttachmentMutateAsync,
+				}),
+			},
+			createRecipe: {
+				useMutation: () => ({
+					isPending: false,
+					mutate: mocks.createRecipeMutate,
+				}),
+			},
+			deleteAttachment: {
+				useMutation: (options?: {
+					onSuccess?: (...args: unknown[]) => Promise<void> | void;
+				}) => {
+					mocks.deleteAttachmentOptions = options;
+					return {
+						isPending: false,
+						mutate: mocks.deleteAttachmentMutate,
+					};
+				},
+			},
+			getLatestWorkspace: {
+				useQuery: () => ({
+					data: {
+						activeRun: null,
+						artifacts: [
+							{
+								byteSize: 512,
+								candidateId: null,
+								fileName: "spec.pdf",
+								id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+								kind: "attachment",
+								name: "spec.pdf",
+								runId: null,
+								signedUrl: "https://example.test/spec.pdf",
+								sourceUrl: null,
+								type: "attachment",
+							},
+						],
+						candidateScores: [],
+						candidates: [],
+						contextReferences: [],
+						events: [],
+						messages: [],
+						recipes: [],
+						runs: [],
+						workspace: {
+							description: null,
+							id: "22222222-2222-4222-8222-222222222222",
+							name: "3CL workspace",
+						},
+					},
+					isFetching: false,
+					isLoading: false,
+				}),
+			},
+			getWorkspace: {
+				useQuery: () => ({
+					data: undefined,
+					isFetching: false,
+					isLoading: false,
+				}),
+			},
+			listWorkspaces: {
+				useQuery: () => ({
+					data: [
+						{
+							description: null,
+							id: "22222222-2222-4222-8222-222222222222",
+							name: "3CL workspace",
+						},
+					],
+					isFetching: false,
+					isLoading: false,
+				}),
+			},
+			renameWorkspace: {
+				useMutation: () => ({
+					isPending: false,
+					mutate: mocks.renameWorkspaceMutate,
+				}),
+			},
+			sendMessage: {
+				useMutation: () => ({
+					isPending: false,
+					mutate: mocks.sendMessageMutate,
+				}),
+			},
+			updateRecipe: {
+				useMutation: () => ({
+					isPending: false,
+					mutate: mocks.updateRecipeMutate,
+				}),
+			},
+		},
+	},
+}));
+
+vi.mock("./workspace-shell", () => ({
+	WorkspaceShell: (props: {
+		onDeleteAttachment?: (artifactId: string) => void;
+	}) => (
+		<button
+			onClick={() =>
+				props.onDeleteAttachment?.("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+			}
+			type="button"
+		>
+			Delete attachment
+		</button>
+	),
+}));
+
+import {
+	AutopepWorkspace,
+	computeIsLoadingWorkspace,
+} from "./autopep-workspace";
 
 describe("computeIsLoadingWorkspace", () => {
 	it("returns true on the very first mount", () => {
@@ -23,5 +200,43 @@ describe("computeIsLoadingWorkspace", () => {
 				selectedIsFetching: true,
 			}),
 		).toBe(false);
+	});
+});
+
+describe("AutopepWorkspace", () => {
+	beforeEach(() => {
+		mocks.archiveRecipeMutate.mockClear();
+		mocks.archiveWorkspaceMutate.mockClear();
+		mocks.confirmAttachmentMutateAsync.mockClear();
+		mocks.createAttachmentMutateAsync.mockClear();
+		mocks.createRecipeMutate.mockClear();
+		mocks.deleteAttachmentMutate.mockClear();
+		mocks.deleteAttachmentOptions = undefined;
+		mocks.getLatestWorkspaceInvalidate.mockClear();
+		mocks.getWorkspaceInvalidate.mockClear();
+		mocks.listWorkspacesInvalidate.mockClear();
+		mocks.renameWorkspaceMutate.mockClear();
+		mocks.routerRefresh.mockClear();
+		mocks.sendMessageMutate.mockClear();
+		mocks.signOut.mockClear();
+		mocks.updateRecipeMutate.mockClear();
+	});
+
+	it("deletes attachment artifacts and refreshes workspace data", async () => {
+		render(<AutopepWorkspace />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Delete attachment" }));
+
+		expect(mocks.deleteAttachmentMutate).toHaveBeenCalledWith({
+			artifactId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		});
+
+		await mocks.deleteAttachmentOptions?.onSuccess?.();
+
+		expect(mocks.listWorkspacesInvalidate).toHaveBeenCalledOnce();
+		expect(mocks.getLatestWorkspaceInvalidate).toHaveBeenCalledOnce();
+		expect(mocks.getWorkspaceInvalidate).toHaveBeenCalledWith({
+			workspaceId: "22222222-2222-4222-8222-222222222222",
+		});
 	});
 });
