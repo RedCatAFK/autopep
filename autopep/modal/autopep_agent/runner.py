@@ -202,6 +202,7 @@ def build_agent_instructions(enabled_recipes: list[str] | None = None) -> str:
 
     sections = [
         "You are Autopep, an agent for protein binder design and analysis.",
+        f"Available tools for this run: {_format_available_tools(AUTOPEP_TOOLS)}.",
         (
             "Use life-science-research discipline: cite uncertainty, prefer "
             "primary biomedical evidence, and distinguish literature evidence "

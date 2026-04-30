@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, isNull } from "drizzle-orm";
-import { z } from "zod";
+import * as z from "zod";
 
 import { env } from "@/env";
 import { publicTaskKindSchema } from "@/server/agent/contracts";
