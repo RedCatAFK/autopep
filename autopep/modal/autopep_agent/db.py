@@ -490,6 +490,50 @@ async def create_candidate(
     return str(row[0])
 
 
+async def load_candidates_by_id(
+    database_url: str,
+    *,
+    workspace_id: str,
+    candidate_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Load ``protein_candidate`` rows by id, scoped to ``workspace_id``.
+
+    Returns rows in the same order as ``candidate_ids``. Missing ids are
+    silently dropped — callers compare ``len(returned)`` against
+    ``len(candidate_ids)`` to detect lookup misses. The ``workspace_id``
+    scope ensures a candidate from another workspace cannot be loaded by
+    guessing its UUID.
+    """
+
+    if not candidate_ids:
+        return []
+
+    async with await psycopg.AsyncConnection.connect(database_url) as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                select id, sequence, metadata_json
+                from autopep_protein_candidate
+                where workspace_id = %s
+                  and id = any(%s::uuid[])
+                """,
+                (workspace_id, list(candidate_ids)),
+            )
+            rows = await cur.fetchall()
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        metadata = row[2] if isinstance(row[2], dict) else {}
+        by_id[str(row[0])] = {
+            "id": str(row[0]),
+            "sequence": row[1],
+            "target_sequence": metadata.get("target_sequence"),
+            "metadata_json": metadata,
+        }
+
+    return [by_id[cid] for cid in candidate_ids if cid in by_id]
+
+
 async def insert_candidate_scores(
     database_url: str,
     *,

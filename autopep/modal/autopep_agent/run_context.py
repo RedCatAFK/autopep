@@ -24,6 +24,8 @@ class ToolRunContext:
     chai_api_key: str
     scoring_base_url: str
     scoring_api_key: str
+    quality_scorers_base_url: str
+    quality_scorers_api_key: str
 
 
 _tool_run_context_var: ContextVar[ToolRunContext | None] = ContextVar(

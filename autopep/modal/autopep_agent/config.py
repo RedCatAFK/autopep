@@ -19,6 +19,8 @@ REQUIRED_ENV_VARS = (
     "MODAL_CHAI_API_KEY",
     "MODAL_PROTEIN_INTERACTION_SCORING_URL",
     "MODAL_PROTEIN_INTERACTION_SCORING_API_KEY",
+    "MODAL_QUALITY_SCORERS_URL",
+    "MODAL_QUALITY_SCORERS_API_KEY",
     "OPENAI_API_KEY",
 )
 
@@ -26,6 +28,7 @@ URL_ENV_VARS = {
     "MODAL_PROTEINA_URL",
     "MODAL_CHAI_URL",
     "MODAL_PROTEIN_INTERACTION_SCORING_URL",
+    "MODAL_QUALITY_SCORERS_URL",
 }
 
 
@@ -42,6 +45,8 @@ class WorkerConfig:
     modal_chai_api_key: str
     modal_protein_interaction_scoring_url: str
     modal_protein_interaction_scoring_api_key: str
+    modal_quality_scorers_url: str
+    modal_quality_scorers_api_key: str
     openai_api_key: str
     default_model: str
 
@@ -82,6 +87,8 @@ class WorkerConfig:
             modal_protein_interaction_scoring_api_key=values[
                 "MODAL_PROTEIN_INTERACTION_SCORING_API_KEY"
             ],
+            modal_quality_scorers_url=values["MODAL_QUALITY_SCORERS_URL"],
+            modal_quality_scorers_api_key=values["MODAL_QUALITY_SCORERS_API_KEY"],
             openai_api_key=values["OPENAI_API_KEY"],
             default_model=default_model,
         )

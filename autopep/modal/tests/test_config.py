@@ -17,6 +17,8 @@ REQUIRED_ENV = {
     "MODAL_CHAI_API_KEY": "chai-key",
     "MODAL_PROTEIN_INTERACTION_SCORING_URL": "https://pis.example/run/",
     "MODAL_PROTEIN_INTERACTION_SCORING_API_KEY": "pis-key",
+    "MODAL_QUALITY_SCORERS_URL": "https://qs.example/run/",
+    "MODAL_QUALITY_SCORERS_API_KEY": "qs-key",
     "OPENAI_API_KEY": "openai-key",
 }
 
@@ -46,6 +48,11 @@ def test_from_env_reads_required_values_and_normalizes_urls(
     assert (
         config.modal_protein_interaction_scoring_api_key
         == REQUIRED_ENV["MODAL_PROTEIN_INTERACTION_SCORING_API_KEY"]
+    )
+    assert config.modal_quality_scorers_url == "https://qs.example/run"
+    assert (
+        config.modal_quality_scorers_api_key
+        == REQUIRED_ENV["MODAL_QUALITY_SCORERS_API_KEY"]
     )
     assert config.openai_api_key == REQUIRED_ENV["OPENAI_API_KEY"]
     assert config.default_model == "gpt-5.5"
