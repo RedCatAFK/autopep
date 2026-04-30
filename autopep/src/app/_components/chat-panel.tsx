@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 import {
 	type ChangeEvent,
+	type CSSProperties,
 	type FormEvent,
 	useMemo,
 	useRef,
@@ -76,6 +77,107 @@ const chipClassNameFor = (status: AttachmentChip["status"]) => {
 	}
 };
 
+type ChatProgressState = {
+	command: string;
+	detail: string;
+	phase: string;
+};
+
+const getChatProgressState = (
+	items: StreamItem[],
+	isSending: boolean,
+): ChatProgressState | null => {
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const item = items[index];
+		if (!item) continue;
+		if (item.kind !== "tool_call" && item.kind !== "sandbox_command") continue;
+		if (item.status !== "running") continue;
+
+		if (item.kind === "tool_call") {
+			return {
+				command: item.tool,
+				detail: "running tool call",
+				phase: "tool",
+			};
+		}
+
+		return {
+			command: item.command.trim() || "$",
+			detail: "sandbox command running",
+			phase: "exec",
+		};
+	}
+
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const item = items[index];
+		if (!item) continue;
+		if (item.kind === "assistant_message" && item.streaming) {
+			return {
+				command: "compose answer",
+				detail: "streaming response",
+				phase: "write",
+			};
+		}
+	}
+
+	if (isSending) {
+		return {
+			command: "launch run",
+			detail: "waiting for event stream",
+			phase: "dispatch",
+		};
+	}
+
+	return null;
+};
+
+function ChatProgressStatus({ progress }: { progress: ChatProgressState }) {
+	const bits = ["fold", "dock", "score"];
+
+	return (
+		<div
+			aria-live="polite"
+			className="overflow-hidden rounded-md border border-[#27352f] bg-[#101814] text-[#eef2df] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+			data-testid="chat-progress-status"
+			role="status"
+		>
+			<div className="flex items-center gap-3 px-3 py-2">
+				<div className="relative flex size-7 shrink-0 items-center justify-center">
+					<span className="absolute inset-0 rounded-md border border-[#dfe94c]/35 bg-[#dfe94c]/10" />
+					<span className="autopep-chat-ring absolute size-5 rounded-full border border-[#dfe94c]/55" />
+					<span className="autopep-chat-core relative size-2 rounded-full bg-[#dfe94c]" />
+				</div>
+				<div className="min-w-0 flex-1">
+					<div className="flex items-center gap-2 text-[#aeb7aa] text-[10px]">
+						<span className="font-mono">julia@autopep</span>
+						<span className="h-px min-w-3 flex-1 bg-[#38443d]" />
+						<span className="font-mono text-[#dfe94c]">{progress.phase}</span>
+					</div>
+					<div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[12px]">
+						<span className="text-[#dfe94c]">$</span>
+						<span className="truncate text-[#f3f5e8]">{progress.command}</span>
+					</div>
+					<div className="mt-1 text-[#aeb7aa] text-[11px]">
+						{progress.detail}
+					</div>
+				</div>
+				<div className="hidden grid-cols-1 gap-1 min-[390px]:grid">
+					{bits.map((bit, index) => (
+						<span
+							className="autopep-status-bit h-1.5 w-9 rounded-full bg-[#dfe94c]/30"
+							key={bit}
+							style={{ "--i": index } as CSSProperties}
+						/>
+					))}
+				</div>
+			</div>
+			<div className="h-1 overflow-hidden bg-[#26312c]">
+				<span className="autopep-status-sweep block h-full w-1/2 bg-[#dfe94c]" />
+			</div>
+		</div>
+	);
+}
+
 export function ChatPanel({
 	attachments = [],
 	contextReferences,
@@ -112,6 +214,7 @@ export function ChatPanel({
 	);
 	const canSend =
 		draft.trim().length > 0 && !isSending && !isDisabled && !hasUploading;
+	const progress = getChatProgressState(items, isSending);
 
 	const handlePaperclipClick = () => {
 		if (isDisabled) return;
@@ -155,20 +258,16 @@ export function ChatPanel({
 							onOpenArtifact={onOpenArtifact}
 							onOpenCandidate={onOpenCandidate}
 						/>
-						{isSending ? (
-							<div
-								aria-live="polite"
-								className="mt-3 mr-8 rounded-md border border-[#e1ded4] bg-[#fffef9] px-3 py-2 text-[#4e5953] text-sm"
-							>
-								<CircleNotch
-									aria-hidden="true"
-									className="mr-1.5 inline animate-spin"
-									size={14}
-								/>
-								Writing…
+						{progress ? (
+							<div className="mt-3 mr-8">
+								<ChatProgressStatus progress={progress} />
 							</div>
 						) : null}
 					</>
+				) : progress ? (
+					<div className="pt-1">
+						<ChatProgressStatus progress={progress} />
+					</div>
 				) : (
 					<div className="space-y-2" data-testid="chat-empty-state">
 						<p className="mb-3 text-[#7a817a] text-xs">Start With A Goal</p>

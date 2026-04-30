@@ -27,6 +27,26 @@ describe("ChatStreamItem", () => {
 		expect(screen.getByText("hi there")).toBeInTheDocument();
 	});
 
+	it("renders assistant message markdown", () => {
+		const item: StreamItem = {
+			kind: "assistant_message",
+			id: "markdown",
+			content:
+				"## Result\n\n- Folded **candidate A**\n- Score: `-9.2 kcal/mol`\n\n[Open PDB](https://example.com)",
+			streaming: false,
+		};
+
+		render(<ChatStreamItem item={item} />);
+
+		expect(screen.getByRole("heading", { name: "Result" })).toBeInTheDocument();
+		expect(screen.getByText("candidate A").tagName).toBe("STRONG");
+		expect(screen.getByText("-9.2 kcal/mol").tagName).toBe("CODE");
+		expect(screen.getByRole("link", { name: "Open PDB" })).toHaveAttribute(
+			"href",
+			"https://example.com",
+		);
+	});
+
 	it("renders tool call collapsed by default and expands on click", async () => {
 		const user = userEvent.setup();
 		const item: StreamItem = {

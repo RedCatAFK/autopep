@@ -59,6 +59,50 @@ describe("ChatPanel", () => {
 		).not.toBeInTheDocument();
 	});
 
+	it("shows the progress statusline while a run is launching", () => {
+		render(
+			<ChatPanel
+				contextReferences={[]}
+				isSending
+				items={[]}
+				onSend={vi.fn()}
+				recipes={[]}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("launch run");
+		expect(screen.getByRole("status")).toHaveTextContent(
+			"waiting for event stream",
+		);
+		expect(screen.queryByTestId("chat-empty-state")).not.toBeInTheDocument();
+	});
+
+	it("shows the active tool in the progress statusline", () => {
+		const items: StreamItem[] = [
+			{ kind: "user_message", id: "u1", content: "Design a binder" },
+			{
+				kind: "tool_call",
+				id: "tool-1",
+				tool: "fold_candidate",
+				status: "running",
+				display: {},
+			},
+		];
+
+		render(
+			<ChatPanel
+				contextReferences={[]}
+				isSending={false}
+				items={items}
+				onSend={vi.fn()}
+				recipes={[]}
+			/>,
+		);
+
+		expect(screen.getByRole("status")).toHaveTextContent("fold_candidate");
+		expect(screen.getByRole("status")).toHaveTextContent("running tool call");
+	});
+
 	it("sends the prompt with selected context references", () => {
 		const onSend = vi.fn();
 		render(
