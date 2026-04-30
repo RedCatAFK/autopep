@@ -75,6 +75,7 @@ export const endpointModelNameSchema = z.enum([
 	"proteina_complexa",
 	"chai_1",
 	"protein_interaction_scoring",
+	"quality_scorers",
 	"future_scorer",
 ]);
 
@@ -96,6 +97,9 @@ export const scoreScorerSchema = z.enum([
 	"dscript",
 	"prodigy",
 	"protein_interaction_aggregate",
+	"solubility",
+	"aggregation_apr",
+	"hla_presentation_risk",
 	"future_scorer",
 ]);
 
