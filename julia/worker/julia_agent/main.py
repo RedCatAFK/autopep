@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from julia_agent.agent import run_julia_agent
 from julia_agent import db
 from julia_agent.config import WorkerConfig
 from julia_agent.events import normalize_run_error, normalize_run_status, normalize_text_delta
@@ -45,7 +47,17 @@ async def start_run(
             raise HTTPException(status_code=503, detail="DATABASE_URL is required for dry run")
         return run_dry_run(config.database_url, payload)
 
-    raise HTTPException(status_code=501, detail="Live Julia worker run is not implemented")
+    if os.getenv("JULIA_WORKER_ALLOW_LIVE_RUNS") != "1":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Live Julia worker runs are disabled. Set "
+                "JULIA_WORKER_ALLOW_LIVE_RUNS=1 to enable the SandboxAgent runner."
+            ),
+        )
+    if not config.database_url:
+        raise HTTPException(status_code=503, detail="DATABASE_URL is required for live run")
+    return await run_live_run(config.database_url, payload)
 
 
 def verify_signature(body: bytes, signature: str | None, secret: str | None) -> bool:
@@ -150,6 +162,58 @@ def run_dry_run(database_url: str, payload: WorkerStartPayload) -> dict[str, Any
         raise
 
     return {"runId": payload.run_id, "status": "completed", "dryRun": True}
+
+
+async def run_live_run(database_url: str, payload: WorkerStartPayload) -> dict[str, Any]:
+    run_context = db.load_run_context(database_url, payload.run_id) or {}
+    assistant_message_id = _string_or_default(
+        _metadata_value(run_context, "assistantMessageId"),
+        payload.assistant_message_id,
+    )
+    prompt = payload.content or ""
+    context = {
+        "runId": payload.run_id,
+        "projectId": payload.project_id,
+        "threadId": payload.thread_id,
+        "assistantMessageId": assistant_message_id,
+        "contextReferenceIds": payload.context_reference_ids,
+        "run": run_context,
+    }
+
+    db.mark_run_status(database_url, payload.run_id, "running")
+    try:
+        _insert_event(
+            database_url,
+            payload.run_id,
+            2,
+            normalize_run_status(payload.run_id, "running"),
+        )
+        output = await run_julia_agent(prompt, context=context)
+        if output:
+            db.append_assistant_delta(database_url, assistant_message_id, output)
+            _insert_event(
+                database_url,
+                payload.run_id,
+                3,
+                normalize_text_delta(payload.run_id, output),
+                output,
+            )
+
+        completed = normalize_run_status(payload.run_id, "completed")
+        _insert_event(database_url, payload.run_id, 4, completed, "completed")
+        db.mark_run_status(database_url, payload.run_id, "completed")
+    except Exception as error:
+        _insert_event(
+            database_url,
+            payload.run_id,
+            99,
+            normalize_run_error(payload.run_id, error),
+            str(error),
+        )
+        db.mark_run_status(database_url, payload.run_id, "failed")
+        raise
+
+    return {"runId": payload.run_id, "status": "completed", "dryRun": False}
 
 
 def _insert_event(

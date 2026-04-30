@@ -1,29 +1,58 @@
-# Create T3 App
+# Julia
 
-This is a [T3 Stack](https://create.t3.gg/) project bootstrapped with `create-t3-app`.
+Julia is the vertical-slice app for chat-driven protein-design runs.
 
-## What's next? How do I make an app with this?
+## App deployment
 
-We try to keep this project as simple as possible, so you can start with just the scaffolding we set up for you, and add additional things later when they become necessary.
+Deploy the web app from the `/julia` directory as the Vercel project root.
 
-If you are not familiar with the different technologies used in this project, please refer to the respective docs. If you still are in the wind, please join our [Discord](https://t3.gg/discord) and ask for help.
+Required Vercel env groups:
 
-- [Next.js](https://nextjs.org)
-- [NextAuth.js](https://next-auth.js.org)
-- [Prisma](https://prisma.io)
-- [Drizzle](https://orm.drizzle.team)
-- [Tailwind CSS](https://tailwindcss.com)
-- [tRPC](https://trpc.io)
+- Auth: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`
+- Database: `DATABASE_URL`
+- Worker callback: `JULIA_WORKER_START_URL`, `JULIA_WORKER_WEBHOOK_SECRET`
+- R2 artifacts: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL`
+- Model/runtime: `OPENAI_API_KEY`, `OPENAI_DEFAULT_MODEL`
+- Tool endpoints as enabled: `MODAL_CHAI_URL`, `MODAL_PROTEINA_URL`, scorer URLs, and their API keys
 
-## Learn More
+Run a local check before deploy:
 
-To learn more about the [T3 Stack](https://create.t3.gg/), take a look at the following resources:
+```bash
+SKIP_ENV_VALIDATION=1 bun run check
+```
 
-- [Documentation](https://create.t3.gg/)
-- [Learn the T3 Stack](https://create.t3.gg/en/faq#what-learning-resources-are-currently-available) — Check out these awesome tutorials
+## Worker deployment
 
-You can check out the [create-t3-app GitHub repository](https://github.com/t3-oss/create-t3-app) — your feedback and contributions are welcome!
+The Python worker lives in `/julia/worker` and exposes a Modal FastAPI app named
+`julia-agent-worker` from `modal_app.py`.
 
-## How do I deploy this?
+Start with dry-run mode:
 
-Follow our deployment guides for [Vercel](https://create.t3.gg/en/deployment/vercel), [Netlify](https://create.t3.gg/en/deployment/netlify) and [Docker](https://create.t3.gg/en/deployment/docker) for more information.
+```bash
+cd julia/worker
+uv run pytest
+modal deploy modal_app.py
+```
+
+Keep `JULIA_WORKER_DRY_RUN=1` for the first deployment so `/runs/start` writes
+ordered events and a dry-run artifact without calling the live SandboxAgent path.
+
+Live runs are guarded separately. The worker returns a clear 501 response unless:
+
+```bash
+JULIA_WORKER_ALLOW_LIVE_RUNS=1
+```
+
+Required Modal worker env:
+
+- `DATABASE_URL`
+- `JULIA_WORKER_WEBHOOK_SECRET`
+- `OPENAI_API_KEY`
+- `OPENAI_DEFAULT_MODEL`
+- R2 env when artifact upload is enabled: `R2_BUCKET`, `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_REGION`, `R2_PUBLIC_BASE_URL`
+- Autopep2/tool env as needed: `AUTOPEP2_SESSION_ID`, `AUTOPEP2_MAX_TOOL_TIMEOUT`, endpoint URLs, and API keys
+
+The live runner uses the OpenAI Agents SDK sandbox imports lazily. If the installed
+SDK does not provide `agents.sandbox` and `agents.extensions.sandbox`, the worker
+will fail the live path with an explicit Modal sandbox extension error while dry
+runs and unit tests remain importable.

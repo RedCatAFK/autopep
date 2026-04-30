@@ -23,6 +23,14 @@ PATH_FIELDS = (
     "file_paths",
     "paths",
     "files",
+    "sandbox_path",
+    "response_path",
+    "input_fasta_path",
+    "cif_path",
+    "pdb_path",
+    "interaction_response_path",
+    "quality_response_path",
+    "summary_path",
 )
 
 
@@ -78,6 +86,7 @@ def artifact_paths_from_tool_result(tool_name: str, result: Any) -> list[Path]:
         return []
 
     paths: list[Path] = []
+    _collect_known_tool_paths(tool_name, result, paths)
     for field in PATH_FIELDS:
         _collect_paths(result.get(field), paths)
     return _dedupe(paths)
@@ -105,6 +114,23 @@ def _collect_paths(value: Any, paths: list[Path]) -> None:
             _collect_paths(item, paths)
 
 
+def _collect_known_tool_paths(tool_name: str, result: dict[str, Any], paths: list[Path]) -> None:
+    normalized = tool_name.lower()
+    if "literature" in normalized or "search_pdb" in normalized or "fetch_pdb" in normalized:
+        _collect_paths(result.get("sandbox_path"), paths)
+    if "proteina" in normalized:
+        _collect_paths(result.get("response_path"), paths)
+        _collect_paths(result.get("candidates"), paths)
+    if "chai" in normalized:
+        _collect_paths(result.get("input_fasta_path"), paths)
+        _collect_paths(result.get("response_path"), paths)
+        _collect_paths(result.get("structures"), paths)
+    if "scorer" in normalized or "score" in normalized:
+        _collect_paths(result.get("interaction_response_path"), paths)
+        _collect_paths(result.get("quality_response_path"), paths)
+        _collect_paths(result.get("summary_path"), paths)
+
+
 def _looks_like_local_path(value: str) -> bool:
     lowered = value.lower()
     return bool(value) and not lowered.startswith(("http://", "https://", "s3://", "r2://"))
@@ -120,4 +146,3 @@ def _dedupe(paths: list[Path]) -> list[Path]:
         seen.add(key)
         deduped.append(path)
     return deduped
-
