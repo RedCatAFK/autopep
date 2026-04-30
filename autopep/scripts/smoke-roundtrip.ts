@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { and, asc, desc, eq } from "drizzle-orm";
 
 import { createMessageRunWithLaunch } from "@/server/agent/project-run-creator";
+import { signRunStreamToken } from "@/server/agent/run-stream-token";
 import { db } from "@/server/db";
 import {
 	agentEvents,
@@ -17,14 +18,29 @@ const smokeTaskKinds = [
 	"smoke_chat",
 	"smoke_tool",
 	"smoke_sandbox",
+	"smoke_phase_1",
+	"backend_streaming",
 ] as const;
 type SmokeTaskKind = (typeof smokeTaskKinds)[number];
 
 const usage =
-	"Usage: bun run scripts/smoke-roundtrip.ts <smoke_chat|smoke_tool|smoke_sandbox>";
+	"Usage: bun run scripts/smoke-roundtrip.ts <smoke_chat|smoke_tool|smoke_sandbox|smoke_phase_1|backend_streaming> [--target local|prod]";
 
 const isSmokeTaskKind = (value: string): value is SmokeTaskKind =>
 	(smokeTaskKinds as readonly string[]).includes(value);
+
+// `backend_streaming` is an alias for `smoke_phase_1`.
+const isBackendStreamingScenario = (
+	taskKind: SmokeTaskKind,
+): taskKind is "smoke_phase_1" | "backend_streaming" =>
+	taskKind === "smoke_phase_1" || taskKind === "backend_streaming";
+
+// Backend-streaming scenario runs against the chat agent under the hood; the
+// scenario asserts streaming-specific event ordering on top of the run.
+const underlyingTaskKind = (
+	taskKind: SmokeTaskKind,
+): "smoke_chat" | "smoke_tool" | "smoke_sandbox" =>
+	isBackendStreamingScenario(taskKind) ? "smoke_chat" : taskKind;
 
 const requiredEventTypes = (taskKind: SmokeTaskKind) => {
 	const required = [
@@ -66,7 +82,10 @@ const ensureWorkspace = async ({
 }: {
 	ownerId: string;
 	workspaceId?: string;
-}) => {
+}): Promise<{
+	workspace: typeof workspaces.$inferSelect;
+	created: boolean;
+}> => {
 	if (workspaceId) {
 		const workspace = await db.query.workspaces.findFirst({
 			where: eq(workspaces.id, workspaceId),
@@ -77,7 +96,7 @@ const ensureWorkspace = async ({
 		if (workspace.ownerId !== ownerId) {
 			throw new Error("Smoke workspace is not owned by the smoke owner.");
 		}
-		return workspace;
+		return { workspace, created: false };
 	}
 
 	const [workspace] = await db
@@ -92,7 +111,7 @@ const ensureWorkspace = async ({
 	if (!workspace) {
 		throw new Error("Failed to create smoke workspace.");
 	}
-	return workspace;
+	return { workspace, created: true };
 };
 
 const ensureThread = async ({
@@ -219,14 +238,182 @@ const assertEvents = async ({
 	return events;
 };
 
+const getCallId = (
+	event: typeof agentEvents.$inferSelect,
+): string | null => {
+	const display = (event.displayJson ?? {}) as Record<string, unknown>;
+	const callId = display.callId ?? display.call_id ?? display.toolCallId;
+	return typeof callId === "string" ? callId : null;
+};
+
+const assertWellOrderedPairs = (
+	events: (typeof agentEvents.$inferSelect)[],
+	startedType: string,
+	completedType: string,
+): number => {
+	const starts = events.filter((e) => e.type === startedType);
+	const completes = events.filter((e) => e.type === completedType);
+	for (const start of starts) {
+		const callId = getCallId(start);
+		// Fall back to sequence pairing when a callId isn't available.
+		const matching = callId
+			? completes.find((c) => getCallId(c) === callId)
+			: completes.find((c) => c.sequence > start.sequence);
+		if (
+			matching &&
+			matching.createdAt.getTime() < start.createdAt.getTime()
+		) {
+			throw new Error(
+				`backend_streaming: ${completedType} arrived before ${startedType} for ${callId ?? "(seq " + start.sequence + ")"}`,
+			);
+		}
+	}
+	return starts.length;
+};
+
+// Tail the Modal SSE run-stream and resolve as soon as we see the first
+// `event: delta` frame. Returns the elapsed milliseconds since `startTime`.
+// Rejects on timeout or on an SSE `event: done` without any prior delta.
+const waitForFirstSseDelta = async ({
+	runId,
+	startTime,
+	timeoutMs,
+}: {
+	runId: string;
+	startTime: number;
+	timeoutMs: number;
+}): Promise<number> => {
+	const streamBaseUrl =
+		process.env.AUTOPEP_MODAL_RUN_STREAM_URL ??
+		"https://chrisyooak--run-stream.modal.run";
+	const secret = process.env.AUTOPEP_MODAL_WEBHOOK_SECRET;
+	if (!secret) {
+		throw new Error(
+			"backend_streaming: AUTOPEP_MODAL_WEBHOOK_SECRET is required to mint the SSE token.",
+		);
+	}
+	// Fetch a temporary userId only for the JWT payload; the verifier on the
+	// Modal side only checks runId + signature + expiry.
+	const token = signRunStreamToken({
+		expiresInSeconds: 300,
+		payload: { runId, userId: "smoke" },
+		secret,
+	});
+	const url = `${streamBaseUrl}?runId=${encodeURIComponent(runId)}&token=${encodeURIComponent(token)}`;
+
+	const controller = new AbortController();
+	const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
+
+	try {
+		const response = await fetch(url, {
+			headers: { Accept: "text/event-stream" },
+			signal: controller.signal,
+		});
+		if (!response.ok || !response.body) {
+			throw new Error(
+				`backend_streaming: SSE connect failed (${response.status}).`,
+			);
+		}
+		const reader = response.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) {
+				throw new Error(
+					"backend_streaming: SSE stream ended before any delta arrived.",
+				);
+			}
+			buffer += decoder.decode(value, { stream: true });
+			// SSE frames are separated by blank lines. Inspect each complete
+			// frame for an `event: delta` line.
+			let frameEnd: number;
+			while ((frameEnd = buffer.indexOf("\n\n")) >= 0) {
+				const frame = buffer.slice(0, frameEnd);
+				buffer = buffer.slice(frameEnd + 2);
+				const lines = frame.split("\n");
+				for (const line of lines) {
+					if (line.startsWith("event:") && line.slice(6).trim() === "delta") {
+						const elapsed = Date.now() - startTime;
+						try {
+							await reader.cancel();
+						} catch {
+							// ignore
+						}
+						return elapsed;
+					}
+					if (line.startsWith("event:") && line.slice(6).trim() === "done") {
+						throw new Error(
+							"backend_streaming: SSE 'done' arrived before any delta.",
+						);
+					}
+				}
+			}
+		}
+	} finally {
+		clearTimeout(abortTimer);
+	}
+};
+
+const cleanupWorkspace = async (workspaceId: string): Promise<void> => {
+	// Best-effort; cascades to threads -> thread_items -> agent_runs ->
+	// agent_events via existing FK cascades. Never fail the test on cleanup.
+	try {
+		await db.delete(workspaces).where(eq(workspaces.id, workspaceId));
+		console.log(`Cleaned up smoke workspace ${workspaceId}.`);
+	} catch (e) {
+		console.warn("Cleanup failed (non-fatal):", e);
+	}
+};
+
+const parseArgs = (
+	argv: string[],
+): { taskKind: string | undefined; target: string } => {
+	const args = argv.slice(2);
+	const targetIdx = args.indexOf("--target");
+	const target = targetIdx >= 0 ? (args[targetIdx + 1] ?? "") : "local";
+	// First positional arg (i.e. not `--target` or its value) is the task kind.
+	let taskKind: string | undefined;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === "--target") {
+			i++;
+			continue;
+		}
+		if (arg && !arg.startsWith("--")) {
+			taskKind = arg;
+			break;
+		}
+	}
+	return { taskKind, target };
+};
+
 const main = async () => {
-	const taskKind = process.argv[2];
+	const { taskKind, target } = parseArgs(process.argv);
 	if (!taskKind || !isSmokeTaskKind(taskKind)) {
 		throw new Error(usage);
 	}
+	if (target !== "local" && target !== "prod") {
+		console.error(`Invalid --target ${target}. Use 'local' or 'prod'.`);
+		process.exit(1);
+	}
+
+	// Resolve baseUrl/apiToken even though the script currently drives Modal
+	// via the in-process path; future tasks (per the plan) may swap to HTTP.
+	// For now, both targets read/write the same Neon (one branch) and trigger
+	// the deployed Modal worker — so the only actual behavioural difference is
+	// best-effort cleanup at the end.
+	const baseUrl =
+		target === "prod"
+			? (process.env.AUTOPEP_PROD_BASE_URL ?? "https://autopep.vercel.app")
+			: "http://localhost:3000";
+	const apiToken =
+		target === "prod" ? process.env.AUTOPEP_PROD_API_TOKEN : undefined;
+	void baseUrl;
+	void apiToken;
 
 	const ownerId = await ensureUser(process.env.AUTOPEP_SMOKE_OWNER_ID);
-	const workspace = await ensureWorkspace({
+	const { workspace, created: workspaceCreated } = await ensureWorkspace({
 		ownerId,
 		workspaceId: process.env.AUTOPEP_SMOKE_WORKSPACE_ID,
 	});
@@ -235,38 +422,91 @@ const main = async () => {
 		workspace,
 	});
 
+	console.log(`Smoke target: ${target}`);
 	console.log("Smoke IDs for env reuse:");
 	console.log(`AUTOPEP_SMOKE_OWNER_ID=${ownerId}`);
 	console.log(`AUTOPEP_SMOKE_WORKSPACE_ID=${workspace.id}`);
 	console.log(`AUTOPEP_SMOKE_THREAD_ID=${thread.id}`);
 
-	const created = await createMessageRunWithLaunch({
-		db,
-		input: {
-			prompt: "ping",
-			recipeRefs: [],
-			taskKind,
-			threadId: thread.id,
-			workspaceId: workspace.id,
-		},
-		ownerId,
-	});
+	const prompt = isBackendStreamingScenario(taskKind)
+		? `smoke-${Date.now()}: respond with the word ack`
+		: "ping";
 
-	console.log(`Smoke run launched: ${created.run.id}`);
-	const run = await pollRun(created.run.id, taskKind);
-	if (run.status !== "completed") {
-		throw new Error(`Smoke run failed: ${run.errorSummary ?? "unknown error"}`);
-	}
-	if (!run.finishedAt) {
-		throw new Error("Smoke run completed without finishedAt.");
-	}
+	try {
+		const created = await createMessageRunWithLaunch({
+			db,
+			input: {
+				prompt,
+				recipeRefs: [],
+				taskKind: underlyingTaskKind(taskKind),
+				threadId: thread.id,
+				workspaceId: workspace.id,
+			},
+			ownerId,
+		});
+		const launchedAt = Date.now();
 
-	const events = await assertEvents({ runId: run.id, taskKind });
-	console.log(
-		`Smoke ${taskKind} completed with ${events.length} contiguous events.`,
-	);
-	if (run.lastResponseId) {
-		console.log(`Last response ID: ${run.lastResponseId}`);
+		console.log(`Smoke run launched: ${created.run.id}`);
+
+		// For backend_streaming, race the SSE tail against the run; we want
+		// TTFD measured from launch, not from completion.
+		const ssePromise = isBackendStreamingScenario(taskKind)
+			? waitForFirstSseDelta({
+					runId: created.run.id,
+					startTime: launchedAt,
+					timeoutMs: 30_000,
+				})
+			: null;
+
+		const run = await pollRun(created.run.id, taskKind);
+		if (run.status !== "completed") {
+			throw new Error(
+				`Smoke run failed: ${run.errorSummary ?? "unknown error"}`,
+			);
+		}
+		if (!run.finishedAt) {
+			throw new Error("Smoke run completed without finishedAt.");
+		}
+
+		const events = await assertEvents({ runId: run.id, taskKind });
+		console.log(
+			`Smoke ${taskKind} completed with ${events.length} contiguous events.`,
+		);
+		if (run.lastResponseId) {
+			console.log(`Last response ID: ${run.lastResponseId}`);
+		}
+
+		if (isBackendStreamingScenario(taskKind) && ssePromise) {
+			const ttfdMs = await ssePromise;
+			if (ttfdMs > 5000) {
+				throw new Error(
+					`backend_streaming: TTFD ${ttfdMs}ms exceeds 5000ms threshold.`,
+				);
+			}
+			console.log(`backend_streaming: TTFD ${ttfdMs}ms (<5000ms)`);
+
+			const toolPairs = assertWellOrderedPairs(
+				events,
+				"tool_call_started",
+				"tool_call_completed",
+			);
+			const sandboxPairs = assertWellOrderedPairs(
+				events,
+				"sandbox_command_started",
+				"sandbox_command_completed",
+			);
+			console.log(
+				`backend_streaming: ${toolPairs} tool calls, ${sandboxPairs} sandbox commands, all well-ordered`,
+			);
+			console.log("backend_streaming scenario green");
+		}
+	} finally {
+		// Best-effort cleanup of the smoke workspace when running against prod
+		// and we created it ourselves (i.e. the caller didn't pin a workspace
+		// via env). Cleanup is non-fatal.
+		if (target === "prod" && workspaceCreated) {
+			await cleanupWorkspace(workspace.id);
+		}
 	}
 };
 
