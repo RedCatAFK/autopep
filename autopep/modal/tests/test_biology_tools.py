@@ -26,6 +26,8 @@ def _install_test_run_context() -> ToolRunContext:
         chai_api_key="chai-key",
         scoring_base_url="https://scoring.example/run",
         scoring_api_key="scoring-key",
+        quality_scorers_base_url="https://quality.example/run",
+        quality_scorers_api_key="quality-key",
     )
     set_tool_run_context(ctx)
     return ctx
@@ -96,26 +98,35 @@ PDB_TEXT = "\n".join(
 
 
 def test_exported_biology_tools_are_agents_sdk_function_tools() -> None:
-    assert biology_tools.generate_binder_candidates.name == "generate_binder_candidates"
-    assert callable(biology_tools.generate_binder_candidates.on_invoke_tool)
+    # New names take effect; the old aliases keep pointing at the same tool
+    # so runner.py keeps working until the merge step.
+    assert biology_tools.proteina_design.name == "proteina_design"
+    assert callable(biology_tools.proteina_design.on_invoke_tool)
     assert (
-        biology_tools.generate_binder_candidates.params_json_schema["properties"][
+        biology_tools.proteina_design.params_json_schema["properties"][
             "binder_length_min"
         ]["type"]
         == "integer"
     )
     assert (
-        biology_tools.generate_binder_candidates.params_json_schema["properties"][
+        biology_tools.proteina_design.params_json_schema["properties"][
             "binder_length_max"
         ]["type"]
         == "integer"
     )
+    assert (
+        biology_tools.proteina_design.params_json_schema["properties"][
+            "target_pdb_path"
+        ]["type"]
+        == "string"
+    )
 
-    assert biology_tools.fold_sequences_with_chai.name == "fold_sequences_with_chai"
-    assert callable(biology_tools.fold_sequences_with_chai.on_invoke_tool)
-    assert "sequence_candidates" in biology_tools.fold_sequences_with_chai.params_json_schema[
-        "properties"
-    ]
+    assert biology_tools.chai_fold_complex.name == "chai_fold_complex"
+    assert callable(biology_tools.chai_fold_complex.on_invoke_tool)
+    assert (
+        "candidate_ids"
+        in biology_tools.chai_fold_complex.params_json_schema["properties"]
+    )
 
     assert (
         biology_tools.score_candidate_interactions.name
@@ -126,13 +137,32 @@ def test_exported_biology_tools_are_agents_sdk_function_tools() -> None:
         "properties"
     ]
 
+    # Aliases share the same function_tool object so runner.py imports of
+    # the old names keep working until the runner merge step lands.
+    assert biology_tools.generate_binder_candidates is biology_tools.proteina_design
+    assert biology_tools.fold_sequences_with_chai is biology_tools.chai_fold_complex
+
 
 @pytest.mark.asyncio
-async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_b(
+async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_test_run_context()
     _disable_persistence(monkeypatch)
+
+    target_pdb_path = "/workspace/runs/r1/inputs/target.pdb"
+    warm_start_path = "/workspace/runs/r1/seeds/seed.pdb"
+    warm_start_text = "WARM_START_PDB"
+
+    fetched_keys: list[str] = []
+
+    async def _fake_get(*, key: str, **_kwargs: Any) -> bytes:
+        fetched_keys.append(key)
+        if key.endswith("/seeds/seed.pdb"):
+            return warm_start_text.encode("utf-8")
+        return PDB_TEXT.encode("utf-8")
+
+    monkeypatch.setattr(biology_tools, "r2_get_object", _fake_get)
 
     calls: list[dict[str, Any]] = []
     response = {"pdbs": [{"filename": "design-1.pdb", "pdb": PDB_TEXT}]}
@@ -150,6 +180,8 @@ async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_
             target_input: str | None,
             hotspot_residues: list[str],
             binder_length: list[int],
+            warm_start_structure: str | None = None,
+            warm_start_filename: str | None = None,
         ) -> dict[str, Any]:
             calls.append(
                 {
@@ -160,47 +192,78 @@ async def test_generate_binder_candidates_sends_length_range_and_extracts_chain_
                     "target_input": target_input,
                     "hotspot_residues": hotspot_residues,
                     "binder_length": binder_length,
+                    "warm_start_structure": warm_start_structure,
+                    "warm_start_filename": warm_start_filename,
                 },
             )
             return response
 
     monkeypatch.setattr(biology_tools, "ProteinaClient", FakeProteinaClient)
 
-    result = await biology_tools._generate_binder_candidates(
-        target_structure="target-pdb",
-        target_filename="target.pdb",
-        target_input="A",
+    result = await biology_tools._proteina_design(
+        target_pdb_path=target_pdb_path,
         hotspot_residues=["A:42"],
         binder_length_min=55,
         binder_length_max=88,
+        warm_start_structure_path=warm_start_path,
     )
+
+    # We requested both the target and the warm-start blob from R2 using
+    # workspace-prefixed storage keys.
+    assert fetched_keys == [
+        "workspaces/w1/runs/r1/inputs/target.pdb",
+        "workspaces/w1/runs/r1/seeds/seed.pdb",
+    ]
 
     assert calls == [
         {
             "base_url": "https://proteina.example/run",
             "api_key": "proteina-key",
-            "target_structure": "target-pdb",
+            "target_structure": PDB_TEXT,
             "target_filename": "target.pdb",
-            "target_input": "A",
+            # PDB has chains A (1 residue) and B (1 residue); first chain is A
+            # → ``A1-1`` selector.
+            "target_input": "A1-1",
             "hotspot_residues": ["A:42"],
             "binder_length": [55, 88],
+            "warm_start_structure": warm_start_text,
+            "warm_start_filename": "seed.pdb",
         },
     ]
-    assert result["raw"] == response
-    assert result["candidates"][0]["filename"] == "design-1.pdb"
-    assert result["candidates"][0]["pdb"] == PDB_TEXT
-    assert result["candidates"][0]["sequence"] == "G"
-    assert result["candidates"][0]["target_sequence"] == "A"
-    assert result["candidates"][0]["chain_sequences"] == {"A": "A", "B": "G"}
-    assert result["candidates"][0]["rank"] == 1
+    assert result["num_candidates"] == 1
+    candidate = result["candidates"][0]
+    assert candidate["sequence"] == "G"
+    assert candidate["target_sequence"] == "A"
+    assert candidate["chain_sequences"] == {"A": "A", "B": "G"}
+    assert candidate["rank"] == 1
 
 
 @pytest.mark.asyncio
-async def test_fold_sequences_with_chai_uses_candidate_fasta(
+async def test_chai_fold_complex_runs_one_complex_per_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_test_run_context()
     _disable_persistence(monkeypatch)
+
+    async def _fake_load(
+        _url: str, *, workspace_id: str, candidate_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        assert workspace_id == "w1"
+        rows = {
+            "cand-1": {
+                "id": "cand-1",
+                "sequence": "GG",
+                "target_sequence": "AAAA",
+            },
+            "cand-2": {
+                "id": "cand-2",
+                "sequence": "WW",
+                "target_sequence": "AAAA",
+            },
+        }
+        return [rows[cid] for cid in candidate_ids if cid in rows]
+
+    monkeypatch.setattr(biology_tools, "load_candidates_by_id", _fake_load)
 
     calls: list[dict[str, Any]] = []
     response = {"cifs": ["prediction.cif"]}
@@ -227,30 +290,49 @@ async def test_fold_sequences_with_chai_uses_candidate_fasta(
 
     monkeypatch.setattr(biology_tools, "ChaiClient", FakeChaiClient)
 
-    result = await biology_tools._fold_sequences_with_chai(
-        sequence_candidates=[{"id": "candidate-1", "sequence": " acde "}],
+    result = await biology_tools._chai_fold_complex(
+        candidate_ids=["cand-1", "cand-2"],
+        target_name="target",
     )
 
-    assert result == response
-    assert calls == [
-        {
-            "base_url": "https://chai.example/run",
-            "api_key": "chai-key",
-            "fasta": ">protein|name=candidate-1\nACDE\n",
-            "num_diffn_samples": 1,
-        },
+    assert result["succeeded"] == 2
+    assert result["failed"] == 0
+    assert sorted(c["candidate_id"] for c in result["candidates"]) == [
+        "cand-1",
+        "cand-2",
+    ]
+    assert all(c["ok"] for c in result["candidates"])
+    # Both candidates resulted in their own Chai call. Order may vary because
+    # gather() doesn't guarantee call order, so sort by fasta.
+    fastas = sorted(call["fasta"] for call in calls)
+    assert fastas == [
+        ">protein|name=target\nAAAA\n>protein|name=candidate-cand-1\nGG\n",
+        ">protein|name=target\nAAAA\n>protein|name=candidate-cand-2\nWW\n",
     ]
 
 
 @pytest.mark.asyncio
-async def test_fold_sequences_with_chai_uses_target_binder_fasta(
+async def test_chai_fold_complex_uses_explicit_target_sequence_when_provided(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_test_run_context()
     _disable_persistence(monkeypatch)
 
+    async def _fake_load(
+        _url: str, *, workspace_id: str, candidate_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "cand-1",
+                "sequence": "GG",
+                # No stored target_sequence — caller must supply one.
+                "target_sequence": None,
+            },
+        ]
+
+    monkeypatch.setattr(biology_tools, "load_candidates_by_id", _fake_load)
+
     calls: list[dict[str, Any]] = []
-    response = {"cifs": ["prediction.cif"]}
 
     class FakeChaiClient:
         def __init__(self, base_url: str, api_key: str) -> None:
@@ -262,38 +344,20 @@ async def test_fold_sequences_with_chai_uses_target_binder_fasta(
             fasta: str,
             num_diffn_samples: int = 1,
         ) -> dict[str, Any]:
-            calls.append(
-                {
-                    "base_url": self.base_url,
-                    "api_key": self.api_key,
-                    "fasta": fasta,
-                    "num_diffn_samples": num_diffn_samples,
-                },
-            )
-            return response
+            calls.append({"fasta": fasta})
+            return {"cifs": ["prediction.cif"]}
 
     monkeypatch.setattr(biology_tools, "ChaiClient", FakeChaiClient)
 
-    result = await biology_tools._fold_sequences_with_chai(
+    result = await biology_tools._chai_fold_complex(
+        candidate_ids=["cand-1"],
         target_sequence=" aaaa ",
         target_name="target",
-        sequence_candidates=[
-            {
-                "candidate_id": "db-candidate-1",
-                "id": "candidate-1",
-                "sequence": " gg ",
-            },
-        ],
     )
 
-    assert result == {"results": [{"candidate_id": "db-candidate-1", "raw": response}]}
+    assert result["succeeded"] == 1
     assert calls == [
-        {
-            "base_url": "https://chai.example/run",
-            "api_key": "chai-key",
-            "fasta": ">protein|name=target\nAAAA\n>protein|name=candidate-1\nGG\n",
-            "num_diffn_samples": 1,
-        },
+        {"fasta": ">protein|name=target\nAAAA\n>protein|name=candidate-cand-1\nGG\n"},
     ]
 
 

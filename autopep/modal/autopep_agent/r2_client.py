@@ -65,6 +65,33 @@ async def put_object(
     return sha256
 
 
+async def get_object(
+    *,
+    bucket: str,
+    account_id: str,
+    access_key_id: str,
+    secret_access_key: str,
+    key: str,
+) -> bytes:
+    """Fetch ``key`` from R2 and return its raw bytes.
+
+    Mirrors :func:`put_object` -- runs the synchronous boto3 call on a thread
+    so the asyncio event loop is not blocked. Use this when the caller wants
+    the object body in memory (small artifact reads); for large objects
+    prefer :func:`download_object` which streams to disk.
+    """
+
+    def _sync_get() -> bytes:
+        client = _build_client(
+            account_id=account_id,
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+        )
+        return client.get_object(Bucket=bucket, Key=key)["Body"].read()
+
+    return await asyncio.to_thread(_sync_get)
+
+
 async def download_object(
     *,
     bucket: str,
