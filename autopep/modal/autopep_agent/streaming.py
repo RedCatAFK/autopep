@@ -139,6 +139,11 @@ def _tool_name(item: Any) -> str | None:
     if name is None:
         name = _get(item, "name")
     if name is None:
+        # Hosted tools (local_shell_call, web_search_call, file_search_call,
+        # computer_call, code_interpreter_call, image_generation_call) carry
+        # their identity in `raw_item.type` rather than `.name`.
+        name = _get(raw_item, "type")
+    if name is None:
         return None
     return str(name)
 
@@ -233,6 +238,10 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
         name = _get(event, "name", "")
         item = _get(event, "item")
         tool_name = _tool_name(item)
+        # Omit `name` from display when we couldn't resolve one — emitting
+        # `{"name": null}` causes the frontend to render a literal "name: null"
+        # row instead of falling through to the unknown-tool view.
+        tool_display = {"name": tool_name} if tool_name is not None else {}
         raw = _as_jsonable(event)
 
         if name == "tool_called":
@@ -240,7 +249,7 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
                 "type": "tool_call_started",
                 "title": "Tool call started",
                 "summary": tool_name,
-                "display": {"name": tool_name},
+                "display": tool_display,
                 "raw": raw,
             }
 
@@ -249,7 +258,7 @@ def normalize_stream_event(event: Any) -> dict[str, Any] | None:
                 "type": "tool_call_completed",
                 "title": "Tool call completed",
                 "summary": tool_name,
-                "display": {"name": tool_name},
+                "display": tool_display,
                 "raw": raw,
             }
 

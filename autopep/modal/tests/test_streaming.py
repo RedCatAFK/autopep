@@ -79,6 +79,51 @@ def test_normalize_stream_event_drops_agent_updated() -> None:
     assert normalize_stream_event(event) is None
 
 
+def test_normalize_hosted_tool_call_uses_raw_item_type() -> None:
+    # Hosted tools (local_shell, web_search, file_search, computer,
+    # code_interpreter, image_generation) do not carry a `.name` on the raw
+    # item and never set `tool_origin`. Fall back to `raw_item.type`.
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_called",
+        item=SimpleNamespace(
+            type="tool_call_item",
+            raw_item={
+                "type": "local_shell_call",
+                "id": "call-shell-1",
+                "action": {"command": ["echo", "hi"]},
+            },
+            tool_origin=None,
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "tool_call_started"
+    assert normalized["display"]["name"] == "local_shell_call"
+
+
+def test_normalize_unknown_tool_call_omits_null_name() -> None:
+    # If we genuinely cannot resolve a tool name, omit it from display rather
+    # than serialising `{"name": null}` (which the UI renders as "name: null").
+    event = SimpleNamespace(
+        type="run_item_stream_event",
+        name="tool_called",
+        item=SimpleNamespace(
+            type="tool_call_item",
+            raw_item={},
+            tool_origin=None,
+        ),
+    )
+
+    normalized = normalize_stream_event(event)
+
+    assert normalized is not None
+    assert normalized["type"] == "tool_call_started"
+    assert "name" not in normalized["display"]
+
+
 def test_normalize_tool_output_event() -> None:
     event = SimpleNamespace(
         type="run_item_stream_event",
