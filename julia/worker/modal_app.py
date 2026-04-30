@@ -8,9 +8,10 @@ image = modal.Image.debian_slim(python_version="3.11").pip_install_from_pyprojec
     "pyproject.toml"
 )
 app = modal.App("julia-agent-worker", image=image)
+env_secret = modal.Secret.from_dotenv(__file__)
 
 
-@app.function()
+@app.function(secrets=[env_secret])
 @modal.asgi_app()
 def web():
     return fastapi_app

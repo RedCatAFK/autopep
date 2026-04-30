@@ -25,15 +25,19 @@ class WorkerConfig:
     @classmethod
     def from_env(cls) -> "WorkerConfig":
         load_dotenv()
+        r2_account_id = os.getenv("R2_ACCOUNT_ID")
+        r2_endpoint_url = os.getenv("R2_ENDPOINT_URL")
+        if not r2_endpoint_url and r2_account_id:
+            r2_endpoint_url = f"https://{r2_account_id}.r2.cloudflarestorage.com"
+
         return cls(
             database_url=os.getenv("DATABASE_URL"),
             webhook_secret=os.getenv("JULIA_WORKER_WEBHOOK_SECRET"),
             dry_run=_truthy(os.getenv("JULIA_WORKER_DRY_RUN")),
             r2_bucket=os.getenv("R2_BUCKET"),
-            r2_endpoint_url=os.getenv("R2_ENDPOINT_URL"),
+            r2_endpoint_url=r2_endpoint_url,
             r2_access_key_id=os.getenv("R2_ACCESS_KEY_ID"),
             r2_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
             r2_region=os.getenv("R2_REGION", "auto"),
             r2_public_base_url=os.getenv("R2_PUBLIC_BASE_URL"),
         )
-
