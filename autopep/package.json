@@ -4,7 +4,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"build": "next build",
+		"build": "next build --webpack",
 		"check": "biome check .",
 		"check:unsafe": "biome check --write --unsafe .",
 		"check:write": "biome check --write .",
@@ -16,7 +16,7 @@
 		"lint": "oxlint",
 		"lint:fix": "oxlint --fix",
 		"modal:deploy": "modal deploy modal/autopep_worker.py",
-		"preview": "next build && next start",
+		"preview": "next build --webpack && next start",
 		"start": "next start",
 		"test": "vitest run --passWithNoTests",
 		"test:watch": "vitest",

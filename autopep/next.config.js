@@ -14,6 +14,7 @@ const config = {
 	turbopack: {
 		root: appDir,
 	},
+	transpilePackages: ["molstar"],
 };
 
 export default config;

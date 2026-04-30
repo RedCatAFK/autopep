@@ -1,4 +1,5 @@
 # ---- OS junk ----
+.firecrawl
 .DS_Store
 Thumbs.db
 Desktop.ini

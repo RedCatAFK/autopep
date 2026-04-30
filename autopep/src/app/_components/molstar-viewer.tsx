@@ -122,12 +122,24 @@ export function MolstarViewer({
 								label: currentLabel,
 								onProteinSelection: currentOnProteinSelection,
 							} = selectionRef.current;
-							const loci = event.current?.loci;
-							if (!loci || !currentArtifactId || !currentOnProteinSelection) {
+							const loci = event.current?.loci as
+								| { kind?: string }
+								| undefined;
+							if (
+								!loci ||
+								loci.kind === "empty-loci" ||
+								!currentArtifactId ||
+								!currentOnProteinSelection
+							) {
 								return;
 							}
 
-							const selector = serializeLoci(loci);
+							let selector: Record<string, unknown>;
+							try {
+								selector = serializeLoci(loci);
+							} catch {
+								return;
+							}
 							if (selector.kind === "empty-loci") {
 								return;
 							}
