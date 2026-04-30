@@ -51,7 +51,7 @@ async function main() {
 
   const items = await db.query.threadItems.findMany({
     where: eq(threadItems_table.threadId, threadId),
-    orderBy: (t, { asc }) => [asc(t.sequence)],
+    orderBy: (t: any, { asc }: any) => [asc(t.sequence)],
   } as any);
 
   console.log(`thread_items count: ${items.length}`);
