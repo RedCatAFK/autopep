@@ -104,4 +104,31 @@ describe("WorkspaceRail", () => {
 
 		expect(onRename).not.toHaveBeenCalled();
 	});
+
+	it("opens the account menu and signs out", async () => {
+		const user = userEvent.setup();
+		const onSignOut = vi.fn();
+		render(
+			<WorkspaceRail
+				account={{ email: "mira@lab.org", name: "Mira Vale" }}
+				activeWorkspaceId="ws-1"
+				onArchiveWorkspace={vi.fn()}
+				onCreateWorkspace={vi.fn()}
+				onRename={vi.fn()}
+				onSelectWorkspace={vi.fn()}
+				onSignOut={onSignOut}
+				workspaces={[{ id: "ws-1", name: "Spike RBD design" }]}
+			/>,
+		);
+
+		await user.click(
+			screen.getByRole("button", {
+				name: /open account menu for mira@lab.org/i,
+			}),
+		);
+		expect(screen.getByText("Mira Vale")).toBeInTheDocument();
+		await user.click(screen.getByRole("menuitem", { name: /sign out/i }));
+
+		expect(onSignOut).toHaveBeenCalledOnce();
+	});
 });
