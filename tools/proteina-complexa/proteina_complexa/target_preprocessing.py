@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Iterable
 
 from .config import DEFAULT_BINDER_LENGTH, PREPROCESS_DIR, PYTHON_BIN, TARGET_DATA_DIR
 from .preprocessing import (
+    AMINO_ACID_3_TO_1,
+    clean_cif_missing_value,
     infer_structure_format,
+    iter_cif_atom_site_records,
+    parse_chain_filter,
     preprocess_structure_text,
     sanitize_name,
     write_preprocessed_outputs,
@@ -79,33 +84,162 @@ def write_target_config(
 
 def write_target_pdb(
     *,
-    structure_path: Path,
+    structure_text: str,
+    structure_filename: str,
     pdb_path: Path,
+    chains: str | Iterable[str] | None = None,
 ) -> dict:
-    script = f"""
-from pathlib import Path
+    """Write a clean Complexa target PDB preserving request-visible chain IDs.
 
-import json
-import numpy as np
-from atomworks.io.utils.io_utils import load_any
-from biotite.structure.io import save_structure
+    Complexa's target loader accepts PDB, but autopep2 usually sends RCSB
+    mmCIF and target selectors based on auth chain IDs. Converting through
+    atomworks/biotite can write label asym IDs instead, so a selector like
+    ``E1-300`` may point at water/ligand records in the generated PDB. This
+    writer keeps auth chain IDs from our parser and drops HETATM records.
+    """
 
-structure_path = Path({str(structure_path)!r})
-pdb_path = Path({str(pdb_path)!r})
-loaded = load_any(str(structure_path), model=1)
-struct = loaded[0] if isinstance(loaded, (list, tuple)) else loaded
-if not hasattr(struct, "occupancy"):
-    struct.set_annotation("occupancy", np.ones(len(struct), dtype=np.float32))
-pdb_path.parent.mkdir(parents=True, exist_ok=True)
-save_structure(str(pdb_path), struct)
-print(json.dumps({{
-    "pdb_path": str(pdb_path),
-    "atom_count": int(len(struct)),
-    "chain_ids": sorted({{str(chain_id) for chain_id in struct.chain_id.tolist()}}),
-}}))
-"""
-    output = run_command([str(PYTHON_BIN), "-c", script])
-    return json.loads(output.strip().splitlines()[-1])
+    records = list(
+        _iter_target_atom_records(
+            structure_text=structure_text,
+            structure_filename=structure_filename,
+            chains=chains,
+        )
+    )
+    if not records:
+        raise ValueError("No protein ATOM records matched the requested target chains.")
+    if len(records) > 99999:
+        raise ValueError(
+            f"Target PDB would contain {len(records)} atoms, exceeding the legacy PDB atom limit."
+        )
+
+    pdb_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [_format_pdb_atom_line(serial, record) for serial, record in enumerate(records, start=1)]
+    lines.append("TER")
+    lines.append("END")
+    pdb_path.write_text("\n".join(lines) + "\n")
+    return {
+        "pdb_path": str(pdb_path),
+        "atom_count": len(records),
+        "chain_ids": sorted({record["chain_id"] for record in records}),
+        "source": "auth_chain_clean_pdb_writer",
+    }
+
+
+def _iter_target_atom_records(
+    *,
+    structure_text: str,
+    structure_filename: str,
+    chains: str | Iterable[str] | None,
+) -> Iterable[dict]:
+    chain_filter = parse_chain_filter(chains)
+    if structure_suffix(structure_filename, structure_text) in {".cif", ".mmcif"}:
+        source_records = iter_cif_atom_site_records(structure_text)
+    else:
+        source_records = _iter_pdb_atom_records(structure_text)
+
+    for record in source_records:
+        chain_id = str(record["chain_id"]).strip() or "_"
+        if chain_filter is not None and chain_id not in chain_filter:
+            continue
+        residue_name = _canonical_pdb_residue_name(str(record["residue_name"]).strip().upper())
+        if residue_name not in AMINO_ACID_3_TO_1:
+            continue
+        alt_id = clean_cif_missing_value(str(record.get("alt_id", "")))
+        if alt_id not in {"", "A"}:
+            continue
+        if len(chain_id) != 1:
+            raise ValueError(
+                f"Target chain ID {chain_id!r} cannot be represented in legacy PDB format. "
+                "Pass or rename to a one-character chain ID before running Complexa."
+            )
+        yield {
+            "atom_name": str(record["atom_name"]).strip(),
+            "alt_id": alt_id,
+            "residue_name": residue_name,
+            "chain_id": chain_id,
+            "residue_number": int(record["residue_number"]),
+            "insertion_code": clean_cif_missing_value(str(record.get("insertion_code", "")))[:1],
+            "x": float(record["x"]),
+            "y": float(record["y"]),
+            "z": float(record["z"]),
+            "occupancy": float(record.get("occupancy", 1.0)),
+            "b_factor": float(record.get("b_factor", 0.0)),
+            "element": _infer_element(str(record.get("element", "")), str(record["atom_name"])),
+        }
+
+
+def _iter_pdb_atom_records(pdb_text: str) -> Iterable[dict]:
+    for line in pdb_text.splitlines():
+        if not line.startswith("ATOM"):
+            continue
+        if len(line) < 54:
+            continue
+        try:
+            yield {
+                "atom_name": line[12:16].strip(),
+                "alt_id": line[16].strip(),
+                "residue_name": line[17:20].strip().upper(),
+                "chain_id": line[21].strip() or "_",
+                "residue_number": int(line[22:26]),
+                "insertion_code": line[26].strip(),
+                "x": float(line[30:38]),
+                "y": float(line[38:46]),
+                "z": float(line[46:54]),
+                "occupancy": _safe_pdb_float(line[54:60], default=1.0),
+                "b_factor": _safe_pdb_float(line[60:66], default=0.0),
+                "element": line[76:78].strip() if len(line) >= 78 else "",
+            }
+        except ValueError:
+            continue
+
+
+def _safe_pdb_float(value: str, *, default: float) -> float:
+    try:
+        return float(value.strip())
+    except ValueError:
+        return default
+
+
+def _canonical_pdb_residue_name(residue_name: str) -> str:
+    if residue_name == "MSE":
+        return "MET"
+    if residue_name == "SEC":
+        return "CYS"
+    if residue_name == "PYL":
+        return "LYS"
+    return residue_name
+
+
+def _infer_element(element: str, atom_name: str) -> str:
+    cleaned = "".join(char for char in (element or "").strip() if char.isalpha())
+    if cleaned:
+        return cleaned[:2].upper()
+    atom_letters = "".join(char for char in atom_name.strip() if char.isalpha())
+    return (atom_letters[:1] or "C").upper()
+
+
+def _format_pdb_atom_name(atom_name: str, element: str) -> str:
+    atom_name = atom_name.strip()
+    if len(atom_name) >= 4:
+        return atom_name[:4]
+    if len(element.strip()) == 1 and atom_name and not atom_name[0].isdigit():
+        return f" {atom_name:<3}"[:4]
+    return f"{atom_name:<4}"[:4]
+
+
+def _format_pdb_atom_line(serial: int, record: dict) -> str:
+    return (
+        f"ATOM  {serial:5d} "
+        f"{_format_pdb_atom_name(record['atom_name'], record['element'])}"
+        f"{record['alt_id'][:1]:1}"
+        f"{record['residue_name']:>3} "
+        f"{record['chain_id']:1}"
+        f"{record['residue_number']:4d}"
+        f"{record['insertion_code'][:1]:1}"
+        f"   {record['x']:8.3f}{record['y']:8.3f}{record['z']:8.3f}"
+        f"{record['occupancy']:6.2f}{record['b_factor']:6.2f}"
+        f"          {record['element']:>2}  "
+    )
 
 
 def inspect_target_tensors(
@@ -173,7 +307,12 @@ def preprocess_target_structure(
     outputs = write_preprocessed_outputs(result, PREPROCESS_DIR)
 
     pdb_path = TARGET_DATA_DIR / f"{safe_target_name}.pdb"
-    pdb_info = write_target_pdb(structure_path=structure_path, pdb_path=pdb_path)
+    pdb_info = write_target_pdb(
+        structure_text=structure_text,
+        structure_filename=structure_filename,
+        pdb_path=pdb_path,
+        chains=chains,
+    )
     target_tensor_info = inspect_target_tensors(
         pdb_path=pdb_path,
         target_input=result.target_input,
