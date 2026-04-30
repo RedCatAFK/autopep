@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import sqlite3
 import sys
 import time
@@ -336,6 +337,81 @@ def _extract_pdb_chain_order(pdb_text: str) -> list[str]:
     return chain_order
 
 
+def _clean_cif_value(value: str | None) -> str:
+    text = (value or "").strip()
+    return "" if text in {"", ".", "?"} else text
+
+
+def _infer_structure_format(path: Path, structure: str) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".cif", ".mmcif"}:
+        return "cif"
+    if suffix == ".pdb":
+        return "pdb"
+    for line in structure.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("data_") or stripped == "loop_" or stripped.startswith("_atom_site."):
+            return "cif"
+        if line.startswith(("ATOM", "HETATM", "HEADER")):
+            return "pdb"
+    return "cif"
+
+
+def _extract_cif_chain_order(cif_text: str) -> list[str]:
+    chain_order: list[str] = []
+    lines = cif_text.splitlines()
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "loop_":
+            index += 1
+            continue
+
+        index += 1
+        headers: list[str] = []
+        while index < len(lines) and lines[index].strip().startswith("_"):
+            headers.append(lines[index].strip())
+            index += 1
+        if not headers or not all(header.startswith("_atom_site.") for header in headers):
+            continue
+
+        fields = [header.split(".", 1)[1] for header in headers]
+        while index < len(lines):
+            stripped = lines[index].strip()
+            if not stripped or stripped == "#":
+                index += 1
+                break
+            if stripped == "loop_" or stripped.startswith(("data_", "_")):
+                break
+
+            try:
+                values = shlex.split(stripped, posix=True)
+            except ValueError:
+                index += 1
+                continue
+            index += 1
+            if len(values) < len(fields):
+                continue
+            row = dict(zip(fields, values, strict=False))
+            group = _clean_cif_value(row.get("group_PDB")).upper() or "ATOM"
+            if group not in {"ATOM", "HETATM"}:
+                continue
+            chain_id = _clean_cif_value(row.get("auth_asym_id")) or _clean_cif_value(
+                row.get("label_asym_id")
+            )
+            if chain_id and chain_id not in chain_order:
+                chain_order.append(chain_id)
+    return chain_order
+
+
+def _extract_structure_chain_order(path: Path, structure: str) -> tuple[str, list[str]]:
+    structure_format = _infer_structure_format(path, structure)
+    if structure_format == "cif":
+        return structure_format, _extract_cif_chain_order(structure)
+    return structure_format, _extract_pdb_chain_order(structure)
+
+
 def _select_binder_chain(sequences: Mapping[str, str]) -> str | None:
     for chain_id in ("C", "B"):
         sequence = sequences.get(chain_id)
@@ -352,11 +428,23 @@ def _warm_start_payload_from_file(
     warm_start_chain: str | None = None,
 ) -> dict[str, Any]:
     structure = warm_file.read_text(encoding="utf-8")
-    chain = (warm_start_chain or "").strip() or None
-    if chain is None:
-        chain_order = _extract_pdb_chain_order(structure)
-        if len(chain_order) > 1:
-            chain = chain_order[-1]
+    requested_chain = (warm_start_chain or "").strip() or None
+    structure_format, chain_order = _extract_structure_chain_order(warm_file, structure)
+    chain: str | None = None
+    if requested_chain is not None:
+        if chain_order and requested_chain not in chain_order:
+            raise ValueError(
+                f"warm_start_chain {requested_chain!r} was not found in {warm_file.name}. "
+                f"Available chains: {chain_order}."
+            )
+        chain = requested_chain
+    elif len(chain_order) > 1:
+        if structure_format == "cif":
+            raise ValueError(
+                f"Warm-start CIF {warm_file.name} has multiple chains {chain_order}. "
+                "Pass warm_start_chain with the seed binder chain."
+            )
+        chain = chain_order[-1]
 
     payload: dict[str, Any] = {
         "structure": structure,
@@ -795,10 +883,12 @@ async def _run_proteina(
     hotspot_residues must use Proteina format: chain ID followed immediately
     by residue number, e.g. ["A41", "A145", "A166"]. Do not pass values like
     "A:HIS41" or "A:CYS145".
-    If warm_start_path contains a multi-chain target+binder complex, pass
+    For clean binder-only CIF/mmCIF seeds, omit warm_start_chain. If
+    warm_start_path contains a multi-chain target+binder complex, pass
     warm_start_chain as the seed binder chain, e.g. "C" for Proteina outputs
     where target chains are A/B and the binder chain is C. When omitted for a
-    multi-chain PDB seed, the last chain in the file is used.
+    multi-chain PDB seed, the last chain in the file is used for compatibility;
+    multi-chain CIF/mmCIF seeds require an explicit warm_start_chain.
     """
     target_file = _sandbox_path(target_path)
     if not target_file.exists():
@@ -1148,11 +1238,12 @@ Use this workflow whenever the user requests binder protein generation, e.g.
    binder/partner for the target. Use execute_python to prepare a clean
    warm_start_path from the existing binder geometry. Cold start is mainly a
    fallback so the workflow still runs when no suitable binder exists, the PDB
-   only has small-molecule ligands, or warm-start preparation fails. When the
-   warm-start file has multiple chains, pass warm_start_chain as the binder or
-   partner chain to seed from. For Proteina-generated complexes with target
-   chains A/B and binder chain C, pass warm_start_chain="C" unless inspection
-   shows a different binder chain.
+   only has small-molecule ligands, or warm-start preparation fails. For clean
+   binder-only CIF/mmCIF seeds, omit warm_start_chain. When the warm-start file
+   has multiple chains, pass warm_start_chain as the binder or partner chain to
+   seed from. Do not infer mmCIF chain IDs with fixed-width PDB columns. For
+   Proteina-generated complexes with target chains A/B and binder chain C, pass
+   warm_start_chain="C" unless inspection shows a different binder chain.
 7. Run run_proteina with num_candidates=3. Pass warm_start_path whenever a
    suitable prepared existing binder seed is available. For hotspot_residues,
    use Proteina format only: chain ID immediately followed by residue number, e.g.

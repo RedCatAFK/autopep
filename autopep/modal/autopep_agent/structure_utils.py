@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import shlex
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 
 THREE_TO_ONE: dict[str, str] = {
@@ -58,6 +60,95 @@ def extract_pdb_sequences(pdb_text: str) -> dict[str, str]:
         )
         for chain_id, residues in residues_by_chain.items()
     }
+
+
+def extract_pdb_chain_order(pdb_text: str) -> list[str]:
+    chain_order: list[str] = []
+    for line in pdb_text.splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        chain_id = line.ljust(22)[21].strip()
+        if chain_id and chain_id not in chain_order:
+            chain_order.append(chain_id)
+    return chain_order
+
+
+def infer_structure_format(filename: str | None, structure_text: str) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in {".cif", ".mmcif"}:
+        return "cif"
+    if suffix == ".pdb":
+        return "pdb"
+    for line in structure_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("data_") or stripped == "loop_" or stripped.startswith("_atom_site."):
+            return "cif"
+        if line.startswith(("ATOM", "HETATM", "HEADER")):
+            return "pdb"
+    return "cif"
+
+
+def extract_cif_chain_order(cif_text: str) -> list[str]:
+    chain_order: list[str] = []
+    lines = cif_text.splitlines()
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "loop_":
+            index += 1
+            continue
+
+        index += 1
+        headers: list[str] = []
+        while index < len(lines) and lines[index].strip().startswith("_"):
+            headers.append(lines[index].strip())
+            index += 1
+        if not headers or not all(header.startswith("_atom_site.") for header in headers):
+            continue
+
+        fields = [header.split(".", 1)[1] for header in headers]
+        while index < len(lines):
+            stripped = lines[index].strip()
+            if not stripped or stripped == "#":
+                index += 1
+                break
+            if stripped == "loop_" or stripped.startswith(("data_", "_")):
+                break
+            try:
+                values = shlex.split(stripped, posix=True)
+            except ValueError:
+                index += 1
+                continue
+            index += 1
+            if len(values) < len(fields):
+                continue
+            row = dict(zip(fields, values, strict=False))
+            group = _clean_cif_value(row.get("group_PDB")).upper() or "ATOM"
+            if group not in {"ATOM", "HETATM"}:
+                continue
+            chain_id = _clean_cif_value(row.get("auth_asym_id")) or _clean_cif_value(
+                row.get("label_asym_id")
+            )
+            if chain_id and chain_id not in chain_order:
+                chain_order.append(chain_id)
+    return chain_order
+
+
+def extract_structure_chain_order(
+    structure_text: str,
+    *,
+    filename: str | None = None,
+) -> tuple[str, list[str]]:
+    structure_format = infer_structure_format(filename, structure_text)
+    if structure_format == "cif":
+        return structure_format, extract_cif_chain_order(structure_text)
+    return structure_format, extract_pdb_chain_order(structure_text)
+
+
+def _clean_cif_value(value: str | None) -> str:
+    text = (value or "").strip()
+    return "" if text in {"", ".", "?"} else text
 
 
 def build_fasta(candidates: Sequence[Mapping[str, object]]) -> str:
