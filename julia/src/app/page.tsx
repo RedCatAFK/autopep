@@ -1,4 +1,5 @@
 import { AuthCard } from "@/app/_components/auth-card";
+import { WorkspaceShell } from "@/app/_components/workspace/workspace-shell";
 import { getSession } from "@/server/better-auth/server";
 
 export default async function Home() {
@@ -26,23 +27,5 @@ export default async function Home() {
 		);
 	}
 
-	return (
-		<main className="min-h-dvh bg-slate-50 px-4 py-8 text-slate-950">
-			<section className="mx-auto grid w-full max-w-3xl gap-6">
-				<div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-					<p className="font-semibold text-slate-500 text-sm uppercase tracking-[0.16em]">
-						Julia
-					</p>
-					<h1 className="mt-3 font-semibold text-3xl tracking-tight">
-						Workspace ready
-					</h1>
-					<p className="mt-3 text-slate-600">
-						Julia workspace is loading. Task 8 will replace this temporary
-						placeholder with the workspace shell.
-					</p>
-				</div>
-				<AuthCard userName={session.user.name ?? session.user.email} />
-			</section>
-		</main>
-	);
+	return <WorkspaceShell />;
 }

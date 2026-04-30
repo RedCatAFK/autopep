@@ -25,8 +25,12 @@ export const runStatusEnum = pgEnum("julia_run_status", [
 export const runEventTypeEnum = pgEnum("julia_run_event_type", [
 	"queued",
 	"running",
+	"run_status",
+	"text_delta",
 	"tool_started",
 	"tool_completed",
+	"tool_call_started",
+	"tool_call_completed",
 	"message",
 	"artifact_created",
 	"completed",
