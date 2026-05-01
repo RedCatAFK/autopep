@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
@@ -8,6 +10,7 @@ from .config import DEFAULT_BINDER_LENGTH, PREPROCESS_DIR, PYTHON_BIN, TARGET_DA
 from .preprocessing import (
     AMINO_ACID_3_TO_1,
     clean_cif_missing_value,
+    format_target_input_ranges,
     infer_structure_format,
     iter_cif_atom_site_records,
     parse_chain_filter,
@@ -117,10 +120,23 @@ def write_target_pdb(
     lines.append("TER")
     lines.append("END")
     pdb_path.write_text("\n".join(lines) + "\n")
+    residue_numbers_by_chain = _residue_numbers_by_chain(records)
     return {
         "pdb_path": str(pdb_path),
         "atom_count": len(records),
         "chain_ids": sorted({record["chain_id"] for record in records}),
+        "residue_count_by_chain": {
+            chain_id: len(numbers)
+            for chain_id, numbers in residue_numbers_by_chain.items()
+        },
+        "residue_ranges_by_chain": {
+            chain_id: ",".join(
+                range_part[len(chain_id):]
+                for range_part in format_target_input_ranges(chain_id, numbers)
+            )
+            for chain_id, numbers in residue_numbers_by_chain.items()
+        },
+        "residue_numbers_by_chain": residue_numbers_by_chain,
         "source": "auth_chain_clean_pdb_writer",
     }
 
@@ -242,6 +258,120 @@ def _format_pdb_atom_line(serial: int, record: dict) -> str:
     )
 
 
+def _residue_numbers_by_chain(records: Iterable[dict]) -> dict[str, list[int]]:
+    residues_by_chain: dict[str, set[int]] = {}
+    for record in records:
+        residues_by_chain.setdefault(str(record["chain_id"]), set()).add(
+            int(record["residue_number"])
+        )
+    return {
+        chain_id: sorted(numbers)
+        for chain_id, numbers in residues_by_chain.items()
+        if numbers
+    }
+
+
+def _parse_target_input(target_input: str) -> list[tuple[str, int, int]]:
+    selectors: list[tuple[str, int, int]] = []
+    for raw_part in target_input.split(","):
+        part = raw_part.strip()
+        match = re.fullmatch(r"([A-Za-z])(-?\d+)(?:-(-?\d+))?", part)
+        if not match:
+            raise ValueError(
+                f"target_input {target_input!r} is not supported. Use comma-separated "
+                "ranges like 'A1-109,A111-306'."
+            )
+        chain_id = match.group(1).upper()
+        start = int(match.group(2))
+        end = int(match.group(3) or match.group(2))
+        if end < start:
+            raise ValueError(f"target_input range {part!r} has end before start.")
+        selectors.append((chain_id, start, end))
+    if not selectors:
+        raise ValueError("target_input must select at least one residue.")
+    return selectors
+
+
+def normalize_target_input_to_available_residues(
+    target_input: str,
+    residue_numbers_by_chain: dict[str, list[int]],
+) -> tuple[str, dict]:
+    selectors = _parse_target_input(target_input)
+    available_ranges = {
+        chain_id: ",".join(
+            range_part[len(chain_id):]
+            for range_part in format_target_input_ranges(chain_id, numbers)
+        )
+        for chain_id, numbers in residue_numbers_by_chain.items()
+    }
+    corrected_parts: list[str] = []
+    missing: dict[str, list[int]] = {}
+    needs_correction = False
+    for chain_id, start, end in selectors:
+        available_numbers = residue_numbers_by_chain.get(chain_id)
+        if not available_numbers:
+            raise ValueError(
+                f"target_input {target_input!r} uses chain {chain_id!r}, but available "
+                f"target residue ranges are {available_ranges}."
+            )
+        available_set = set(available_numbers)
+        selected_numbers = [number for number in available_numbers if start <= number <= end]
+        missing_numbers = [
+            number for number in range(start, end + 1) if number not in available_set
+        ]
+        if missing_numbers:
+            needs_correction = True
+            missing.setdefault(chain_id, []).extend(missing_numbers[:12])
+        if not selected_numbers:
+            raise ValueError(
+                f"target_input {target_input!r} selects no available residues for chain "
+                f"{chain_id!r}. Available target residue ranges are {available_ranges}."
+            )
+        corrected_parts.extend(format_target_input_ranges(chain_id, selected_numbers))
+
+    normalized = ",".join(corrected_parts) if needs_correction else ",".join(
+        _format_target_input_selector(chain_id, start, end)
+        for chain_id, start, end in selectors
+    )
+    return normalized, {
+        "status": "corrected" if needs_correction else "valid",
+        "requested": target_input,
+        "target_input": normalized,
+        "missing_residues": missing,
+        "available_ranges": available_ranges,
+    }
+
+
+def _format_target_input_selector(chain_id: str, start: int, end: int) -> str:
+    return f"{chain_id}{start}-{end}"
+
+
+def validate_hotspot_residues(
+    hotspot_residues: list[str],
+    residue_numbers_by_chain: dict[str, list[int]],
+) -> None:
+    available_ranges = {
+        chain_id: ",".join(
+            range_part[len(chain_id):]
+            for range_part in format_target_input_ranges(chain_id, numbers)
+        )
+        for chain_id, numbers in residue_numbers_by_chain.items()
+    }
+    for hotspot in hotspot_residues:
+        match = re.fullmatch(r"([A-Za-z])(\d+)", str(hotspot).strip())
+        if not match:
+            raise ValueError(
+                f"hotspot_residue {hotspot!r} is not valid. Use values like 'A41'."
+            )
+        chain_id = match.group(1).upper()
+        number = int(match.group(2))
+        if number not in set(residue_numbers_by_chain.get(chain_id, [])):
+            raise ValueError(
+                f"hotspot_residue {hotspot!r} is not present in the target. "
+                f"Available target residue ranges are {available_ranges}."
+            )
+
+
 def inspect_target_tensors(
     *,
     pdb_path: Path,
@@ -304,7 +434,6 @@ def preprocess_target_structure(
     PREPROCESS_DIR.mkdir(parents=True, exist_ok=True)
     structure_path = PREPROCESS_DIR / f"{safe_target_name}{structure_suffix(structure_filename, structure_text)}"
     structure_path.write_text(structure_text)
-    outputs = write_preprocessed_outputs(result, PREPROCESS_DIR)
 
     pdb_path = TARGET_DATA_DIR / f"{safe_target_name}.pdb"
     pdb_info = write_target_pdb(
@@ -313,6 +442,14 @@ def preprocess_target_structure(
         pdb_path=pdb_path,
         chains=chains,
     )
+    normalized_target_input, target_input_guard = normalize_target_input_to_available_residues(
+        result.target_input,
+        pdb_info["residue_numbers_by_chain"],
+    )
+    validate_hotspot_residues(effective_hotspots, pdb_info["residue_numbers_by_chain"])
+    if normalized_target_input != result.target_input:
+        result = replace(result, target_input=normalized_target_input)
+    outputs = write_preprocessed_outputs(result, PREPROCESS_DIR)
     target_tensor_info = inspect_target_tensors(
         pdb_path=pdb_path,
         target_input=result.target_input,
@@ -356,6 +493,7 @@ def preprocess_target_structure(
         "target_config_json_path": target_config_json_path,
         "fasta_path": outputs["fasta"],
         "pdb_info": pdb_info,
+        "target_input_guard": target_input_guard,
         "target_tensor_info": target_tensor_info,
         "hydra_overrides": overrides,
     }

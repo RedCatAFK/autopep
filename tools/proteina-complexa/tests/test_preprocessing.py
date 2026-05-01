@@ -58,6 +58,19 @@ class PreprocessingTests(unittest.TestCase):
         self.assertEqual(result.sequence, "K")
         self.assertEqual(result.target_input, "B5-5")
 
+    def test_inferred_target_input_splits_gappy_residue_ranges(self) -> None:
+        gappy_cif = SAMPLE_CIF.replace(
+            "ATOM 4 N N GLY A 2 ? 14.365 14.666 10.337 N GLY A 2",
+            "ATOM 4 N N GLY A 4 ? 14.365 14.666 10.337 N GLY A 4",
+        ).replace(
+            "ATOM 5 C CA GLY A 2 ? 14.955 15.735 11.137 CA GLY A 2",
+            "ATOM 5 C CA GLY A 4 ? 14.955 15.735 11.137 CA GLY A 4",
+        )
+
+        result = preprocess_cif_text(gappy_cif, structure_id="gappy", chains="A")
+
+        self.assertEqual(result.target_input, "A1-1,A4-4")
+
     def test_sanitize_name(self) -> None:
         self.assertEqual(sanitize_name("6m0j target.cif"), "target_6m0j_target_cif")
 

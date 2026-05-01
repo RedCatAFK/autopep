@@ -33,7 +33,9 @@ from autopep_agent.structure_utils import (
     build_fasta,
     encode_structure_base64,
     extract_pdb_sequences,
+    normalize_target_input_for_structure,
     extract_structure_chain_order,
+    validate_hotspot_residues_for_structure,
 )
 
 
@@ -107,8 +109,9 @@ async def _proteina_design(
     seeds, pass the actual binder chain parsed from the seed file.
 
     ``hotspot_residues`` defaults to ``[]`` (unconstrained design). The
-    target_input selector defaults to chain ``A`` of the target PDB,
-    formatted as ``A1-{len}``.
+    target_input selector is inferred from actual residue numbers in the first
+    target chain, so missing N/C-terminal or internal residues are not sent to
+    Proteina as invalid selectors.
 
     Endpoint URLs and API keys are read from the active ``ToolRunContext``
     so the LLM never sees them.
@@ -117,8 +120,6 @@ async def _proteina_design(
     ctx = get_tool_run_context()
     config = _r2_config_from_env()
     writer = EventWriter(ctx.database_url)
-
-    hotspots: list[str] = list(hotspot_residues or [])
 
     # Read the target PDB from R2 using workspace-mounted path semantics.
     target_storage_key = _workspace_path_to_storage_key(
@@ -133,18 +134,17 @@ async def _proteina_design(
     )
     target_structure = target_bytes.decode("utf-8")
     target_filename = target_pdb_path.rsplit("/", 1)[-1] or "target.pdb"
-
-    # Derive a default ``target_input`` selector from the first chain of the
-    # PDB, using the residue count for the chain. Proteina's ``target_input``
-    # uses the form ``{chain}{first}-{last}``; for the simple PDB-derived
-    # case we use ``{chain}1-{len}``.
-    target_chains = extract_pdb_sequences(target_structure)
-    target_input: str | None = None
-    if target_chains:
-        first_chain = next(iter(target_chains.keys()))
-        chain_len = len(target_chains[first_chain])
-        if chain_len > 0:
-            target_input = f"{first_chain}1-{chain_len}"
+    target_input, target_input_guard = normalize_target_input_for_structure(
+        None,
+        target_structure,
+        filename=target_filename,
+        default_first_chain_only=True,
+    )
+    hotspots = validate_hotspot_residues_for_structure(
+        hotspot_residues or [],
+        target_structure,
+        filename=target_filename,
+    )
 
     # Optional warm-start: read the seed structure from R2 too.
     warm_start_text: str | None = None
@@ -194,6 +194,7 @@ async def _proteina_design(
     request_payload = {
         "target_filename": target_filename,
         "target_input": target_input,
+        "target_input_guard": target_input_guard,
         "hotspot_residues": hotspots,
         "binder_length": [binder_length_min, binder_length_max],
         "design_steps": PROTEINA_DESIGN_STEPS,

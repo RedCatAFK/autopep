@@ -251,7 +251,7 @@ async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
 
     result = await biology_tools._proteina_design(
         target_pdb_path=target_pdb_path,
-        hotspot_residues=["A:42"],
+        hotspot_residues=["A:1"],
         binder_length_min=55,
         binder_length_max=88,
         warm_start_structure_path=warm_start_path,
@@ -273,7 +273,7 @@ async def test_proteina_design_reads_target_from_r2_and_passes_warm_start(
             # PDB has chains A (1 residue) and B (1 residue); first chain is A
             # → ``A1-1`` selector.
             "target_input": "A1-1",
-            "hotspot_residues": ["A:42"],
+            "hotspot_residues": ["A1"],
             "binder_length": [55, 88],
             "warm_start_structure": warm_start_text,
             "warm_start_filename": "seed.pdb",

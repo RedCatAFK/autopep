@@ -7,8 +7,12 @@ from autopep_agent.structure_utils import (
     build_fasta,
     encode_structure_base64,
     extract_cif_chain_order,
+    extract_cif_residue_numbers,
     extract_pdb_sequences,
+    infer_target_input_from_structure,
+    normalize_target_input_for_structure,
     extract_structure_chain_order,
+    validate_hotspot_residues_for_structure,
 )
 
 
@@ -79,6 +83,53 @@ def test_extract_pdb_sequences_keeps_insertion_code_residues() -> None:
 
 def test_extract_cif_chain_order_reads_atom_site_auth_chain_ids() -> None:
     assert extract_cif_chain_order(SAMPLE_CIF) == ["A", "B"]
+
+
+def test_extract_cif_residue_numbers_reads_auth_residue_ids() -> None:
+    assert extract_cif_residue_numbers(SAMPLE_CIF) == {"A": [1], "B": [1]}
+
+
+def test_infer_target_input_splits_missing_residue_gaps() -> None:
+    pdb_text = "\n".join(
+        [
+            _atom_line(1, "CA", "ALA", "A", 1),
+            _atom_line(2, "CA", "ALA", "A", 2),
+            _atom_line(3, "CA", "ALA", "A", 4),
+        ],
+    )
+
+    assert infer_target_input_from_structure(pdb_text, filename="target.pdb") == "A1-2,A4-4"
+
+
+def test_normalize_target_input_corrects_requested_missing_residues() -> None:
+    pdb_text = "\n".join(
+        [
+            _atom_line(1, "CA", "ALA", "A", 3),
+            _atom_line(2, "CA", "ALA", "A", 4),
+            _atom_line(3, "CA", "ALA", "A", 6),
+        ],
+    )
+
+    normalized, guard = normalize_target_input_for_structure(
+        "A1-6",
+        pdb_text,
+        filename="target.pdb",
+    )
+
+    assert normalized == "A3-4,A6-6"
+    assert guard["status"] == "corrected"
+    assert guard["missing_residues"] == {"A": [1, 2, 5]}
+
+
+def test_validate_hotspot_residues_rejects_absent_residue() -> None:
+    pdb_text = _atom_line(1, "CA", "ALA", "A", 3)
+
+    try:
+        validate_hotspot_residues_for_structure(["A1"], pdb_text, filename="target.pdb")
+    except ValueError as exc:
+        assert "hotspot_residue 'A1' is not present" in str(exc)
+    else:
+        raise AssertionError("Expected invalid hotspot to be rejected")
 
 
 def test_extract_structure_chain_order_uses_cif_parser_for_cif_filename() -> None:
