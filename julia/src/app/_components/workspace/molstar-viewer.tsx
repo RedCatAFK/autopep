@@ -19,6 +19,9 @@ type MolstarViewerProps = {
 type MolstarPluginContext = {
 	clear: () => Promise<void> | void;
 	dispose: () => void;
+	canvas3d?: {
+		setProps: (props: Record<string, unknown>) => void;
+	};
 	builders: {
 		data: {
 			download: (
@@ -92,6 +95,15 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 							},
 						},
 					})) as MolstarPluginContext;
+
+					try {
+						const { Color } = await import("molstar/lib/mol-util/color");
+						pluginRef.current.canvas3d?.setProps({
+							renderer: { backgroundColor: Color(0xfefced) },
+						});
+					} catch {
+						// non-fatal: keep default background if color util missing
+					}
 				}
 
 				const plugin = pluginRef.current;
@@ -147,17 +159,16 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 		<section aria-label="Structure viewer" className="viewer-panel">
 			<div className="viewer-toolbar">
 				<div>
-					<p className="eyebrow">Viewer</p>
-					<h2>{artifact?.filename ?? "No artifact selected"}</h2>
+					<h2>{artifact?.filename ?? "No file selected"}</h2>
 				</div>
 				{artifact?.viewerUrl ? (
 					<a
 						className="secondary-button"
+						download={artifact.filename}
 						href={artifact.viewerUrl}
 						rel="noreferrer"
-						target="_blank"
 					>
-						Open file
+						Download
 					</a>
 				) : null}
 			</div>
@@ -169,8 +180,8 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 				/>
 				{!artifact ? (
 					<div className="viewer-state">
-						<strong>No artifact selected</strong>
-						<p>Choose a file from the artifacts panel.</p>
+						<strong>Nothing to view yet</strong>
+						<p>Pick a file from the right panel.</p>
 					</div>
 				) : !isStructure ? (
 					<TextViewer artifact={artifact} />

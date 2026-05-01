@@ -28,7 +28,7 @@ export function AuthCard({ userName }: AuthCardProps) {
 
 	const isSignUp = mode === "sign-up";
 	const submitLabel = isSignUp ? "Create account" : "Sign in";
-	const pendingLabel = isSignUp ? "Creating account..." : "Signing in...";
+	const pendingLabel = isSignUp ? "Creating account…" : "Signing in…";
 
 	const handleModeChange = (nextMode: AuthMode) => {
 		setMode(nextMode);
@@ -93,20 +93,17 @@ export function AuthCard({ userName }: AuthCardProps) {
 
 	if (userName) {
 		return (
-			<div className="grid gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+			<div className="auth-signed-card">
 				<div>
-					<p className="font-medium text-slate-500 text-sm">Signed in as</p>
-					<p className="mt-1 font-semibold text-lg text-slate-950">
-						{userName}
-					</p>
+					<p className="auth-card-title">Signed in as {userName}</p>
 				</div>
 				<button
-					className="rounded-md bg-slate-950 px-4 py-2.5 font-medium text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+					className="auth-submit"
 					disabled={isPending}
 					onClick={handleSignOut}
 					type="button"
 				>
-					{isPending ? "Signing out..." : "Sign out"}
+					{isPending ? "Signing out…" : "Sign out"}
 				</button>
 				{error ? <AuthError message={error} /> : null}
 			</div>
@@ -114,21 +111,23 @@ export function AuthCard({ userName }: AuthCardProps) {
 	}
 
 	return (
-		<div className="w-full rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-			<div className="grid grid-cols-2 gap-1 rounded-md bg-slate-100 p-1">
+		<div className="auth-card">
+			<header className="auth-card-header">
+				<h2 className="auth-card-title">
+					{isSignUp ? "Create your account" : "Sign in"}
+				</h2>
+			</header>
+			<div className="auth-modes" role="tablist">
 				{modes.map((authMode) => {
 					const isActive = mode === authMode.value;
 
 					return (
 						<button
 							aria-pressed={isActive}
-							className={`rounded px-3 py-2 font-medium text-sm transition ${
-								isActive
-									? "bg-white text-slate-950 shadow-sm"
-									: "text-slate-600 hover:text-slate-950"
-							}`}
+							className={`auth-mode ${isActive ? "active" : ""}`}
 							key={authMode.value}
 							onClick={() => handleModeChange(authMode.value)}
+							role="tab"
 							type="button"
 						>
 							{authMode.label}
@@ -137,13 +136,14 @@ export function AuthCard({ userName }: AuthCardProps) {
 				})}
 			</div>
 
-			<form className="mt-5 grid gap-4" onSubmit={handleSubmit}>
+			<form className="auth-form" onSubmit={handleSubmit}>
 				{isSignUp ? (
 					<AuthField
 						autoComplete="name"
 						id="julia-auth-name"
 						label="Name"
 						onChange={(event) => setName(event.target.value)}
+						placeholder="Rosalind Franklin"
 						required
 						type="text"
 						value={name}
@@ -154,6 +154,7 @@ export function AuthCard({ userName }: AuthCardProps) {
 					id="julia-auth-email"
 					label="Email"
 					onChange={(event) => setEmail(event.target.value)}
+					placeholder="you@lab.org"
 					required
 					type="email"
 					value={email}
@@ -164,16 +165,13 @@ export function AuthCard({ userName }: AuthCardProps) {
 					label="Password"
 					minLength={8}
 					onChange={(event) => setPassword(event.target.value)}
+					placeholder="At least 8 characters"
 					required
 					type="password"
 					value={password}
 				/>
 				{error ? <AuthError message={error} /> : null}
-				<button
-					className="rounded-md bg-slate-950 px-4 py-2.5 font-medium text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-					disabled={isPending}
-					type="submit"
-				>
+				<button className="auth-submit" disabled={isPending} type="submit">
 					{isPending ? pendingLabel : submitLabel}
 				</button>
 			</form>
@@ -188,25 +186,16 @@ type AuthFieldProps = {
 
 function AuthField({ id, label, ...props }: AuthFieldProps) {
 	return (
-		<div className="grid gap-1.5">
-			<label className="font-medium text-slate-700 text-sm" htmlFor={id}>
-				{label}
-			</label>
-			<input
-				className="h-10 rounded-md border border-slate-300 bg-white px-3 text-slate-950 text-sm outline-none transition placeholder:text-slate-400 focus:border-slate-950 focus:ring-2 focus:ring-slate-950/10"
-				id={id}
-				{...props}
-			/>
+		<div className="auth-field">
+			<label htmlFor={id}>{label}</label>
+			<input id={id} {...props} />
 		</div>
 	);
 }
 
 function AuthError({ message }: { message: string }) {
 	return (
-		<p
-			className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-700 text-sm"
-			role="alert"
-		>
+		<p className="auth-error" role="alert">
 			{message}
 		</p>
 	);

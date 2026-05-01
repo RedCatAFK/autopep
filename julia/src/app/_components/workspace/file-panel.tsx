@@ -1,6 +1,6 @@
 "use client";
 
-import { FilePlus2, Files } from "lucide-react";
+import { Download, FilePlus2 } from "lucide-react";
 
 import type { ViewerArtifact } from "./molstar-viewer";
 
@@ -29,16 +29,14 @@ export function FilePanel({
 		<aside aria-label="Files and artifacts" className="file-panel">
 			<div className="panel-header">
 				<div>
-					<p className="eyebrow">Files</p>
-					<h2>Artifacts</h2>
+					<h2>Files</h2>
 				</div>
 				<span className="count-badge">{artifacts.length}</span>
 			</div>
 			<div className="artifact-list">
 				{artifacts.length === 0 ? (
 					<div className="empty-panel">
-						<Files aria-hidden="true" size={18} />
-						<p>Run outputs will appear here.</p>
+						<p>Run outputs collect here.</p>
 					</div>
 				) : (
 					artifacts.map((artifact) => (
@@ -61,15 +59,38 @@ export function FilePanel({
 										: ""}
 								</span>
 							</button>
-							<button
-								aria-label={`Add ${artifact.filename} to context`}
-								className="icon-button"
-								disabled={disabled}
-								onClick={() => onAddContext(artifact)}
-								type="button"
-							>
-								<FilePlus2 aria-hidden="true" size={16} />
-							</button>
+							<div className="artifact-actions">
+								{artifact.viewerUrl ? (
+									<a
+										aria-label={`Download ${artifact.filename}`}
+										className="icon-button"
+										download={artifact.filename}
+										href={artifact.viewerUrl}
+										rel="noreferrer"
+										title="Download"
+									>
+										<Download
+											aria-hidden="true"
+											size={15}
+											strokeWidth={1.6}
+										/>
+									</a>
+								) : null}
+								<button
+									aria-label={`Add ${artifact.filename} to context`}
+									className="icon-button"
+									disabled={disabled}
+									onClick={() => onAddContext(artifact)}
+									title="Add to context"
+									type="button"
+								>
+									<FilePlus2
+										aria-hidden="true"
+										size={15}
+										strokeWidth={1.6}
+									/>
+								</button>
+							</div>
 						</div>
 					))
 				)}

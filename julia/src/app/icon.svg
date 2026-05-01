@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+	<title>Julia</title>
+	<rect width="64" height="64" rx="14" fill="#fefced" />
+	<rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="#eae3c5" stroke-width="2" />
+	<path d="M32 11 49.32 21v20L32 51 14.68 41V21L32 11Z" fill="#72d2c4" />
+	<path d="M32 18.8 42.56 24.9v12.2L32 43.2l-10.56-6.1V24.9L32 18.8Z" fill="#fefced" />
+	<circle cx="45.5" cy="45.5" r="7" fill="#ff8639" />
+</svg>

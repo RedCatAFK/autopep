@@ -7,18 +7,20 @@ export default async function Home() {
 
 	if (!session) {
 		return (
-			<main className="grid min-h-dvh place-items-center bg-slate-50 px-4 py-10 text-slate-950">
-				<section className="grid w-full max-w-4xl gap-8 md:grid-cols-[minmax(0,1fr)_380px] md:items-center">
+			<main className="auth-shell">
+				<section className="auth-frame">
 					<div>
-						<p className="font-semibold text-slate-500 text-sm uppercase tracking-[0.16em]">
-							Julia
+						<p className="auth-brand">
+							{/* eslint-disable-next-line @next/next/no-img-element */}
+							<img src="/icon.svg" alt="" width={28} height={28} />
+							<span>Julia</span>
 						</p>
-						<h1 className="mt-4 max-w-xl font-semibold text-4xl tracking-tight md:text-5xl">
-							Workspace for protein design.
+						<h1 className="auth-title">
+							Design proteins with an agent at your <em>side</em>.
 						</h1>
-						<p className="mt-4 max-w-lg text-lg text-slate-600">
-							Sign in to open your Julia workspace. The full workspace shell is
-							coming in the next milestone.
+						<p className="auth-lede">
+							Describe a target in plain English. Julia searches the
+							literature, assembles candidate structures, and refines binders.
 						</p>
 					</div>
 					<AuthCard />

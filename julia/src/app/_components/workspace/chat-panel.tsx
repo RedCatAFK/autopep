@@ -1,7 +1,7 @@
 "use client";
 
 import { Send, Square } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -118,7 +118,6 @@ export function ChatPanel({
 		<aside aria-label="Julia chat" className="chat-panel">
 			<div className="panel-header">
 				<div>
-					<p className="eyebrow">Julia</p>
 					<h2>Chat</h2>
 				</div>
 				<RunStatus connection={runEvents.connection} event={latestEvent} />
@@ -126,7 +125,10 @@ export function ChatPanel({
 			<div className="message-list">
 				{visibleMessages.length === 0 ? (
 					<div className="empty-panel">
-						<p>Ask Julia to design, inspect, or refine a protein workflow.</p>
+						<p>
+							Describe a target. Julia will search the literature, propose
+							binders, and run the workflow.
+						</p>
 					</div>
 				) : (
 					visibleMessages
@@ -151,6 +153,16 @@ export function ChatPanel({
 				{mergeToolEvents(runEvents.events).map((event) => (
 					<ToolStep event={event} key={event.id ?? `seq-${event.sequence}`} />
 				))}
+				{busy ? (
+					<ThinkingIndicator
+						label={thinkingLabel(
+							latestEvent,
+							sendMessage.isPending,
+							cancelRun.isPending,
+							assistantDraft.length > 0,
+						)}
+					/>
+				) : null}
 				{sendMessage.error ? (
 					<div className="run-error" role="alert">
 						{sendMessage.error.message}
@@ -190,7 +202,7 @@ export function ChatPanel({
 								submit();
 							}
 						}}
-						placeholder="Message Julia..."
+						placeholder="Message Julia"
 						value={prompt}
 					/>
 					{busy && runSource ? (
@@ -202,7 +214,7 @@ export function ChatPanel({
 							title="Stop"
 							type="button"
 						>
-							<Square aria-hidden="true" fill="currentColor" size={13} />
+							<Square aria-hidden="true" fill="currentColor" size={12} />
 						</button>
 					) : (
 						<button
@@ -212,13 +224,117 @@ export function ChatPanel({
 							onClick={submit}
 							type="button"
 						>
-							<Send aria-hidden="true" size={17} />
+							<Send aria-hidden="true" size={16} strokeWidth={1.8} />
 						</button>
 					)}
 				</div>
 			</div>
 		</aside>
 	);
+}
+
+const COMP_BIO_VERBS = [
+	"Aligning",
+	"AlphaFolding",
+	"Annotating",
+	"Assembling",
+	"Basecalling",
+	"Benchmarking",
+	"Catalyzing",
+	"Cell-Typing",
+	"Chaperoning",
+	"Clustering",
+	"Computing",
+	"Curating",
+	"Decoding",
+	"Designing",
+	"Diagnosing",
+	"Docking",
+	"Elucidating",
+	"Embedding",
+	"Evolving",
+	"Expressing",
+	"Folding",
+	"Forecasting",
+	"Genotyping",
+	"Graphing",
+	"Harmonizing",
+	"Hypothesizing",
+	"Imputing",
+	"Inferring",
+	"Mapping",
+	"Mining",
+	"Modeling",
+	"Optimizing",
+	"Perturbing",
+	"Profiling",
+	"Reticulating",
+	"Scaffolding",
+	"Screening",
+	"Sequencing",
+	"Simulating",
+	"Splicing",
+] as const;
+
+const GENERIC_THINKING_LABEL = "__thinking__";
+
+function ThinkingIndicator({ label }: { label: string }) {
+	const isGeneric = label === GENERIC_THINKING_LABEL;
+	const [verb, setVerb] = useState(() => pickVerb());
+	const recentRef = useRef<string[]>([]);
+
+	useEffect(() => {
+		if (!isGeneric) return;
+		const next = pickVerb(recentRef.current);
+		setVerb(next);
+		recentRef.current = [...recentRef.current, next].slice(-8);
+		const id = window.setInterval(() => {
+			const v = pickVerb(recentRef.current);
+			recentRef.current = [...recentRef.current, v].slice(-8);
+			setVerb(v);
+		}, 2200);
+		return () => window.clearInterval(id);
+	}, [isGeneric]);
+
+	const display = isGeneric ? `${verb}…` : label;
+
+	return (
+		<div aria-live="polite" className="thinking-indicator" role="status">
+			<span aria-hidden="true" className="thinking-dots">
+				<span />
+				<span />
+				<span />
+			</span>
+			<span className="thinking-label">{display}</span>
+		</div>
+	);
+}
+
+function pickVerb(recent: string[] = []): string {
+	const pool = COMP_BIO_VERBS.filter((v) => !recent.includes(v));
+	const choices = pool.length > 0 ? pool : COMP_BIO_VERBS;
+	return choices[Math.floor(Math.random() * choices.length)] ?? "Thinking";
+}
+
+function thinkingLabel(
+	event: RunEvent | undefined,
+	isSending: boolean,
+	isCanceling: boolean,
+	hasDraft: boolean,
+): string {
+	if (isCanceling) return "Stopping…";
+	if (isSending) return "Sending…";
+	if (event?.type === "tool_call_started" || event?.type === "tool_started") {
+		const name =
+			(typeof event.metadata?.toolName === "string" && event.metadata.toolName) ||
+			(typeof event.metadata?.name === "string" && event.metadata.name) ||
+			null;
+		return name ? `Running ${name}…` : "Running tool…";
+	}
+	if (hasDraft || event?.type === "text_delta" || event?.type === "message") {
+		return "Writing response…";
+	}
+	return GENERIC_THINKING_LABEL;
 }
 
 function RunStatus({

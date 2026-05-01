@@ -2,8 +2,8 @@
 
 import { LogOut, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
-import type { CSSProperties } from "react";
-import { useMemo, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { authClient } from "@/server/better-auth/client";
 import { api } from "@/trpc/react";
@@ -42,22 +42,93 @@ type WorkspacePayload = {
 	contextReferences?: WorkspaceContextReference[];
 };
 
-const THREAD_COLORS = [
-	"#f97316",
-	"#22c55e",
-	"#06b6d4",
-	"#a855f7",
-	"#ef4444",
-	"#eab308",
-	"#14b8a6",
-	"#f43f5e",
-	"#6366f1",
-	"#84cc16",
-];
+
+const LAYOUT_STORAGE_KEY = "julia.layout.v1";
+const CHAT_MIN = 280;
+const CHAT_MAX = 640;
+const FILES_MIN = 240;
+const FILES_MAX = 520;
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
 
 export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 	const router = useRouter();
 	const utils = api.useUtils();
+	const [chatWidth, setChatWidth] = useState(360);
+	const [filesWidth, setFilesWidth] = useState(300);
+
+	useEffect(() => {
+		try {
+			const stored = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+			if (!stored) return;
+			const parsed = JSON.parse(stored) as {
+				chat?: number;
+				files?: number;
+			};
+			if (typeof parsed.chat === "number") {
+				setChatWidth(clamp(parsed.chat, CHAT_MIN, CHAT_MAX));
+			}
+			if (typeof parsed.files === "number") {
+				setFilesWidth(clamp(parsed.files, FILES_MIN, FILES_MAX));
+			}
+		} catch {
+			// ignore corrupt storage
+		}
+	}, []);
+
+	useEffect(() => {
+		try {
+			window.localStorage.setItem(
+				LAYOUT_STORAGE_KEY,
+				JSON.stringify({ chat: chatWidth, files: filesWidth }),
+			);
+		} catch {
+			// storage may be unavailable (private mode); not fatal
+		}
+	}, [chatWidth, filesWidth]);
+
+	const handleResize = (
+		event: ReactPointerEvent<HTMLDivElement>,
+		side: "left" | "right",
+	) => {
+		event.preventDefault();
+		const handle = event.currentTarget;
+		const startX = event.clientX;
+		const startWidth = side === "left" ? chatWidth : filesWidth;
+		const min = side === "left" ? CHAT_MIN : FILES_MIN;
+		const max = side === "left" ? CHAT_MAX : FILES_MAX;
+		handle.setPointerCapture(event.pointerId);
+		handle.classList.add("dragging");
+		document.body.classList.add("resizing-cols");
+
+		const onMove = (moveEvent: globalThis.PointerEvent) => {
+			const dx = moveEvent.clientX - startX;
+			const next = clamp(
+				side === "left" ? startWidth + dx : startWidth - dx,
+				min,
+				max,
+			);
+			if (side === "left") {
+				setChatWidth(next);
+			} else {
+				setFilesWidth(next);
+			}
+		};
+
+		const onUp = () => {
+			handle.classList.remove("dragging");
+			document.body.classList.remove("resizing-cols");
+			handle.removeEventListener("pointermove", onMove);
+			handle.removeEventListener("pointerup", onUp);
+			handle.removeEventListener("pointercancel", onUp);
+		};
+
+		handle.addEventListener("pointermove", onMove);
+		handle.addEventListener("pointerup", onUp);
+		handle.addEventListener("pointercancel", onUp);
+	};
 	const latestWorkspace = api.workspace.getLatestWorkspace.useQuery(undefined, {
 		refetchInterval: 5000,
 	});
@@ -152,7 +223,10 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 	return (
 		<main className="workspace-root">
 			<nav aria-label="Workspace navigation" className="left-rail">
-				<div className="rail-brand">J</div>
+				<div className="rail-brand" aria-label="Julia">
+					{/* eslint-disable-next-line @next/next/no-img-element */}
+					<img src="/icon.svg" alt="Julia" width={36} height={36} />
+				</div>
 				<button
 					aria-label="New chat"
 					className="rail-button"
@@ -164,9 +238,9 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 					title="New chat"
 					type="button"
 				>
-					<Plus aria-hidden="true" size={18} />
+					<Plus aria-hidden="true" size={16} strokeWidth={1.6} />
 				</button>
-				<div className="rail-thread-list">
+				<div className="rail-thread-list" role="list">
 					{threads.map((thread) => {
 						const isActive = thread.id === currentThreadId;
 						const label = thread.displayTitle ?? thread.title ?? "New chat";
@@ -182,11 +256,6 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 									setRunSource(null);
 									setSelectedArtifactId(null);
 								}}
-								style={
-									{
-										"--thread-color": threadColor(thread.id),
-									} as CSSProperties
-								}
 								title={label}
 								type="button"
 							>
@@ -228,7 +297,15 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 					) : null}
 				</div>
 			</nav>
-			<div className="workspace-grid">
+			<div
+				className="workspace-grid"
+				style={
+					{
+						"--chat-w": `${chatWidth}px`,
+						"--files-w": `${filesWidth}px`,
+					} as CSSProperties
+				}
+			>
 				{latestWorkspace.isLoading ||
 				(selectedThreadId &&
 					selectedWorkspace.isLoading &&
@@ -251,7 +328,21 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 							runSource={runSource}
 							threadId={payload.thread?.id}
 						/>
+						<div
+							aria-label="Resize chat panel"
+							aria-orientation="vertical"
+							className="column-resizer left"
+							onPointerDown={(event) => handleResize(event, "left")}
+							role="separator"
+						/>
 						<MolstarViewer artifact={selectedArtifact} />
+						<div
+							aria-label="Resize files panel"
+							aria-orientation="vertical"
+							className="column-resizer right"
+							onPointerDown={(event) => handleResize(event, "right")}
+							role="separator"
+						/>
 						<FilePanel
 							artifacts={artifacts}
 							disabled={addContext.isPending}
@@ -270,14 +361,6 @@ export function WorkspaceShell({ user }: { user?: WorkspaceUser }) {
 			</div>
 		</main>
 	);
-}
-
-function threadColor(threadId: string): string {
-	let hash = 0;
-	for (let index = 0; index < threadId.length; index += 1) {
-		hash = (hash * 31 + threadId.charCodeAt(index)) >>> 0;
-	}
-	return THREAD_COLORS[hash % THREAD_COLORS.length] ?? "#64748b";
 }
 
 function initialFromLabel(label: string): string {

@@ -14,6 +14,13 @@ DEFAULT_OUTPUT_DIRS = (
     "outputs/tool_logs",
 )
 
+JULIA_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+JULIA_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+JULIA_OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-v4-pro"
+JULIA_DEEPSEEK_PROVIDERS = {"fireworks", "openrouter"}
+JULIA_DEFAULT_DEEPSEEK_PROVIDER = "openrouter"
+JULIA_DEEPSEEK_TIMEOUT_SECONDS = 4 * 60 * 60
+
 JULIA_AGENT_INSTRUCTIONS = """\
 You are Julia, a concise protein-design assistant.
 
@@ -128,39 +135,143 @@ def build_julia_agent_with_tools(workspace_dir: Path | str, *, model: Any = None
 
     from julia_agent.tools_registry import build_julia_tools
 
-    return Agent(
-        name="Julia",
-        instructions=JULIA_AGENT_INSTRUCTIONS,
-        model=model if model is not None else _default_julia_model(),
-        tools=build_julia_tools(workspace_dir),
-    )
+    if model is not None:
+        resolved_model: Any = model
+        model_settings = None
+    else:
+        resolved_model, model_settings = _default_julia_model()
+
+    agent_kwargs: dict[str, Any] = {
+        "name": "Julia",
+        "instructions": JULIA_AGENT_INSTRUCTIONS,
+        "model": resolved_model,
+        "tools": build_julia_tools(workspace_dir),
+    }
+    if model_settings is not None:
+        agent_kwargs["model_settings"] = model_settings
+    return Agent(**agent_kwargs)
 
 
-def _default_julia_model():
+def _default_julia_model() -> tuple[Any, Any]:
     """Pick the model the live worker should use.
 
-    Prefers Fireworks-hosted DeepSeek (OpenAI-compatible API) when both
-    FIREWORKS_API_KEY and FIREWORKS_DEEPSEEK_MODEL are set; falls back to the
-    OpenAI default model otherwise. Returning a string means the Agents SDK
-    uses its default OpenAI client; returning a Model instance routes through
-    the Fireworks endpoint with a custom AsyncOpenAI client.
+    Defaults to OpenRouter-hosted DeepSeek (set OPENROUTER_API_KEY). Override
+    with JULIA_DEEPSEEK_PROVIDER=fireworks to route through Fireworks instead.
+    Falls back to OPENAI_DEFAULT_MODEL when the chosen provider's credentials
+    are not configured. Returns ``(model, model_settings)``; ``model_settings``
+    is ``None`` for plain string models or when no extra body is needed.
     """
-    fireworks_key = os.getenv("FIREWORKS_API_KEY")
-    fireworks_model = os.getenv("FIREWORKS_DEEPSEEK_MODEL")
-    if fireworks_key and fireworks_model:
-        from agents import OpenAIChatCompletionsModel
-        from openai import AsyncOpenAI
+    provider = (
+        os.getenv("JULIA_DEEPSEEK_PROVIDER") or JULIA_DEFAULT_DEEPSEEK_PROVIDER
+    ).strip().lower()
+    if provider == "openrouter":
+        result = _build_openrouter_deepseek_model()
+        if result is not None:
+            return result
+    elif provider == "fireworks":
+        result = _build_fireworks_deepseek_model()
+        if result is not None:
+            return result
+    return os.getenv("OPENAI_DEFAULT_MODEL"), None
 
-        client = AsyncOpenAI(
-            api_key=fireworks_key,
-            base_url=os.getenv("FIREWORKS_BASE_URL")
-            or "https://api.fireworks.ai/inference/v1",
-        )
-        return OpenAIChatCompletionsModel(
-            model=fireworks_model,
-            openai_client=client,
-        )
-    return os.getenv("OPENAI_DEFAULT_MODEL")
+
+def _build_fireworks_deepseek_model() -> tuple[Any, Any] | None:
+    api_key = os.getenv("FIREWORKS_API_KEY")
+    model_name = os.getenv("FIREWORKS_DEEPSEEK_MODEL")
+    if not (api_key and model_name):
+        return None
+    from agents import OpenAIChatCompletionsModel
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=(os.getenv("FIREWORKS_BASE_URL") or JULIA_FIREWORKS_BASE_URL)
+        .strip()
+        .rstrip("/"),
+    )
+    return OpenAIChatCompletionsModel(model=model_name, openai_client=client), None
+
+
+def _build_openrouter_deepseek_model() -> tuple[Any, Any] | None:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    model_name = (
+        os.getenv("OPENROUTER_DEEPSEEK_MODEL") or JULIA_OPENROUTER_DEEPSEEK_MODEL
+    ).strip()
+    if not model_name:
+        return None
+    base_url = (
+        os.getenv("OPENROUTER_BASE_URL") or JULIA_OPENROUTER_BASE_URL
+    ).strip().rstrip("/")
+    reasoning_effort = (os.getenv("OPENROUTER_REASONING_EFFORT") or "").strip()
+
+    import httpx
+    from agents import ModelSettings, OpenAIChatCompletionsModel
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=_openrouter_default_headers(),
+        timeout=httpx.Timeout(timeout=JULIA_DEEPSEEK_TIMEOUT_SECONDS, connect=30.0),
+    )
+    extra_body: dict[str, Any] = {}
+    if reasoning_effort:
+        extra_body["reasoning"] = {"effort": reasoning_effort}
+    provider_prefs = _openrouter_provider_preferences()
+    if provider_prefs:
+        extra_body["provider"] = provider_prefs
+    model = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
+    settings = ModelSettings(extra_body=extra_body or None)
+    return model, settings
+
+
+def _openrouter_default_headers() -> dict[str, str]:
+    headers = {
+        "X-OpenRouter-Title": os.getenv("OPENROUTER_APP_TITLE", "julia"),
+    }
+    referer = (
+        os.getenv("OPENROUTER_HTTP_REFERER")
+        or os.getenv("OPENROUTER_SITE_URL")
+        or ""
+    ).strip()
+    if referer:
+        headers["HTTP-Referer"] = referer
+    return headers
+
+
+def _openrouter_provider_preferences() -> dict[str, Any]:
+    provider: dict[str, Any] = {}
+    order = _csv_env("OPENROUTER_PROVIDER_ORDER")
+    only = _csv_env("OPENROUTER_PROVIDER_ONLY")
+    ignore = _csv_env("OPENROUTER_PROVIDER_IGNORE")
+    allow_fallbacks = _bool_env("OPENROUTER_ALLOW_FALLBACKS")
+    require_parameters = _bool_env("OPENROUTER_REQUIRE_PARAMETERS", default=True)
+
+    if order:
+        provider["order"] = order
+    if only:
+        provider["only"] = only
+    if ignore:
+        provider["ignore"] = ignore
+    if allow_fallbacks is not None:
+        provider["allow_fallbacks"] = allow_fallbacks
+    if require_parameters is not None:
+        provider["require_parameters"] = require_parameters
+    return provider
+
+
+def _csv_env(name: str) -> list[str]:
+    value = os.getenv(name, "")
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _bool_env(name: str, *, default: bool | None = None) -> bool | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 async def run_julia_agent(
