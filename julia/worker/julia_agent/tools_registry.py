@@ -21,10 +21,12 @@ def build_julia_tools(workspace_dir: Path | str) -> list[Any]:
     workspace = Path(workspace_dir)
 
     async def execute_bash(command: str, timeout_seconds: int = 120) -> dict[str, Any]:
-        """Run a bash command inside the run workspace and capture stdout/stderr.
+        """Run an arbitrary bash command from the current run workspace directory.
 
-        Use sparingly. The command runs from the workspace root with
-        $JULIA_WORKSPACE_DIR set; only write under outputs/ subdirectories.
+        The command starts with cwd set to a fresh per-run workspace folder for
+        this run. Use relative paths for files you create or inspect. The
+        default and configured max timeout is 120 seconds unless
+        JULIA_MAX_TOOL_TIMEOUT is raised.
         """
         return await tools.execute_bash(workspace, command, timeout_seconds)
 
@@ -33,20 +35,16 @@ def build_julia_tools(workspace_dir: Path | str) -> list[Any]:
         timeout_seconds: int = 120,
         filename: str | None = None,
     ) -> dict[str, Any]:
-        """Run a Python script inside the run workspace and capture stdout/stderr.
+        """Run an arbitrary Python script from the current run workspace directory.
 
-        The script is saved under outputs/tool_logs and executed from the
-        workspace root. Use this to inspect or transform structures and
-        prepare warm-start inputs.
+        The script is written under outputs/tool_logs/python_runs in the fresh
+        run workspace before execution so it can create or read sibling files
+        using relative paths.
         """
         return await tools.execute_python(workspace, script, timeout_seconds, filename)
 
     async def literature_search(query: str, max_results: int = 8) -> dict[str, Any]:
-        """Search PMC for relevant papers and write results under outputs/literature.
-
-        Use early in the workflow to ground the target's binding biology and
-        identify hotspot residues or known partners.
-        """
+        """Search the NCBI PMC database for papers and save a compact JSON result."""
         return await tools.literature_search(workspace, query, max_results)
 
     async def search_pdb(
@@ -55,29 +53,25 @@ def build_julia_tools(workspace_dir: Path | str) -> list[Any]:
         max_chain_length: int = 500,
         organism: str | None = None,
     ) -> dict[str, Any]:
-        """Search RCSB for target structures and write a JSON result under outputs/pdb.
-
-        Prefer entries that contain bound binder/partner chains, which can seed
-        Proteina warm starts.
-        """
+        """Search RCSB PDB for protein structures and return compact metadata."""
         return await tools.search_pdb(workspace, query, top_k, max_chain_length, organism)
 
     async def fetch_pdb(pdb_id: str, file_format: str = "cif") -> dict[str, Any]:
-        """Download a PDB or mmCIF file from RCSB into outputs/pdb.
+        """Download a PDB or mmCIF file from RCSB into the run workspace pdb folder.
 
-        Defaults to CIF/mmCIF because Proteina accepts CIF target structures.
-        Pass file_format="pdb" only when a downstream tool explicitly requires it.
+        Defaults to CIF/mmCIF because Proteina accepts CIF target structures and
+        RCSB CIF files preserve more structural metadata than legacy PDB files.
+        Pass file_format="pdb" only when a downstream tool explicitly requires PDB.
         """
         return await tools.fetch_pdb(workspace, pdb_id, file_format)
 
     async def run_proteina(
         target_path: str,
-        target_chains: str | None = None,
         target_input: str | None = None,
         hotspot_residues: list[str] | None = None,
         binder_length_min: int = 60,
         binder_length_max: int = 90,
-        num_candidates: int = 3,
+        num_candidates: int = 5,
         run_name: str | None = None,
         warm_start_path: str | None = None,
         warm_start_chain: str | None = None,
@@ -85,15 +79,22 @@ def build_julia_tools(workspace_dir: Path | str) -> list[Any]:
     ) -> dict[str, Any]:
         """Generate candidate binders with the Proteina-Complexa Modal endpoint.
 
-        target_path and warm_start_path are workspace-relative. The tool writes
-        the raw response and each generated PDB under outputs/proteina_runs.
-        hotspot_residues use Proteina format: chain ID immediately followed by
-        residue number, e.g. ["A41", "A145", "A166"].
+        target_path and warm_start_path are workspace-relative paths. The tool
+        saves the raw JSON response and each generated PDB under proteina_runs
+        in the current run workspace.
+        hotspot_residues must use Proteina format: chain ID followed immediately
+        by residue number, e.g. ["A41", "A145", "A166"]. Do not pass values like
+        "A:HIS41" or "A:CYS145".
+        For clean binder-only CIF/mmCIF seeds, omit warm_start_chain. If
+        warm_start_path contains a multi-chain target+binder complex, pass
+        warm_start_chain as the seed binder chain, e.g. "C" for Proteina outputs
+        where target chains are A/B and the binder chain is C. When omitted for a
+        multi-chain PDB seed, the last chain in the file is used for compatibility;
+        multi-chain CIF/mmCIF seeds require an explicit warm_start_chain.
         """
         return await tools.run_proteina(
             workspace,
             target_path,
-            target_chains,
             target_input,
             hotspot_residues,
             binder_length_min,
@@ -119,10 +120,7 @@ def build_julia_tools(workspace_dir: Path | str) -> list[Any]:
         seed: int = 42,
         include_pdb: bool = True,
     ) -> dict[str, Any]:
-        """Fold a sequence or target+binder complex with Chai-1 and write results
-        under outputs/chai_runs. Pass target_sequence + binder_sequence to fold
-        a complex. Prefer using Proteina output sequences when available.
-        """
+        """Fold one sequence or a target+binder complex with the Chai-1 endpoint."""
         return await tools.run_chai(
             workspace,
             fasta,
@@ -149,11 +147,11 @@ def build_julia_tools(workspace_dir: Path | str) -> list[Any]:
         chain_b: str = "B",
         run_name: str | None = None,
     ) -> dict[str, Any]:
-        """Score a target+binder pair with the interaction and quality scorers.
+        """Run interaction scoring and binder quality scoring in parallel.
 
-        Pass complex_structure_path (workspace-relative) when a folded complex is
-        available; the scorers will use it for structural features. Results are
-        written under outputs/scoring_runs.
+        complex_structure_path is optional. If supplied, it must be a workspace
+        path to a PDB or mmCIF complex and enables structure-based PRODIGY
+        scoring.
         """
         return await tools.run_scorers(
             workspace,

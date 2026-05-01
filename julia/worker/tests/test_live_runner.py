@@ -79,18 +79,17 @@ def _build_stream_events(workspace_dir: Path) -> list[Any]:
 def _patch_pubsub(monkeypatch) -> list[dict[str, Any]]:
     """Capture every event published to pubsub. Returns the captured list.
 
-    `publish_terminal` yields once via `asyncio.sleep(0)` so the live runner's
-    final `await pubsub.publish_terminal(...)` actually iterates the loop —
-    that's what lets the fire-and-forget `loop.create_task(publish(...))`
-    coroutines from `_persist_event` run before the test asserts.
+    `pubsub.publish` is now synchronous (single-threaded asyncio, no awaits in
+    its body) so the live runner's events land in the captured list in program
+    order — no scheduler race against `publish_terminal`.
     """
     published: list[dict[str, Any]] = []
 
-    async def fake_publish(_run_id: str, event: dict[str, Any]) -> None:
+    def fake_publish(_run_id: str, event: dict[str, Any]) -> None:
         published.append(event)
 
-    async def fake_publish_terminal(_run_id: str) -> None:
-        await asyncio.sleep(0)
+    def fake_publish_terminal(_run_id: str) -> None:
+        return None
 
     monkeypatch.setattr(pubsub, "publish", fake_publish)
     monkeypatch.setattr(pubsub, "publish_terminal", fake_publish_terminal)

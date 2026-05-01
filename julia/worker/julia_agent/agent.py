@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -15,48 +16,86 @@ DEFAULT_OUTPUT_DIRS = (
 )
 
 JULIA_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+JULIA_FIREWORKS_DEEPSEEK_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
+JULIA_FIREWORKS_REASONING_EFFORT = "high"
 JULIA_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 JULIA_OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-v4-pro"
+JULIA_OPENROUTER_REASONING_EFFORT = "high"
 JULIA_DEEPSEEK_PROVIDERS = {"fireworks", "openrouter"}
 JULIA_DEFAULT_DEEPSEEK_PROVIDER = "openrouter"
 JULIA_DEEPSEEK_TIMEOUT_SECONDS = 4 * 60 * 60
+JULIA_DEFAULT_AGENT_MAX_TURNS = sys.maxsize
+
+# SiliconFlow's DeepSeek thinking-mode endpoint rejects continuation requests
+# unless `reasoning_content` is echoed back on every prior assistant message
+# (provider error 20015). The OpenAI Agents SDK's chat-completions model does
+# not preserve that field across turns, so multi-turn tool calls fail on
+# SiliconFlow. Default-ignore it so OpenRouter routes to a permissive provider.
+JULIA_DEFAULT_OPENROUTER_PROVIDER_IGNORE: tuple[str, ...] = ("SiliconFlow",)
 
 JULIA_AGENT_INSTRUCTIONS = """\
-You are Julia, a concise protein-design assistant.
+You are Julia, a protein-design assistant running through the OpenAI Agents SDK
+inside a per-run Modal worker workspace.
 
-General chat is allowed. Answer direct scientific or workflow questions briefly when
-no tool-backed run is needed.
+Operate only inside this run's workspace directory. The workspace is a fresh
+temporary folder for this run; tool outputs go under outputs/ subdirectories
+(outputs/literature, outputs/pdb, outputs/proteina_runs, outputs/chai_runs,
+outputs/scoring_runs, outputs/tool_logs). Use workspace-relative paths returned
+by tools when chaining calls.
 
-For binder generation requests ("generate a protein that binds X", "design binders
-for X"), follow the autopep2 single-pass workflow:
+You can create files, run bash/Python, search PMC, search/fetch RCSB PDB
+structures, call Proteina-Complexa, fold sequences or target+binder complexes
+with Chai-1, and score candidates with the interaction and quality scorers.
 
-1. literature_search to identify the target, binding/interface biology, known
-   complexes, and useful hotspot residues.
-2. search_pdb for target structures and target-bound complexes. Prefer entries
-   with attached binders/partners because an existing binder seeds Proteina warm
-   starts.
-3. fetch_pdb (file_format="cif") for the chosen target or target-complex.
-4. Inspect chains/sequences to confirm target and any bound binder chain. When
-   useful, prepare a clean warm_start_path from the binder geometry.
-5. run_proteina with num_candidates=3. Always pass an explicit `target_input`
-   like "A1-150" describing the target residue range; Proteina rejects targets
-   with insertion codes when target_input is missing. Use literature_search
-   and chain inspection to choose a tight, biologically meaningful range.
-   Prefer a warm start (warm_start_path) when an existing bound binder/partner
-   is available. hotspot_residues use Proteina format: chain ID immediately
-   followed by residue number, e.g. ["A41", "A145", "A166"]. Cold start is
-   the fallback when no suitable bound binder exists.
-6. run_chai for each Proteina candidate as a target+binder complex, using the
-   target_sequence and binder_sequence Proteina returned.
-7. run_scorers on each folded candidate, using the best Chai complex structure
-   path.
-8. Report ranked results with paths to generated artifacts.
+Use this workflow whenever the user requests binder protein generation, e.g.
+"generate a protein that binds to X" or "design binders for X":
+1. Run literature_search to identify the target, relevant binding/interface
+   biology, known ligands/complexes, and any useful hotspot residues.
+2. Run search_pdb for target structures and target-bound complexes, not only
+   apo target structures. Some PDB entries already have bound protein or
+   peptide binders/partners; prefer relevant structures with attached binders
+   because an existing binder can seed Proteina warm-start generation.
+3. Choose promising structures or chains using the literature context,
+   structural relevance, method, resolution, chain lengths, and bound
+   partners/ligands when available.
+4. Fetch the selected PDB target or target-complex structure with fetch_pdb using
+   file_format="cif". Use CIF/mmCIF for fetched target structures unless a
+   downstream tool explicitly requires PDB.
+5. Inspect files with execute_bash or execute_python to confirm chains, target
+   sequence, residue numbering, candidate inputs, and whether a bound binder or
+   partner chain is present.
+6. Almost always prefer a warm start when PDB search finds an existing bound
+   binder/partner for the target. Use execute_python to prepare a clean
+   warm_start_path from the existing binder geometry. Cold start is mainly a
+   fallback so the workflow still runs when no suitable binder exists, the PDB
+   only has small-molecule ligands, or warm-start preparation fails. For clean
+   binder-only CIF/mmCIF seeds, omit warm_start_chain. When the warm-start file
+   has multiple chains, pass warm_start_chain as the binder or partner chain to
+   seed from. Do not infer mmCIF chain IDs with fixed-width PDB columns. For
+   Proteina-generated complexes with target chains A/B and binder chain C, pass
+   warm_start_chain="C" unless inspection shows a different binder chain.
+7. Run run_proteina with num_candidates=3. Pass warm_start_path whenever a
+   suitable prepared existing binder seed is available. For hotspot_residues,
+   use Proteina format only: chain ID immediately followed by residue number, e.g.
+   ["A41", "A145", "A166"]. Do not include residue names or separators;
+   wrong examples are "A:HIS41", "A:CYS145", and "A:GLU166".
+8. Fold each of the 3 Proteina candidates with run_chai as target+binder
+   complexes. Use target_sequence and binder_sequence from run_proteina
+   outputs when available. Run the 3 Chai folds in parallel when the tool
+   runner permits parallel calls.
+9. Run run_scorers on each folded candidate, using the best Chai complex
+   structure path for each candidate when available. Run the 3 scoring jobs in
+   parallel when the tool runner permits parallel calls.
+10. Report ranked results with candidate file paths, Chai output paths, scorer
+   output paths, and a clear split between literature/PDB evidence and
+   computed model/scoring output.
 
-Use CIF or mmCIF for protein targets whenever structure context is needed.
-Keep replies concise and focused on evidence, assumptions, and generated artifacts.
+Use concrete file paths from tool outputs. Prefer CIF/mmCIF files for Proteina
+target inputs and Chai CIF/PDB outputs for scoring. Do not claim wet-lab
+validation, clinical efficacy, safety, or therapeutic readiness.
 
-Do not claim wet-lab validation, efficacy, safety, or therapeutic readiness. Treat
-designs as computational hypotheses that require experimental validation.
+Keep replies concise, but show enough detail that the user can see the next
+useful command or output file.
 """
 
 
@@ -177,19 +216,31 @@ def _default_julia_model() -> tuple[Any, Any]:
 
 def _build_fireworks_deepseek_model() -> tuple[Any, Any] | None:
     api_key = os.getenv("FIREWORKS_API_KEY")
-    model_name = os.getenv("FIREWORKS_DEEPSEEK_MODEL")
+    model_name = (
+        os.getenv("FIREWORKS_DEEPSEEK_MODEL") or JULIA_FIREWORKS_DEEPSEEK_MODEL
+    ).strip()
     if not (api_key and model_name):
         return None
-    from agents import OpenAIChatCompletionsModel
+    base_url = (
+        os.getenv("FIREWORKS_BASE_URL") or JULIA_FIREWORKS_BASE_URL
+    ).strip().rstrip("/")
+    reasoning_effort = (
+        os.getenv("FIREWORKS_REASONING_EFFORT") or JULIA_FIREWORKS_REASONING_EFFORT
+    ).strip()
+
+    import httpx
+    from agents import ModelSettings, OpenAIChatCompletionsModel
     from openai import AsyncOpenAI
+    from openai.types.shared import Reasoning
 
     client = AsyncOpenAI(
         api_key=api_key,
-        base_url=(os.getenv("FIREWORKS_BASE_URL") or JULIA_FIREWORKS_BASE_URL)
-        .strip()
-        .rstrip("/"),
+        base_url=base_url,
+        timeout=httpx.Timeout(timeout=JULIA_DEEPSEEK_TIMEOUT_SECONDS, connect=30.0),
     )
-    return OpenAIChatCompletionsModel(model=model_name, openai_client=client), None
+    model = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
+    settings = ModelSettings(reasoning=Reasoning(effort=reasoning_effort))  # type: ignore[arg-type]
+    return model, settings
 
 
 def _build_openrouter_deepseek_model() -> tuple[Any, Any] | None:
@@ -204,7 +255,9 @@ def _build_openrouter_deepseek_model() -> tuple[Any, Any] | None:
     base_url = (
         os.getenv("OPENROUTER_BASE_URL") or JULIA_OPENROUTER_BASE_URL
     ).strip().rstrip("/")
-    reasoning_effort = (os.getenv("OPENROUTER_REASONING_EFFORT") or "").strip()
+    reasoning_effort = (
+        os.getenv("OPENROUTER_REASONING_EFFORT") or JULIA_OPENROUTER_REASONING_EFFORT
+    ).strip()
 
     import httpx
     from agents import ModelSettings, OpenAIChatCompletionsModel
@@ -245,7 +298,11 @@ def _openrouter_provider_preferences() -> dict[str, Any]:
     provider: dict[str, Any] = {}
     order = _csv_env("OPENROUTER_PROVIDER_ORDER")
     only = _csv_env("OPENROUTER_PROVIDER_ONLY")
-    ignore = _csv_env("OPENROUTER_PROVIDER_IGNORE")
+    ignore_raw = os.getenv("OPENROUTER_PROVIDER_IGNORE")
+    if ignore_raw is None or not ignore_raw.strip():
+        ignore = list(JULIA_DEFAULT_OPENROUTER_PROVIDER_IGNORE)
+    else:
+        ignore = [item.strip() for item in ignore_raw.split(",") if item.strip()]
     allow_fallbacks = _bool_env("OPENROUTER_ALLOW_FALLBACKS")
     require_parameters = _bool_env("OPENROUTER_REQUIRE_PARAMETERS", default=True)
 
@@ -272,6 +329,23 @@ def _bool_env(name: str, *, default: bool | None = None) -> bool | None:
     if value is None or not value.strip():
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _agent_max_turns() -> int:
+    """Max turns the Agents-SDK runner is allowed for one streamed turn.
+
+    Mirrors autopep2's `_agent_max_turns`. Defaults to ``sys.maxsize`` so the
+    8-step protein-design workflow is never truncated; override with
+    ``JULIA_MAX_AGENT_TURNS`` (positive int).
+    """
+    configured = os.getenv("JULIA_MAX_AGENT_TURNS", "").strip()
+    if not configured:
+        return JULIA_DEFAULT_AGENT_MAX_TURNS
+    try:
+        parsed = int(configured)
+    except ValueError:
+        return JULIA_DEFAULT_AGENT_MAX_TURNS
+    return JULIA_DEFAULT_AGENT_MAX_TURNS if parsed <= 0 else parsed
 
 
 async def run_julia_agent(

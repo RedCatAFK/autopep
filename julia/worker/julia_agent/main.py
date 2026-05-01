@@ -146,11 +146,28 @@ async def stream_run_events(websocket: WebSocket, run_id: str) -> None:
 
     await websocket.accept()
     try:
-        if _run_is_terminal(config.database_url, run_id):
+        terminal_status = _terminal_run_status(config.database_url, run_id)
+        if terminal_status is not None:
+            # Reconnect after the run already finished: replay a synthetic
+            # terminal `run_status` event so the client unsticks the
+            # "writing response…" UI before we close the socket.
+            with __import__("contextlib").suppress(Exception):
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "runId": run_id,
+                            "type": "run_status",
+                            "message": terminal_status,
+                            "sequence": 0,
+                            "metadata": {"status": terminal_status, "synthetic": True},
+                        },
+                        default=str,
+                    )
+                )
             await websocket.close(code=1000, reason="run already terminal")
             return
 
-        async with pubsub.subscribe(run_id) as queue:
+        with pubsub.subscribe(run_id) as queue:
             heartbeat_task = asyncio.create_task(_heartbeat(websocket))
             try:
                 async for event in _drain_queue(queue):
@@ -181,12 +198,13 @@ async def _drain_queue(queue: asyncio.Queue) -> AsyncIterator[dict[str, Any] | N
             return
 
 
-def _run_is_terminal(database_url: str, run_id: str) -> bool:
+def _terminal_run_status(database_url: str, run_id: str) -> str | None:
+    """Returns the terminal status string if the run is already done, else None."""
     context = db.load_run_context(database_url, run_id)
     if not context:
-        return False
+        return None
     status_value = str(context.get("status") or "")
-    return status_value in {"completed", "failed", "canceled"}
+    return status_value if status_value in {"completed", "failed", "canceled"} else None
 
 
 async def _heartbeat(websocket: WebSocket) -> None:

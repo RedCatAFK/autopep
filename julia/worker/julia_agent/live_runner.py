@@ -103,9 +103,11 @@ def _persist_event(
     """Broadcast an event to live WebSocket subscribers. Returns the new sequence.
 
     Run events are not persisted to Neon — we rely on the WebSocket as the
-    single source of truth for in-flight runs. Synchronous psycopg writes here
-    blocked the event loop and starved the WS sender, batching deltas instead
-    of streaming them.
+    single source of truth for in-flight runs. ``pubsub.publish`` is synchronous
+    so events land in subscriber queues in program order; using
+    ``loop.create_task`` here previously raced with the awaited
+    ``publish_terminal`` in the run finally and dropped the trailing
+    ``run_status: completed`` event.
     """
     sequence = _next_sequence(state)
     payload = {
@@ -115,11 +117,7 @@ def _persist_event(
         "sequence": sequence,
         "metadata": metadata,
     }
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return sequence
-    loop.create_task(pubsub.publish(state.run_id, payload))
+    pubsub.publish(state.run_id, payload)
     return sequence
 
 
@@ -186,7 +184,7 @@ async def run_live_turn(
             )
         shutil.rmtree(workspace_dir, ignore_errors=True)
         with contextlib.suppress(Exception):
-            await pubsub.publish_terminal(run_id)
+            pubsub.publish_terminal(run_id)
 
     return {"runId": run_id, "status": status}
 

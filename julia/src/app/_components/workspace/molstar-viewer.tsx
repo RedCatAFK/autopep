@@ -74,12 +74,16 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 				const react18 = await import("molstar/lib/mol-plugin-ui/react18");
 				const spec = await import("molstar/lib/mol-plugin/spec");
 				const assets = await import("molstar/lib/mol-util/assets");
+				if (canceled) return;
 				const format = artifact.filename.toLowerCase().endsWith(".pdb")
 					? "pdb"
 					: "mmcif";
 
 				if (!pluginRef.current) {
-					pluginRef.current = (await molstar.createPluginUI({
+					// Strict Mode double-mounts and concurrent artifact swaps can
+					// race two createPluginUI calls onto the same container,
+					// which React 18 rejects (createRoot called twice).
+					const created = (await molstar.createPluginUI({
 						target: containerRef.current,
 						render: react18.renderReact18,
 						spec: {
@@ -95,6 +99,11 @@ export function MolstarViewer({ artifact }: MolstarViewerProps) {
 							},
 						},
 					})) as MolstarPluginContext;
+					if (canceled) {
+						created.dispose();
+						return;
+					}
+					pluginRef.current = created;
 
 					try {
 						const { Color } = await import("molstar/lib/mol-util/color");

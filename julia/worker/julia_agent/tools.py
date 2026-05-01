@@ -405,21 +405,20 @@ async def fetch_pdb(workspace_dir: Path | str, pdb_id: str, file_format: str = "
         raise RuntimeError(f"Downloaded {pdb}.cif did not look like mmCIF text.")
     output_path = tool_path(workspace_dir, "pdb", f"{pdb}.{fmt}")
     _write_text(output_path, text)
+    sequences = extract_pdb_sequences(text) if fmt == "pdb" else {}
     return {
         "pdb_id": pdb,
         "file_format": fmt,
         "sandbox_path": relative_to_workspace(output_path, workspace_dir),
         "absolute_path": str(output_path),
         "source_url": f"{RCSB_DOWNLOAD_URL}/{pdb}.{fmt}",
-        "chain_order": extract_structure_chain_order(text),
-        "chain_sequences": extract_structure_sequences(text),
+        "chain_sequences": sequences,
     }
 
 
 async def run_proteina(
     workspace_dir: Path | str,
     target_path: str,
-    target_chains: str | None = None,
     target_input: str | None = None,
     hotspot_residues: list[str] | None = None,
     binder_length_min: int = 60,
@@ -434,14 +433,15 @@ async def run_proteina(
     if not target_file.exists():
         raise FileNotFoundError(f"Target structure not found: {target_path}")
     target_structure = target_file.read_text(encoding="utf-8")
-    _validate_target_input(target_input)
-    target_chain_order = extract_structure_chain_order(target_structure)
-    normalized_hotspots = _normalize_hotspot_residues(hotspot_residues)
-    _validate_target_selectors(
-        target_chains=target_chains,
-        target_input=target_input,
-        hotspot_residues=normalized_hotspots,
-        available_chains=target_chain_order,
+    normalized_target_input, _target_input_guard = _normalize_target_input_for_structure(
+        target_input,
+        target_file,
+        target_structure,
+    )
+    normalized_hotspots = _validate_hotspots_for_structure(
+        hotspot_residues or [],
+        target_file,
+        target_structure,
     )
     warm_start: dict[str, Any] | None = None
     if warm_start_path:
@@ -452,16 +452,6 @@ async def run_proteina(
     run_slug = safe_slug(run_name or f"proteina_{target_file.stem}_{_utc_slug()}", "proteina")
     count = _clamp_count(num_candidates, default=5, upper=20)
     base_url, api_key = _modal_config("MODAL_PROTEINA_URL", "MODAL_PROTEINA_API_KEY")
-    target_payload: dict[str, Any] = {
-        "structure": target_structure,
-        "filename": target_file.name,
-        "name": target_file.stem,
-        "target_input": target_input,
-        "hotspot_residues": normalized_hotspots,
-        "binder_length": [int(binder_length_min), int(binder_length_max)],
-    }
-    if target_chains is not None and str(target_chains).strip():
-        target_payload["chains"] = target_chains
     payload: dict[str, Any] = {
         "action": "design-cif",
         "run_name": run_slug,
@@ -473,7 +463,14 @@ async def run_proteina(
             f"++generation.dataloader.dataset.nres.nsamples={count}",
             f"++generation.args.nsteps={int(nsteps)}",
         ],
-        "target": target_payload,
+        "target": {
+            "structure": target_structure,
+            "filename": target_file.name,
+            "name": target_file.stem,
+            "target_input": normalized_target_input,
+            "hotspot_residues": normalized_hotspots,
+            "binder_length": [int(binder_length_min), int(binder_length_max)],
+        },
     }
     if warm_start is not None:
         payload["warm_start"] = warm_start
@@ -700,6 +697,21 @@ async def run_scorers(
     return summary
 
 
+def extract_pdb_residue_numbers(pdb_text: str) -> dict[str, list[int]]:
+    residues_by_chain: dict[str, set[int]] = {}
+    for line in pdb_text.splitlines():
+        if not line.startswith("ATOM"):
+            continue
+        padded = line.ljust(27)
+        chain_id = padded[21].strip() or " "
+        residue_number_text = padded[22:26].strip()
+        residue_name = padded[17:20].strip().upper()
+        if residue_name not in THREE_TO_ONE or not residue_number_text.lstrip("-").isdigit():
+            continue
+        residues_by_chain.setdefault(chain_id, set()).add(int(residue_number_text))
+    return {chain: sorted(numbers) for chain, numbers in residues_by_chain.items() if numbers}
+
+
 def extract_pdb_sequences(pdb_text: str) -> dict[str, str]:
     residues_by_chain: dict[str, dict[tuple[int, str], str]] = {}
     for line in pdb_text.splitlines():
@@ -736,10 +748,18 @@ def extract_pdb_chain_order(pdb_text: str) -> list[str]:
     return chain_order
 
 
-def extract_structure_chain_order(structure_text: str) -> list[str]:
-    if "_atom_site." in structure_text:
-        return _extract_cif_chain_order(structure_text)
-    return extract_pdb_chain_order(structure_text)
+def extract_structure_chain_order(path: Path, structure: str) -> tuple[str, list[str]]:
+    structure_format = _infer_structure_format(path, structure)
+    if structure_format == "cif":
+        return structure_format, _extract_cif_chain_order(structure)
+    return structure_format, extract_pdb_chain_order(structure)
+
+
+def extract_structure_residue_numbers(path: Path, structure: str) -> dict[str, list[int]]:
+    structure_format = _infer_structure_format(path, structure)
+    if structure_format == "cif":
+        return _extract_cif_residue_numbers(structure)
+    return extract_pdb_residue_numbers(structure)
 
 
 def extract_structure_sequences(structure_text: str) -> dict[str, str]:
@@ -952,16 +972,36 @@ def _extract_cif_sequences(cif_text: str) -> dict[str, str]:
     }
 
 
-def _infer_structure_text_format(path: Path, structure_text: str) -> str:
+def _extract_cif_residue_numbers(cif_text: str) -> dict[str, list[int]]:
+    residues_by_chain: dict[str, set[int]] = {}
+    for record in _iter_cif_atom_site_records(cif_text):
+        residue_name = record["residue_name"].upper()
+        residue_number_text = record["residue_number"]
+        chain_id = record["chain_id"]
+        if residue_name not in THREE_TO_ONE or not residue_number_text or not chain_id:
+            continue
+        try:
+            residues_by_chain.setdefault(chain_id, set()).add(int(float(residue_number_text)))
+        except ValueError:
+            continue
+    return {chain: sorted(numbers) for chain, numbers in residues_by_chain.items() if numbers}
+
+
+def _infer_structure_format(path: Path, structure: str) -> str:
     suffix = path.suffix.lower()
     if suffix in {".cif", ".mmcif"}:
         return "cif"
     if suffix == ".pdb":
         return "pdb"
-    stripped = structure_text.lstrip()
-    if stripped.startswith(("data_", "loop_")) or "_atom_site." in structure_text:
-        return "cif"
-    return "pdb"
+    for line in structure.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("data_") or stripped == "loop_" or stripped.startswith("_atom_site."):
+            return "cif"
+        if line.startswith(("ATOM", "HETATM", "HEADER")):
+            return "pdb"
+    return "cif"
 
 
 def _select_binder_chain(sequences: Mapping[str, str]) -> str | None:
@@ -977,80 +1017,173 @@ def _select_binder_chain(sequences: Mapping[str, str]) -> str | None:
 
 def _warm_start_payload_from_file(warm_file: Path, warm_start_chain: str | None = None) -> dict[str, Any]:
     structure = warm_file.read_text(encoding="utf-8")
-    structure_format = _infer_structure_text_format(warm_file, structure)
-    chain_order = extract_structure_chain_order(structure)
     requested_chain = (warm_start_chain or "").strip() or None
+    structure_format, chain_order = extract_structure_chain_order(warm_file, structure)
     chain: str | None = None
-    if requested_chain:
-        if not chain_order:
-            raise ValueError(f"Could not parse warm-start chain IDs from {warm_file.name}.")
-        if requested_chain not in chain_order:
+    if requested_chain is not None:
+        if chain_order and requested_chain not in chain_order:
             raise ValueError(
-                f"warm_start_chain {requested_chain!r} was not found in "
-                f"{warm_file.name}; available chains are {chain_order}."
+                f"warm_start_chain {requested_chain!r} was not found in {warm_file.name}. "
+                f"Available chains: {chain_order}."
             )
         chain = requested_chain
-    elif structure_format == "cif" and len(chain_order) > 1:
-        raise ValueError(
-            f"warm_start_chain is required for multi-chain CIF/mmCIF warm starts; "
-            f"available chains are {chain_order}."
-        )
-    elif structure_format == "pdb" and len(chain_order) > 1:
+    elif len(chain_order) > 1:
+        if structure_format == "cif":
+            raise ValueError(
+                f"Warm-start CIF {warm_file.name} has multiple chains {chain_order}. "
+                "Pass warm_start_chain with the seed binder chain."
+            )
         chain = chain_order[-1]
+
     payload: dict[str, Any] = {"structure": structure, "filename": warm_file.name}
     if chain:
         payload["chain"] = chain
     return payload
 
 
-def _validate_target_input(target_input: str | None) -> None:
-    if not target_input:
-        return
-    value = target_input.strip().upper()
-    looks_like_sequence = len(value) > 20 and re.fullmatch(r"[ACDEFGHIKLMNPQRSTVWYX]+", value)
-    if looks_like_sequence:
-        raise ValueError(
-            "target_input must be residue ranges like 'A1-306', not an amino-acid sequence."
-        )
+def _format_target_selector(chain_id: str, start: int, end: int) -> str:
+    return f"{chain_id}{start}-{end}"
 
 
-def _parse_chain_filter(chains: str | None) -> list[str]:
-    if not chains:
+def _format_chain_ranges(chain_id: str, numbers: Sequence[int]) -> list[str]:
+    unique_numbers = sorted(set(numbers))
+    if not unique_numbers:
         return []
-    return [item.strip() for item in chains.split(",") if item.strip()]
-
-
-def _target_input_chain_ids(target_input: str | None) -> list[str]:
-    chain_ids: list[str] = []
-    for item in (target_input or "").replace('"', "").split(","):
-        item = item.strip()
-        if not item:
+    ranges: list[str] = []
+    start = previous = unique_numbers[0]
+    for number in unique_numbers[1:]:
+        if number == previous + 1:
+            previous = number
             continue
-        match = re.match(r"([A-Za-z0-9])[-+]?\d", item)
-        if match and match.group(1) not in chain_ids:
-            chain_ids.append(match.group(1))
-    return chain_ids
+        ranges.append(_format_target_selector(chain_id, start, previous))
+        start = previous = number
+    ranges.append(_format_target_selector(chain_id, start, previous))
+    return ranges
 
 
-def _validate_target_selectors(
-    *,
-    target_chains: str | None,
-    target_input: str | None,
-    hotspot_residues: list[str],
-    available_chains: Sequence[str],
-) -> None:
-    if not available_chains:
-        return
-    available = set(available_chains)
-    requested = _parse_chain_filter(target_chains)
-    requested.extend(_target_input_chain_ids(target_input))
-    requested.extend(hotspot[0] for hotspot in hotspot_residues if hotspot)
-    missing = sorted({chain for chain in requested if chain not in available})
-    if missing:
-        raise ValueError(
-            f"Requested target chain(s) {', '.join(missing)} were not found in "
-            f"{list(available_chains)}."
+def _available_target_ranges(residues_by_chain: Mapping[str, Sequence[int]]) -> dict[str, str]:
+    return {
+        chain_id: ",".join(
+            part[len(chain_id):]
+            for part in _format_chain_ranges(chain_id, numbers)
         )
+        for chain_id, numbers in residues_by_chain.items()
+    }
+
+
+def _parse_target_input(target_input: str) -> list[tuple[str, int, int]]:
+    selectors: list[tuple[str, int, int]] = []
+    for raw_part in target_input.split(","):
+        part = raw_part.strip()
+        match = re.fullmatch(r"([A-Za-z])(-?\d+)(?:-(-?\d+))?", part)
+        if not match:
+            raise ValueError(
+                f"target_input {target_input!r} is not supported. Use comma-separated "
+                "ranges like 'A1-109,A111-306'."
+            )
+        chain_id = match.group(1).upper()
+        start = int(match.group(2))
+        end = int(match.group(3) or match.group(2))
+        if end < start:
+            raise ValueError(f"target_input range {part!r} has end before start.")
+        selectors.append((chain_id, start, end))
+    if not selectors:
+        raise ValueError("target_input must select at least one residue.")
+    return selectors
+
+
+def _target_input_for_available_residues(
+    residues_by_chain: Mapping[str, Sequence[int]],
+    chains: Sequence[str] | None = None,
+) -> str | None:
+    selected_chains = [
+        chain for chain in (chains or residues_by_chain.keys()) if chain in residues_by_chain
+    ]
+    parts: list[str] = []
+    for chain_id in selected_chains:
+        parts.extend(_format_chain_ranges(chain_id, residues_by_chain[chain_id]))
+    return ",".join(parts) or None
+
+
+def _normalize_target_input_for_structure(
+    target_input: str | None,
+    target_file: Path,
+    target_structure: str,
+) -> tuple[str | None, dict[str, Any]]:
+    residues_by_chain = extract_structure_residue_numbers(target_file, target_structure)
+    if not residues_by_chain:
+        return target_input, {"status": "unvalidated", "reason": "no protein residues found"}
+
+    available_ranges = _available_target_ranges(residues_by_chain)
+    requested = (target_input or "").strip()
+    if not requested:
+        inferred = _target_input_for_available_residues(residues_by_chain)
+        return inferred, {
+            "status": "inferred",
+            "target_input": inferred,
+            "available_ranges": available_ranges,
+        }
+
+    selectors = _parse_target_input(requested)
+    corrected_parts: list[str] = []
+    needs_correction = False
+    missing: dict[str, list[int]] = {}
+    for chain_id, start, end in selectors:
+        available_numbers = residues_by_chain.get(chain_id)
+        if not available_numbers:
+            raise ValueError(
+                f"target_input {requested!r} uses chain {chain_id!r}, but available "
+                f"target residue ranges are {available_ranges}."
+            )
+        available_set = set(available_numbers)
+        selected_numbers = [number for number in available_numbers if start <= number <= end]
+        missing_numbers = [
+            number for number in range(start, end + 1) if number not in available_set
+        ]
+        if missing_numbers:
+            needs_correction = True
+            missing.setdefault(chain_id, []).extend(missing_numbers[:12])
+        if not selected_numbers:
+            raise ValueError(
+                f"target_input {requested!r} selects no available residues for chain "
+                f"{chain_id!r}. Available target residue ranges are {available_ranges}."
+            )
+        corrected_parts.extend(_format_chain_ranges(chain_id, selected_numbers))
+
+    normalized = ",".join(corrected_parts) if needs_correction else ",".join(
+        _format_target_selector(chain_id, start, end) for chain_id, start, end in selectors
+    )
+    return normalized, {
+        "status": "corrected" if needs_correction else "valid",
+        "requested": requested,
+        "target_input": normalized,
+        "missing_residues": missing,
+        "available_ranges": available_ranges,
+    }
+
+
+def _validate_hotspots_for_structure(
+    hotspots: Sequence[str],
+    target_file: Path,
+    target_structure: str,
+) -> list[str]:
+    normalized = _normalize_hotspot_residues(list(hotspots))
+    residues_by_chain = extract_structure_residue_numbers(target_file, target_structure)
+    if not residues_by_chain:
+        return normalized
+    available_ranges = _available_target_ranges(residues_by_chain)
+    for hotspot in normalized:
+        match = re.fullmatch(r"([A-Za-z])(\d+)", hotspot)
+        if not match:
+            raise ValueError(f"hotspot_residue {hotspot!r} is not valid.")
+        chain_id = match.group(1).upper()
+        number = int(match.group(2))
+        if number not in set(residues_by_chain.get(chain_id, [])):
+            raise ValueError(
+                f"hotspot_residue {hotspot!r} is not present in the target. "
+                f"Available target residue ranges are {available_ranges}."
+            )
+    return normalized
 
 
 def _clean_sequence(sequence: str) -> str:
@@ -1121,6 +1254,8 @@ def _normalize_hotspot_residues(hotspot_residues: list[str] | None) -> list[str]
             normalized.append(f"{named.group(1).upper()}{named.group(2)}")
             continue
         raise ValueError(
-            "hotspot_residues must use Proteina format, e.g. 'A41' or 'A145'."
+            "hotspot_residues must use Proteina format: chain ID immediately "
+            "followed by residue number, e.g. 'A41' or 'A145'. Do not include "
+            f"residue names or separators like {value!r}."
         )
     return normalized

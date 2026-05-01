@@ -74,30 +74,24 @@ export function ChatPanel({
 		setLocalMessages(messages);
 	}, [messages]);
 
-	const assistantDraft = useMemo(
-		() => runEvents.events.map(getTextDelta).filter(Boolean).join(""),
+	const runSegments = useMemo(
+		() => buildRunSegments(runEvents.events),
 		[runEvents.events],
 	);
+	const hasRunOutput = runSegments.length > 0;
+	const assistantDraft = useMemo(
+		() =>
+			runSegments
+				.filter((segment) => segment.kind === "text")
+				.map((segment) => (segment.kind === "text" ? segment.text : ""))
+				.join(""),
+		[runSegments],
+	);
 
-	const visibleMessages = useMemo(() => {
-		if (!assistantDraft) return localMessages;
-		const lastAssistantIndex = findLastAssistantMessageIndex(localMessages);
-		if (lastAssistantIndex >= 0) {
-			return localMessages.map((message, index) =>
-				index === lastAssistantIndex
-					? { ...message, content: assistantDraft }
-					: message,
-			);
-		}
-		return [
-			...localMessages,
-			{
-				id: "assistant-draft",
-				role: "assistant" as const,
-				content: assistantDraft,
-			},
-		];
-	}, [localMessages, assistantDraft]);
+	const renderItems = useMemo(
+		() => buildRenderItems(localMessages, hasRunOutput ? runSegments : null),
+		[localMessages, hasRunOutput, runSegments],
+	);
 
 	const latestEvent = runEvents.events.at(-1);
 	const busy =
@@ -141,7 +135,7 @@ export function ChatPanel({
 				<RunStatus connection={runEvents.connection} event={latestEvent} />
 			</div>
 			<div className="message-list">
-				{visibleMessages.length === 0 ? (
+				{renderItems.length === 0 ? (
 					<div className="empty-panel">
 						<p>
 							Describe a target. Julia will search the literature, propose
@@ -149,29 +143,39 @@ export function ChatPanel({
 						</p>
 					</div>
 				) : (
-					visibleMessages
-						.filter(
-							(message) =>
-								message.role !== "assistant" || message.content !== "",
-						)
-						.map((message) => (
-							<article className={`message ${message.role}`} key={message.id}>
-								<span className="message-role">{message.role}</span>
-								<div className="message-body">
-									{message.role === "assistant" ? (
+					renderItems.map((item) => {
+						if (item.kind === "message") {
+							const message = item.message;
+							return (
+								<article className={`message ${message.role}`} key={message.id}>
+									<span className="message-role">{message.role}</span>
+									<div className="message-body">
+										{message.role === "assistant" ? (
+											<ReactMarkdown remarkPlugins={[remarkGfm]}>
+												{message.content}
+											</ReactMarkdown>
+										) : (
+											<p>{message.content}</p>
+										)}
+									</div>
+								</article>
+							);
+						}
+						if (item.kind === "text") {
+							return (
+								<article className="message assistant" key={item.id}>
+									<span className="message-role">assistant</span>
+									<div className="message-body">
 										<ReactMarkdown remarkPlugins={[remarkGfm]}>
-											{message.content}
+											{item.text}
 										</ReactMarkdown>
-									) : (
-										<p>{message.content}</p>
-									)}
-								</div>
-							</article>
-						))
+									</div>
+								</article>
+							);
+						}
+						return <ToolStep event={item.event} key={item.id} />;
+					})
 				)}
-				{mergeToolEvents(runEvents.events).map((event) => (
-					<ToolStep event={event} key={event.id ?? `seq-${event.sequence}`} />
-				))}
 				{busy ? (
 					<ThinkingIndicator
 						label={thinkingLabel(
@@ -411,59 +415,128 @@ function toRunEventSource(value: unknown): RunEventSource | null {
 }
 
 /**
- * Pair tool_call_started with its tool_call_completed (by toolCallId) so the UI
- * shows one row per tool call that progresses from running → completed in place.
+ * Walk the run's events in chronological (sequence) order and produce an
+ * interleaved segment list: text deltas accumulate into a text segment until a
+ * tool call appears, the tool call becomes its own segment, and any further
+ * text deltas start a fresh text segment after the tool. tool_call_started and
+ * tool_call_completed for the same toolCallId are merged into one segment that
+ * progresses running → completed in place.
  */
-function mergeToolEvents(events: RunEvent[]): RunEvent[] {
-	type Bucket = {
-		started: RunEvent;
-		completed?: RunEvent;
-	};
-	const buckets = new Map<string, Bucket>();
-	const order: string[] = [];
+type RunSegment =
+	| { kind: "text"; id: string; text: string }
+	| { kind: "tool"; id: string; event: RunEvent };
+
+function buildRunSegments(events: RunEvent[]): RunSegment[] {
+	const segments: RunSegment[] = [];
+	const toolByCallId = new Map<
+		string,
+		{ kind: "tool"; id: string; event: RunEvent }
+	>();
+	let currentText: { kind: "text"; id: string; text: string } | null = null;
 
 	for (const event of events) {
+		const delta = getTextDelta(event);
+		if (delta !== null) {
+			if (!currentText) {
+				currentText = {
+					kind: "text",
+					id: `text-${event.sequence}`,
+					text: "",
+				};
+				segments.push(currentText);
+			}
+			currentText.text += delta;
+			continue;
+		}
+
 		const isStarted =
 			event.type === "tool_call_started" || event.type === "tool_started";
 		const isCompleted =
 			event.type === "tool_call_completed" || event.type === "tool_completed";
 		if (!isStarted && !isCompleted) continue;
+
 		const metadata = event.metadata ?? {};
 		const callId =
 			(typeof metadata.toolCallId === "string" && metadata.toolCallId) ||
 			(typeof metadata.callId === "string" && metadata.callId) ||
 			`seq-${event.sequence}`;
-		if (isStarted) {
-			if (!buckets.has(callId)) {
-				buckets.set(callId, { started: event });
-				order.push(callId);
-			}
-		} else {
-			const bucket = buckets.get(callId);
-			if (bucket) {
-				bucket.completed = event;
-			} else {
-				buckets.set(callId, { started: event });
-				order.push(callId);
-			}
-		}
-	}
 
-	return order.map((id) => {
-		const bucket = buckets.get(id);
-		if (!bucket) return { type: "tool_call_started", sequence: 0 } as RunEvent;
-		if (!bucket.completed) return bucket.started;
-		const startedMeta = bucket.started.metadata ?? {};
-		const completedMeta = bucket.completed.metadata ?? {};
-		return {
-			...bucket.completed,
+		if (isStarted) {
+			currentText = null;
+			if (!toolByCallId.has(callId)) {
+				const segment = { kind: "tool" as const, id: callId, event };
+				toolByCallId.set(callId, segment);
+				segments.push(segment);
+			}
+			continue;
+		}
+
+		// tool_call_completed: merge into the started segment if we have it,
+		// otherwise drop it as a standalone (covers reconnect-mid-run).
+		const existing = toolByCallId.get(callId);
+		const startedMeta = existing?.event.metadata ?? {};
+		const completedMeta = event.metadata ?? {};
+		const merged: RunEvent = {
+			...event,
 			metadata: {
 				...startedMeta,
 				...completedMeta,
 				input: startedMeta.input ?? completedMeta.input,
 			},
 		};
-	});
+		if (existing) {
+			existing.event = merged;
+		} else {
+			currentText = null;
+			const segment = { kind: "tool" as const, id: callId, event: merged };
+			toolByCallId.set(callId, segment);
+			segments.push(segment);
+		}
+	}
+
+	return segments;
+}
+
+type RenderItem =
+	| { kind: "message"; message: WorkspaceMessage }
+	| { kind: "text"; id: string; text: string }
+	| { kind: "tool"; id: string; event: RunEvent };
+
+/**
+ * Combine the persisted message list with the live run's interleaved segments.
+ * The last assistant slot is replaced by the run segments while a run is
+ * producing output; once the run finishes and polling refreshes the persisted
+ * assistant message, the segments still cover that slot until a new run starts
+ * and `useRunEvents` resets the event list.
+ */
+function buildRenderItems(
+	messages: WorkspaceMessage[],
+	runSegments: RunSegment[] | null,
+): RenderItem[] {
+	const lastAssistantIndex = findLastAssistantMessageIndex(messages);
+	const items: RenderItem[] = [];
+
+	for (let index = 0; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (!message) continue;
+		if (index === lastAssistantIndex && runSegments && runSegments.length > 0) {
+			for (const segment of runSegments) items.push(segment);
+			continue;
+		}
+		if (message.role === "assistant" && message.content === "") continue;
+		items.push({ kind: "message", message });
+	}
+
+	if (
+		runSegments &&
+		runSegments.length > 0 &&
+		(lastAssistantIndex < 0 ||
+			!items.some((item) => item.kind === "text" || item.kind === "tool"))
+	) {
+		for (const segment of runSegments) items.push(segment);
+	}
+
+	return items;
 }
 
 function findLastAssistantMessageIndex(messages: WorkspaceMessage[]): number {

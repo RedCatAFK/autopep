@@ -5,6 +5,8 @@ import pytest
 
 from julia_agent.agent import (
     JULIA_AGENT_INSTRUCTIONS,
+    JULIA_DEFAULT_OPENROUTER_PROVIDER_IGNORE,
+    _openrouter_provider_preferences,
     build_julia_agent,
     build_manifest,
     build_sandbox_run_config,
@@ -13,16 +15,28 @@ from julia_agent.agent import (
 
 def test_agent_instructions_cover_julia_runtime_requirements() -> None:
     instructions = JULIA_AGENT_INSTRUCTIONS.lower()
+    # Whitespace-normalised view so checks survive prose line wraps.
+    flattened = " ".join(instructions.split())
 
-    assert "general chat" in instructions
-    assert "autopep2" in instructions
-    assert "single-pass" in instructions
-    assert "warm start" in instructions
+    assert "julia" in instructions
+    assert "openai agents sdk" in instructions
+    assert "literature_search" in instructions
+    assert "search_pdb" in instructions
+    assert "fetch_pdb" in instructions
+    assert "run_proteina" in instructions
+    assert "run_chai" in instructions
+    assert "run_scorers" in instructions
+    assert "warm start" in flattened
+    assert "warm_start_chain" in instructions
     assert "cif" in instructions
     assert "mmcif" in instructions
+    assert "in parallel" in instructions
     assert "concise" in instructions
-    assert "wet-lab validation" in instructions
-    assert "therapeutic readiness" in instructions
+    assert "wet-lab validation" in flattened
+    assert "therapeutic readiness" in flattened
+    # Hotspot format examples and counter-examples must both be present.
+    assert '"a41"' in instructions
+    assert '"a:his41"' in instructions
 
 
 def test_manifest_includes_context_artifacts_and_output_placeholders(
@@ -127,3 +141,36 @@ def test_build_agent_and_run_config_use_lazy_sandbox_imports(
     assert created["options"]["app_name"] == "julia-agent-worker"
     assert created["options"]["timeout"] == 123
     assert created["run_config"]["sandbox"] is not None
+
+
+def test_openrouter_provider_preferences_default_ignores_siliconflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # SiliconFlow's DeepSeek thinking endpoint rejects multi-turn tool calls
+    # because the Agents SDK does not echo reasoning_content back. The default
+    # ignore list must keep that provider out of the pool.
+    for var in (
+        "OPENROUTER_PROVIDER_ORDER",
+        "OPENROUTER_PROVIDER_ONLY",
+        "OPENROUTER_PROVIDER_IGNORE",
+        "OPENROUTER_ALLOW_FALLBACKS",
+        "OPENROUTER_REQUIRE_PARAMETERS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    prefs = _openrouter_provider_preferences()
+
+    assert prefs["ignore"] == list(JULIA_DEFAULT_OPENROUTER_PROVIDER_IGNORE)
+    assert "SiliconFlow" in prefs["ignore"]
+
+
+def test_openrouter_provider_preferences_env_overrides_default_ignore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PROVIDER_IGNORE", "Foo, Bar")
+    monkeypatch.delenv("OPENROUTER_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("OPENROUTER_PROVIDER_ONLY", raising=False)
+
+    prefs = _openrouter_provider_preferences()
+
+    assert prefs["ignore"] == ["Foo", "Bar"]
