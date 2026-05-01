@@ -48,6 +48,12 @@ FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
 FIREWORKS_DEEPSEEK_MODEL = "accounts/fireworks/models/deepseek-v4-pro"
 FIREWORKS_REASONING_EFFORT = "high"
 FIREWORKS_MODEL_TIMEOUT_SECONDS = 4 * 60 * 60
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_DEEPSEEK_MODEL = "deepseek/deepseek-v4-pro"
+OPENROUTER_REASONING_EFFORT = "high"
+OPENROUTER_MODEL_TIMEOUT_SECONDS = 4 * 60 * 60
+DEEPSEEK_PROVIDERS = {"fireworks", "openrouter"}
+DEFAULT_DEEPSEEK_PROVIDER = "openrouter"
 
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 RCSB_DATA_URL = "https://data.rcsb.org/rest/v1/core/entry"
@@ -231,6 +237,53 @@ def _require_env(name: str) -> str:
     return value.strip()
 
 
+def _csv_env(name: str) -> list[str]:
+    value = os.getenv(name, "")
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _bool_env(name: str, *, default: bool | None = None) -> bool | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _openrouter_default_headers() -> dict[str, str]:
+    headers = {
+        "X-OpenRouter-Title": os.getenv("OPENROUTER_APP_TITLE", "autopep2"),
+    }
+    referer = (
+        os.getenv("OPENROUTER_HTTP_REFERER")
+        or os.getenv("OPENROUTER_SITE_URL")
+        or ""
+    ).strip()
+    if referer:
+        headers["HTTP-Referer"] = referer
+    return headers
+
+
+def _openrouter_provider_preferences() -> dict[str, Any]:
+    provider: dict[str, Any] = {}
+    order = _csv_env("OPENROUTER_PROVIDER_ORDER")
+    only = _csv_env("OPENROUTER_PROVIDER_ONLY")
+    ignore = _csv_env("OPENROUTER_PROVIDER_IGNORE")
+    allow_fallbacks = _bool_env("OPENROUTER_ALLOW_FALLBACKS")
+    require_parameters = _bool_env("OPENROUTER_REQUIRE_PARAMETERS", default=True)
+
+    if order:
+        provider["order"] = order
+    if only:
+        provider["only"] = only
+    if ignore:
+        provider["ignore"] = ignore
+    if allow_fallbacks is not None:
+        provider["allow_fallbacks"] = allow_fallbacks
+    if require_parameters is not None:
+        provider["require_parameters"] = require_parameters
+    return provider
+
+
 def _fireworks_deepseek_model() -> tuple[OpenAIChatCompletionsModel, ModelSettings, str]:
     api_key = _require_env("FIREWORKS_API_KEY")
     base_url = (os.getenv("FIREWORKS_BASE_URL") or FIREWORKS_BASE_URL).strip().rstrip("/")
@@ -249,6 +302,56 @@ def _fireworks_deepseek_model() -> tuple[OpenAIChatCompletionsModel, ModelSettin
     )
     label = f"{model_name} via Fireworks"
     return model, settings, label
+
+
+def _openrouter_deepseek_model() -> tuple[OpenAIChatCompletionsModel, ModelSettings, str]:
+    api_key = _require_env("OPENROUTER_API_KEY")
+    base_url = (os.getenv("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL).strip().rstrip("/")
+    model_name = (
+        os.getenv("OPENROUTER_DEEPSEEK_MODEL") or OPENROUTER_DEEPSEEK_MODEL
+    ).strip()
+    reasoning_effort = (
+        os.getenv("OPENROUTER_REASONING_EFFORT") or OPENROUTER_REASONING_EFFORT
+    ).strip()
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        default_headers=_openrouter_default_headers(),
+        timeout=httpx.Timeout(timeout=OPENROUTER_MODEL_TIMEOUT_SECONDS, connect=30.0),
+    )
+    extra_body: dict[str, Any] = {}
+    if reasoning_effort:
+        extra_body["reasoning"] = {"effort": reasoning_effort}
+    provider = _openrouter_provider_preferences()
+    if provider:
+        extra_body["provider"] = provider
+    model = OpenAIChatCompletionsModel(model=model_name, openai_client=client)
+    settings = ModelSettings(extra_body=extra_body or None)
+    label = f"{model_name} via OpenRouter"
+    return model, settings, label
+
+
+def _resolve_deepseek_provider(args: argparse.Namespace) -> str:
+    provider = "openrouter" if args.openrouter else args.deepseek_provider
+    provider = (
+        provider or os.getenv("AUTOPEP2_DEEPSEEK_PROVIDER") or DEFAULT_DEEPSEEK_PROVIDER
+    ).strip().lower()
+    if provider not in DEEPSEEK_PROVIDERS:
+        expected = ", ".join(sorted(DEEPSEEK_PROVIDERS))
+        raise RuntimeError(
+            f"Unsupported DeepSeek provider '{provider}'. Expected one of: {expected}."
+        )
+    return provider
+
+
+def _deepseek_provider_api_key_env(provider: str) -> str:
+    return "OPENROUTER_API_KEY" if provider == "openrouter" else "FIREWORKS_API_KEY"
+
+
+def _deepseek_model(provider: str) -> tuple[OpenAIChatCompletionsModel, ModelSettings, str]:
+    if provider == "openrouter":
+        return _openrouter_deepseek_model()
+    return _fireworks_deepseek_model()
 
 
 def _modal_config(url_var: str, key_var: str) -> tuple[str, str]:
@@ -1598,9 +1701,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--deepseek",
         action="store_true",
         help=(
-            "Use DeepSeek V4 Pro through Fireworks AI. "
-            "This overrides --model and requires FIREWORKS_API_KEY."
+            "Use DeepSeek V4 Pro. Provider defaults to "
+            "AUTOPEP2_DEEPSEEK_PROVIDER or OpenRouter."
         ),
+    )
+    parser.add_argument(
+        "--deepseek-provider",
+        choices=sorted(DEEPSEEK_PROVIDERS),
+        default=os.getenv("AUTOPEP2_DEEPSEEK_PROVIDER", DEFAULT_DEEPSEEK_PROVIDER),
+        help="Provider for --deepseek. Use openrouter when Fireworks is degraded.",
+    )
+    parser.add_argument(
+        "--openrouter",
+        action="store_true",
+        help="Shortcut for --deepseek --deepseek-provider openrouter.",
     )
     parser.add_argument(
         "--session-id",
@@ -1616,9 +1730,16 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     load_dotenv(ROOT_DIR / ".env")
     args = parse_args(argv)
     _ensure_dirs()
-    if args.deepseek:
-        if not os.getenv("FIREWORKS_API_KEY"):
-            print("Set FIREWORKS_API_KEY in autopep2/.env before using --deepseek.", file=sys.stderr)
+    use_deepseek = args.deepseek or args.openrouter
+    if use_deepseek:
+        deepseek_provider = _resolve_deepseek_provider(args)
+        api_key_env = _deepseek_provider_api_key_env(deepseek_provider)
+        if not os.getenv(api_key_env):
+            print(
+                f"Set {api_key_env} in autopep2/.env before using "
+                f"--deepseek-provider {deepseek_provider}.",
+                file=sys.stderr,
+            )
             return 2
         if not os.getenv("OPENAI_API_KEY"):
             set_tracing_disabled(True)
@@ -1627,8 +1748,11 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     model_label = args.model
-    if args.deepseek:
-        deepseek_model, deepseek_settings, model_label = _fireworks_deepseek_model()
+    if use_deepseek:
+        deepseek_provider = _resolve_deepseek_provider(args)
+        deepseek_model, deepseek_settings, model_label = _deepseek_model(
+            deepseek_provider
+        )
         agent = build_agent(deepseek_model, deepseek_settings)
     else:
         agent = build_agent(args.model)

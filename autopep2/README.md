@@ -29,16 +29,28 @@ tools.
 uv run python main.py
 ```
 
-DeepSeek V4 Pro through Fireworks AI:
+DeepSeek V4 Pro. This temporarily defaults to OpenRouter:
 
 ```bash
 uv run python main.py --deepseek
 ```
 
-Tree-search agent with the same Fireworks DeepSeek backend:
+The explicit OpenRouter shortcut is equivalent:
+
+```bash
+uv run python main.py --openrouter
+```
+
+OpenRouter uses `OPENROUTER_API_KEY` and defaults to
+`deepseek/deepseek-v4-pro`. To force Fireworks after it recovers, pass
+`--deepseek-provider fireworks` or set `AUTOPEP2_DEEPSEEK_PROVIDER=fireworks`.
+
+Tree-search agent with the same DeepSeek backend:
 
 ```bash
 uv run python tree.py --deepseek
+# or
+uv run python tree.py --openrouter
 ```
 
 One-shot mode:

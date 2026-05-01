@@ -590,7 +590,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--deepseek",
         action="store_true",
-        help="Use DeepSeek V4 Pro through Fireworks AI. Requires FIREWORKS_API_KEY.",
+        help=(
+            "Use DeepSeek V4 Pro. Provider defaults to "
+            "AUTOPEP2_DEEPSEEK_PROVIDER or OpenRouter."
+        ),
+    )
+    parser.add_argument(
+        "--deepseek-provider",
+        choices=sorted(main.DEEPSEEK_PROVIDERS),
+        default=os.getenv(
+            "AUTOPEP2_DEEPSEEK_PROVIDER",
+            main.DEFAULT_DEEPSEEK_PROVIDER,
+        ),
+        help="Provider for --deepseek. Use openrouter when Fireworks is degraded.",
+    )
+    parser.add_argument(
+        "--openrouter",
+        action="store_true",
+        help="Shortcut for --deepseek --deepseek-provider openrouter.",
     )
     parser.add_argument(
         "--session-id",
@@ -608,14 +625,28 @@ async def async_main(argv: Sequence[str] | None = None) -> int:
     _install_compact_logging()
     main._ensure_dirs()
 
-    if args.deepseek:
-        if not os.getenv("FIREWORKS_API_KEY"):
-            print("Set FIREWORKS_API_KEY in autopep2/.env before using --deepseek.", file=sys.stderr)
+    use_deepseek = args.deepseek or args.openrouter
+    if use_deepseek:
+        deepseek_provider = main._resolve_deepseek_provider(args)
+        api_key_env = main._deepseek_provider_api_key_env(deepseek_provider)
+        if not os.getenv(api_key_env):
+            print(
+                f"Set {api_key_env} in autopep2/.env before using "
+                f"--deepseek-provider {deepseek_provider}.",
+                file=sys.stderr,
+            )
             return 2
         if not os.getenv("OPENAI_API_KEY"):
             set_tracing_disabled(True)
-        deepseek_model, deepseek_settings, model_label = main._fireworks_deepseek_model()
-        model_settings = deepseek_settings.resolve(ModelSettings(parallel_tool_calls=True))
+        deepseek_model, deepseek_settings, model_label = main._deepseek_model(
+            deepseek_provider
+        )
+        if deepseek_provider == "fireworks":
+            model_settings = deepseek_settings.resolve(
+                ModelSettings(parallel_tool_calls=True)
+            )
+        else:
+            model_settings = deepseek_settings
         agent = build_agent(deepseek_model, model_settings)
     else:
         if not os.getenv("OPENAI_API_KEY"):
