@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from julia_agent import db
+from julia_agent import db, pubsub
 from julia_agent.config import WorkerConfig
 from julia_agent.live_runner import run_live_turn
 
@@ -32,6 +34,11 @@ class _FakeStream:
     async def stream_events(self):
         for event in self._events:
             yield event
+
+
+@contextlib.contextmanager
+def _noop_trace(_name: str):
+    yield
 
 
 def _build_stream_events(workspace_dir: Path) -> list[Any]:
@@ -69,13 +76,33 @@ def _build_stream_events(workspace_dir: Path) -> list[Any]:
     return [text_delta, text_delta_two, tool_call, tool_output]
 
 
+def _patch_pubsub(monkeypatch) -> list[dict[str, Any]]:
+    """Capture every event published to pubsub. Returns the captured list.
+
+    `publish_terminal` yields once via `asyncio.sleep(0)` so the live runner's
+    final `await pubsub.publish_terminal(...)` actually iterates the loop —
+    that's what lets the fire-and-forget `loop.create_task(publish(...))`
+    coroutines from `_persist_event` run before the test asserts.
+    """
+    published: list[dict[str, Any]] = []
+
+    async def fake_publish(_run_id: str, event: dict[str, Any]) -> None:
+        published.append(event)
+
+    async def fake_publish_terminal(_run_id: str) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(pubsub, "publish", fake_publish)
+    monkeypatch.setattr(pubsub, "publish_terminal", fake_publish_terminal)
+    return published
+
+
 @pytest.mark.asyncio
 async def test_live_runner_streams_events_and_uploads_artifacts(monkeypatch, tmp_path):
     pytest.importorskip("pytest_asyncio")
-    events: list[tuple] = []
     artifact_inserts: list[tuple] = []
-    deltas: list[str] = []
     statuses: list[str] = []
+    assistant_writes: list[tuple[str, str]] = []
     captured_workspace: dict[str, Path] = {}
 
     monkeypatch.setattr(
@@ -85,21 +112,17 @@ async def test_live_runner_streams_events_and_uploads_artifacts(monkeypatch, tmp
     )
     monkeypatch.setattr(
         db,
-        "insert_run_event",
-        lambda database_url, run_id, event_type, message, sequence, metadata: events.append(
-            (sequence, event_type, message, dict(metadata))
+        "write_assistant_message",
+        lambda database_url, message_id, content: assistant_writes.append(
+            (message_id, content)
         ),
-    )
-    monkeypatch.setattr(
-        db,
-        "append_assistant_delta",
-        lambda database_url, message_id, delta: deltas.append(delta),
     )
     monkeypatch.setattr(
         db,
         "insert_artifact",
         lambda *args, **kwargs: artifact_inserts.append((args, kwargs)),
     )
+    published = _patch_pubsub(monkeypatch)
 
     def fake_build_agent(workspace, *, model=None):
         captured_workspace["path"] = Path(workspace)
@@ -115,7 +138,7 @@ async def test_live_runner_streams_events_and_uploads_artifacts(monkeypatch, tmp
             workspace = captured_workspace["path"]
             return _FakeStream(_build_stream_events(workspace))
 
-    fake_agents_module = SimpleNamespace(Runner=FakeRunner)
+    fake_agents_module = SimpleNamespace(Runner=FakeRunner, trace=_noop_trace)
     monkeypatch.setitem(__import__("sys").modules, "agents", fake_agents_module)
 
     result = await run_live_turn(
@@ -132,21 +155,32 @@ async def test_live_runner_streams_events_and_uploads_artifacts(monkeypatch, tmp
         "status": "completed",
     }
     assert statuses == ["running", "completed"]
-    assert deltas == ["Hello ", "world"]
 
-    types_in_order = [event[1] for event in events]
+    # The accumulated assistant text is flushed exactly once at end-of-run.
+    assert assistant_writes == [
+        ("00000000-0000-0000-0000-0000000000bb", "Hello world")
+    ]
+
+    types_in_order = [event["type"] for event in published]
     assert types_in_order[0] == "run_status"
     assert types_in_order[-1] == "run_status"
-    assert "text_delta" in types_in_order
+    assert types_in_order.count("text_delta") == 2
     assert "tool_call_started" in types_in_order
     assert "tool_call_completed" in types_in_order
     assert "artifact_created" in types_in_order
 
-    sequences = [event[0] for event in events]
+    sequences = [event["sequence"] for event in published]
     assert sequences == sorted(sequences) and len(sequences) == len(set(sequences))
 
-    artifact_event = next(event for event in events if event[1] == "artifact_created")
-    artifact_metadata = artifact_event[3]
+    # text_delta events carry the chunk under both metadata.text and metadata.delta.
+    text_events = [event for event in published if event["type"] == "text_delta"]
+    assert [event["metadata"]["delta"] for event in text_events] == ["Hello ", "world"]
+    assert [event["metadata"]["text"] for event in text_events] == ["Hello ", "world"]
+
+    artifact_event = next(
+        event for event in published if event["type"] == "artifact_created"
+    )
+    artifact_metadata = artifact_event["metadata"]
     assert artifact_metadata["filename"] == "1ABC.cif"
     assert artifact_metadata["source"] == "tool_result"
     assert artifact_metadata["r2Key"].startswith(
@@ -159,8 +193,8 @@ async def test_live_runner_streams_events_and_uploads_artifacts(monkeypatch, tmp
 @pytest.mark.asyncio
 async def test_live_runner_records_run_error_on_exception(monkeypatch, tmp_path):
     pytest.importorskip("pytest_asyncio")
-    events: list[tuple] = []
     statuses: list[str] = []
+    assistant_writes: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
         db,
@@ -169,13 +203,13 @@ async def test_live_runner_records_run_error_on_exception(monkeypatch, tmp_path)
     )
     monkeypatch.setattr(
         db,
-        "insert_run_event",
-        lambda database_url, run_id, event_type, message, sequence, metadata: events.append(
-            (sequence, event_type, message)
+        "write_assistant_message",
+        lambda database_url, message_id, content: assistant_writes.append(
+            (message_id, content)
         ),
     )
-    monkeypatch.setattr(db, "append_assistant_delta", lambda *args, **kwargs: None)
     monkeypatch.setattr(db, "insert_artifact", lambda *args, **kwargs: None)
+    published = _patch_pubsub(monkeypatch)
 
     monkeypatch.setattr(
         "julia_agent.live_runner.build_julia_agent_with_tools",
@@ -187,7 +221,7 @@ async def test_live_runner_records_run_error_on_exception(monkeypatch, tmp_path)
         def run_streamed(agent, prompt, **_):
             raise RuntimeError("boom")
 
-    fake_agents_module = SimpleNamespace(Runner=FailingRunner)
+    fake_agents_module = SimpleNamespace(Runner=FailingRunner, trace=_noop_trace)
     monkeypatch.setitem(__import__("sys").modules, "agents", fake_agents_module)
 
     with pytest.raises(RuntimeError, match="boom"):
@@ -201,4 +235,7 @@ async def test_live_runner_records_run_error_on_exception(monkeypatch, tmp_path)
         )
 
     assert statuses == ["running", "failed"]
-    assert any(event[1] == "run_error" for event in events)
+    # Even on failure we flush whatever assistant text we have (empty here),
+    # so the message row is left in a consistent state.
+    assert assistant_writes == [("00000000-0000-0000-0000-0000000000dd", "")]
+    assert any(event["type"] == "run_error" for event in published)

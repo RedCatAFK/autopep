@@ -47,7 +47,25 @@ export function ChatPanel({
 	const sendMessage = api.run.sendMessage.useMutation({
 		onSuccess(data) {
 			const source = toRunEventSource(data);
-			if (source) onRunCreated(source);
+			if (!source) return;
+			// Append an optimistic assistant placeholder so the streaming draft
+			// has a target row to overlay. Without it, the first delta lands on
+			// the *previous* run's assistant message (until polling refetches
+			// the new placeholder ~5s later) and visibly clobbers it.
+			const assistantMessageId =
+				typeof (data as { assistantMessageId?: unknown }).assistantMessageId ===
+				"string"
+					? (data as { assistantMessageId: string }).assistantMessageId
+					: `pending-${source.runId}`;
+			setLocalMessages((current) => [
+				...current,
+				{
+					id: assistantMessageId,
+					role: "assistant",
+					content: "",
+				},
+			]);
+			onRunCreated(source);
 		},
 	});
 	const cancelRun = api.run.cancel.useMutation();
@@ -133,22 +151,23 @@ export function ChatPanel({
 				) : (
 					visibleMessages
 						.filter(
-							(message) => message.role !== "assistant" || message.content !== "",
+							(message) =>
+								message.role !== "assistant" || message.content !== "",
 						)
 						.map((message) => (
-						<article className={`message ${message.role}`} key={message.id}>
-							<span className="message-role">{message.role}</span>
-							<div className="message-body">
-								{message.role === "assistant" ? (
-									<ReactMarkdown remarkPlugins={[remarkGfm]}>
-										{message.content}
-									</ReactMarkdown>
-								) : (
-									<p>{message.content}</p>
-								)}
-							</div>
-						</article>
-					))
+							<article className={`message ${message.role}`} key={message.id}>
+								<span className="message-role">{message.role}</span>
+								<div className="message-body">
+									{message.role === "assistant" ? (
+										<ReactMarkdown remarkPlugins={[remarkGfm]}>
+											{message.content}
+										</ReactMarkdown>
+									) : (
+										<p>{message.content}</p>
+									)}
+								</div>
+							</article>
+						))
 				)}
 				{mergeToolEvents(runEvents.events).map((event) => (
 					<ToolStep event={event} key={event.id ?? `seq-${event.sequence}`} />
@@ -326,7 +345,8 @@ function thinkingLabel(
 	if (isSending) return "Sending…";
 	if (event?.type === "tool_call_started" || event?.type === "tool_started") {
 		const name =
-			(typeof event.metadata?.toolName === "string" && event.metadata.toolName) ||
+			(typeof event.metadata?.toolName === "string" &&
+				event.metadata.toolName) ||
 			(typeof event.metadata?.name === "string" && event.metadata.name) ||
 			null;
 		return name ? `Running ${name}…` : "Running tool…";

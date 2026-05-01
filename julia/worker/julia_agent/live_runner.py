@@ -1,16 +1,25 @@
-"""Run a Julia turn through the OpenAI Agents SDK, streaming events into Neon.
+"""Run a Julia turn through the OpenAI Agents SDK, streaming events live to
+WebSocket subscribers.
 
-Events emitted:
-  - run_status (running, completed, failed)
+Events emitted (pubsub-only — not persisted to Neon):
+  - run_status (running, completed, failed, canceled)
   - text_delta as the model streams output text
   - tool_call_started / tool_call_completed bracketing each tool call
   - artifact_created after tool-result artifacts are uploaded to R2
   - run_error on failure
 
-Tool-result artifacts are extracted via `artifacts.artifact_paths_from_tool_result`,
-uploaded to R2 keyed by (project, run, artifact id, filename), inserted into Neon,
-and announced as artifact_created events. After the turn we do one final scan over
-the run workspace's outputs/ subdirectories and upload anything we missed.
+Per-event Postgres writes were removed because the synchronous psycopg calls
+in the streaming hot path starved the asyncio loop, batching deltas at the
+WebSocket sender. The WebSocket is now the single source of truth for
+in-flight runs; the assistant message body is persisted exactly once at
+end-of-run via `db.write_assistant_message`, and `julia_runs.status`
+transitions are still recorded via `db.mark_run_status`.
+
+Tool-result artifacts are still extracted and uploaded to R2 keyed by
+(project, run, artifact id, filename), with `julia_artifacts` rows inserted
+on upload (one-shot, not in the streaming hot path) and announced as
+artifact_created events. After the turn we do one final scan over the run
+workspace's outputs/ subdirectories and upload anything we missed.
 """
 
 from __future__ import annotations
@@ -30,7 +39,7 @@ from typing import Any, Mapping
 from julia_agent import artifacts as artifact_helpers
 from julia_agent import db
 from julia_agent import pubsub
-from julia_agent.agent import build_julia_agent_with_tools
+from julia_agent.agent import _agent_max_turns, build_julia_agent_with_tools
 from julia_agent.config import WorkerConfig
 from julia_agent.events import (
     normalize_run_error,
@@ -63,6 +72,7 @@ class _LiveRunState:
     sequence: int = 1
     pending_tool_calls: dict[str, _ToolCall] = field(default_factory=dict)
     uploaded_paths: set[str] = field(default_factory=set)
+    assistant_text: str = ""
 
 
 def _next_sequence(state: _LiveRunState) -> int:
@@ -90,16 +100,14 @@ def _persist_event(
     message: str | None,
     metadata: dict[str, Any],
 ) -> int:
-    """Write to Neon and broadcast to live subscribers. Returns the new sequence."""
+    """Broadcast an event to live WebSocket subscribers. Returns the new sequence.
+
+    Run events are not persisted to Neon — we rely on the WebSocket as the
+    single source of truth for in-flight runs. Synchronous psycopg writes here
+    blocked the event loop and starved the WS sender, batching deltas instead
+    of streaming them.
+    """
     sequence = _next_sequence(state)
-    db.insert_run_event(
-        state.database_url,
-        state.run_id,
-        event_type,
-        message,
-        sequence,
-        metadata,
-    )
     payload = {
         "runId": state.run_id,
         "type": event_type,
@@ -172,6 +180,10 @@ async def run_live_turn(
         status = "failed"
         raise
     finally:
+        with contextlib.suppress(Exception):
+            db.write_assistant_message(
+                database_url, assistant_message_id, state.assistant_text
+            )
         shutil.rmtree(workspace_dir, ignore_errors=True)
         with contextlib.suppress(Exception):
             await pubsub.publish_terminal(run_id)
@@ -182,16 +194,15 @@ async def run_live_turn(
 async def _execute_streamed_turn(
     state: _LiveRunState, prompt: str, *, max_turns: int | None = None
 ) -> None:
-    from agents import Runner
+    from agents import Runner, trace
 
     agent = build_julia_agent_with_tools(state.workspace_dir)
-    run_kwargs: dict[str, Any] = {}
-    if max_turns is not None:
-        run_kwargs["max_turns"] = max_turns
+    resolved_max_turns = max_turns if max_turns is not None else _agent_max_turns()
 
-    stream = Runner.run_streamed(agent, prompt, **run_kwargs)
-    async for event in stream.stream_events():
-        await _handle_stream_event(state, event)
+    with trace("julia worker turn"):
+        stream = Runner.run_streamed(agent, prompt, max_turns=resolved_max_turns)
+        async for event in stream.stream_events():
+            await _handle_stream_event(state, event)
 
 
 async def _handle_stream_event(state: _LiveRunState, event: Any) -> None:
@@ -211,7 +222,7 @@ async def _handle_raw_response(state: _LiveRunState, data: Any) -> None:
     delta = getattr(data, "delta", None) or ""
     if not isinstance(delta, str) or not delta:
         return
-    db.append_assistant_delta(state.database_url, state.assistant_message_id, delta)
+    state.assistant_text += delta
     _record_event(state, normalize_text_delta(state.run_id, delta), message=delta)
 
 

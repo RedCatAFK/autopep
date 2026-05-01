@@ -121,21 +121,21 @@ async def _run_agent_background(
 async def stream_run_events(websocket: WebSocket, run_id: str) -> None:
     """Live event stream for a run.
 
-    Auth: HMAC-signed token in `?token=`, scoped to (run_id, exp). Token is minted
-    by the Vercel mutation and proves the calling user owns the run.
+    Auth: HMAC-signed token in `?token=`, scoped to (run_id, exp). Token is
+    minted by the Vercel mutation and proves the calling user owns the run.
 
     Behavior:
-      1. Replay events with sequence > `?after=N` from Neon (resume on refresh).
-      2. Subscribe to in-memory pubsub for live events while the agent runs.
-      3. Close cleanly when the run is terminal AND the queue is drained.
+      1. If the run is already terminal in `julia_runs`, close cleanly — the
+         final assistant content lives on the message row and is delivered to
+         the client by the polled `getProjectState` query.
+      2. Otherwise subscribe to the in-memory pubsub and forward live events
+         until the agent emits its terminal sentinel.
+
+    No DB-backed replay: events are pubsub-only. A reconnect mid-run will
+    pick up from the next published event; missed deltas are not resent.
     """
     config = WorkerConfig.from_env()
     token = websocket.query_params.get("token") or ""
-    after_param = websocket.query_params.get("after") or "0"
-    try:
-        after_sequence = max(0, int(after_param))
-    except ValueError:
-        after_sequence = 0
 
     if not _verify_ws_token(token, run_id, config.webhook_secret):
         await websocket.close(code=4401, reason="invalid token")
@@ -146,23 +146,16 @@ async def stream_run_events(websocket: WebSocket, run_id: str) -> None:
 
     await websocket.accept()
     try:
-        async with pubsub.subscribe(run_id) as queue:
-            last_sequence = await _replay_events(
-                websocket, config.database_url, run_id, after_sequence
-            )
-            terminal = _run_is_terminal(config.database_url, run_id)
-            if terminal and not _has_events_after(config.database_url, run_id, last_sequence):
-                await websocket.close(code=1000, reason="run already terminal")
-                return
+        if _run_is_terminal(config.database_url, run_id):
+            await websocket.close(code=1000, reason="run already terminal")
+            return
 
+        async with pubsub.subscribe(run_id) as queue:
             heartbeat_task = asyncio.create_task(_heartbeat(websocket))
             try:
                 async for event in _drain_queue(queue):
                     if event is None:
                         break
-                    if int(event.get("sequence", 0)) <= last_sequence:
-                        continue
-                    last_sequence = max(last_sequence, int(event.get("sequence", 0)))
                     await websocket.send_text(json.dumps(event, default=str))
             finally:
                 heartbeat_task.cancel()
@@ -188,29 +181,12 @@ async def _drain_queue(queue: asyncio.Queue) -> AsyncIterator[dict[str, Any] | N
             return
 
 
-async def _replay_events(
-    websocket: WebSocket, database_url: str, run_id: str, after_sequence: int
-) -> int:
-    """Send any events already persisted with sequence > after_sequence. Returns last sequence sent."""
-    rows = await asyncio.to_thread(db.fetch_run_events, database_url, run_id, after_sequence)
-    last = after_sequence
-    for row in rows:
-        sequence = int(row.get("sequence", 0))
-        last = max(last, sequence)
-        await websocket.send_text(json.dumps(row, default=str))
-    return last
-
-
 def _run_is_terminal(database_url: str, run_id: str) -> bool:
     context = db.load_run_context(database_url, run_id)
     if not context:
         return False
     status_value = str(context.get("status") or "")
     return status_value in {"completed", "failed", "canceled"}
-
-
-def _has_events_after(database_url: str, run_id: str, after_sequence: int) -> bool:
-    return bool(db.fetch_run_events(database_url, run_id, after_sequence))
 
 
 async def _heartbeat(websocket: WebSocket) -> None:

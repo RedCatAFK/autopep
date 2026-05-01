@@ -31,35 +31,23 @@ def mark_run_status(database_url: str, run_id: str, status: str) -> None:
         )
 
 
-def insert_run_event(
-    database_url: str,
-    run_id: str,
-    event_type: str,
-    message: str | None,
-    sequence: int,
-    metadata: Mapping[str, Any],
+def write_assistant_message(
+    database_url: str, assistant_message_id: str, content: str
 ) -> None:
-    with _connect(database_url) as conn:
-        conn.execute(
-            """
-            insert into julia_run_events (run_id, type, message, sequence, metadata, created_at)
-            values (%s, %s, %s, %s, %s, now())
-            """,
-            (run_id, event_type, message, sequence, Jsonb(dict(metadata))),
-        )
+    """Replace the assistant message body with the final accumulated content.
 
-
-def append_assistant_delta(
-    database_url: str, assistant_message_id: str, delta: str
-) -> None:
+    Called once at end-of-run. Streaming deltas are delivered live over the
+    WebSocket; only the final text is persisted, so polling clients see the
+    complete reply as soon as the run reaches a terminal state.
+    """
     with _connect(database_url) as conn:
         conn.execute(
             """
             update julia_messages
-            set content = coalesce(content, '') || %s
+            set content = %s
             where id = %s
             """,
-            (delta, assistant_message_id),
+            (content, assistant_message_id),
         )
 
 
@@ -93,29 +81,6 @@ def insert_artifact(
                 Jsonb(dict(metadata or {})),
             ),
         )
-
-
-def fetch_run_events(
-    database_url: str, run_id: str, after_sequence: int
-) -> list[dict[str, Any]]:
-    """Return events for `run_id` with sequence > after_sequence, ordered by sequence."""
-    with _connect(database_url) as conn:
-        rows = conn.execute(
-            """
-            select id::text as id,
-                   run_id::text as "runId",
-                   type::text as type,
-                   message,
-                   sequence,
-                   metadata,
-                   created_at as "createdAt"
-            from julia_run_events
-            where run_id = %s and sequence > %s
-            order by sequence asc
-            """,
-            (run_id, int(after_sequence)),
-        ).fetchall()
-    return [dict(row) for row in rows]
 
 
 def load_run_context(database_url: str, run_id: str) -> dict[str, Any] | None:

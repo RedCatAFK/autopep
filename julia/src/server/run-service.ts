@@ -3,13 +3,7 @@ import { and, eq } from "drizzle-orm";
 
 import { env } from "@/env";
 import type { db as dbClient } from "@/server/db";
-import {
-	messages,
-	projects,
-	runEvents,
-	runs,
-	threads,
-} from "@/server/db/schema";
+import { messages, projects, runs, threads } from "@/server/db/schema";
 import {
 	buildWorkerCancelUrl,
 	buildWorkerWebSocketUrl,
@@ -119,14 +113,6 @@ export async function createRunForPrompt({
 				message: "Failed to create run",
 			});
 		}
-
-		await tx.insert(runEvents).values({
-			runId: run.id,
-			type: "run_status",
-			sequence: 1,
-			message: "queued",
-			metadata: { status: "queued" },
-		});
 
 		return { runId: run.id, assistantMessageId: assistantMessage.id };
 	});

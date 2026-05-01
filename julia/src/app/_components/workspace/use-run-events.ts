@@ -62,10 +62,10 @@ export function useRunEvents(
 	}, []);
 
 	useEffect(() => {
+		// Reset whenever the run source changes (new run, thread switch, or
+		// cleared on terminal). Previously this only fired on mount, which let
+		// stale events from a finished run leak into the next run's UI state.
 		reset();
-	}, [reset]);
-
-	useEffect(() => {
 		if (!source || typeof window === "undefined") {
 			setConnection("idle");
 			return;
@@ -152,6 +152,15 @@ export function useRunEvents(
 					setConnection("error");
 					return;
 				}
+				// Code 1000 ("normal closure") is the worker telling us the run
+				// is terminal — don't try to reconnect, the WS will just close
+				// us again. The final assistant message is delivered by the
+				// polled getProjectState query.
+				if (closeEvent.code === 1000) {
+					closedRef.current = true;
+					setConnection("closed");
+					return;
+				}
 				setConnection("closed");
 				scheduleReconnect();
 			};
@@ -166,7 +175,7 @@ export function useRunEvents(
 				socket.close(1000, "client unmount");
 			}
 		};
-	}, [source]);
+	}, [source, reset]);
 
 	return useMemo(
 		() => ({ events, connection, latestSequence, reset }),
