@@ -11,6 +11,7 @@ import {
 	threads,
 } from "@/server/db/schema";
 import {
+	buildWorkerCancelUrl,
 	buildWorkerWebSocketUrl,
 	mintWorkerWebSocketToken,
 	signWorkerPayload,
@@ -154,6 +155,76 @@ export async function createRunForPrompt({
 		wsUrl,
 		wsToken,
 	};
+}
+
+type CancelRunInput = {
+	db: Database;
+	userId: string;
+	runId: string;
+};
+
+/**
+ * Ask the Modal worker to cancel a still-running agent task. Ownership is
+ * checked via the run's project owner. The worker emits a `run_status=canceled`
+ * event and updates the run row; the browser sees it through the existing
+ * WebSocket stream and treats it as terminal.
+ */
+export async function cancelRunForUser({
+	db,
+	userId,
+	runId,
+}: CancelRunInput): Promise<{
+	runId: string;
+	status: "canceling" | "not_running";
+}> {
+	if (!env.JULIA_WORKER_START_URL || !env.JULIA_WORKER_WEBHOOK_SECRET) {
+		throw new TRPCError({
+			code: "PRECONDITION_FAILED",
+			message:
+				"Julia worker is not configured. Set JULIA_WORKER_START_URL and JULIA_WORKER_WEBHOOK_SECRET.",
+		});
+	}
+
+	const ownership = await db
+		.select({ runId: runs.id })
+		.from(runs)
+		.innerJoin(projects, eq(projects.id, runs.projectId))
+		.where(and(eq(runs.id, runId), eq(projects.ownerId, userId)))
+		.limit(1);
+
+	if (!ownership[0]) {
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: "Run not found",
+		});
+	}
+
+	const rawJson = JSON.stringify({ runId });
+	const signature = signWorkerPayload(rawJson, env.JULIA_WORKER_WEBHOOK_SECRET);
+	const cancelUrl = buildWorkerCancelUrl(env.JULIA_WORKER_START_URL);
+
+	const response = await fetch(cancelUrl, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			"x-julia-signature": signature,
+		},
+		body: rawJson,
+	});
+
+	if (!response.ok) {
+		const detail = await response.text().catch(() => "");
+		throw new TRPCError({
+			code: "BAD_GATEWAY",
+			message: `Worker cancel failed (${response.status}): ${detail.slice(0, 200)}`,
+		});
+	}
+
+	const result = (await response.json().catch(() => ({}))) as {
+		status?: string;
+	};
+	const status = result.status === "canceling" ? "canceling" : "not_running";
+	return { runId, status };
 }
 
 async function startWorkerRun(payload: {

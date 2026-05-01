@@ -38,7 +38,9 @@ export const env = createEnv({
 		MODAL_QUALITY_SCORERS_API_KEY: z.string().optional(),
 		FIREWORKS_API_KEY: z.string().optional(),
 		FIREWORKS_BASE_URL: z.string().url().optional(),
-		FIREWORKS_DEEPSEEK_MODEL: z.string().optional(),
+		FIREWORKS_DEEPSEEK_MODEL: z
+			.string()
+			.default("accounts/fireworks/models/deepseek-v4-pro"),
 		FIREWORKS_REASONING_EFFORT: z.string().optional(),
 		NODE_ENV: z
 			.enum(["development", "test", "production"])

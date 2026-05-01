@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Julia Worker")
 
+# In-memory registry of running agent tasks, keyed by run_id. Used by the cancel
+# endpoint to call task.cancel() on a still-running run. Single-container setup
+# (min_containers=1, max_inputs=64) keeps the cancel HTTP request and the agent
+# task on the same event loop in the common case.
+_running_tasks: dict[str, asyncio.Task[Any]] = {}
+
 
 class WorkerStartPayload(BaseModel):
     run_id: str = Field(alias="runId")
@@ -38,6 +44,10 @@ class WorkerStartPayload(BaseModel):
     assistant_message_id: str = Field(alias="assistantMessageId")
     content: str | None = None
     context_reference_ids: list[str] = Field(default_factory=list, alias="contextReferenceIds")
+
+
+class WorkerCancelPayload(BaseModel):
+    run_id: str = Field(alias="runId")
 
 
 @app.get("/health")
@@ -65,8 +75,34 @@ async def start_run(
     if not config.database_url:
         raise HTTPException(status_code=503, detail="DATABASE_URL is required")
 
-    asyncio.create_task(_run_agent_background(config, payload))
+    task = asyncio.create_task(_run_agent_background(config, payload))
+    _running_tasks[payload.run_id] = task
+    task.add_done_callback(lambda _t, run_id=payload.run_id: _running_tasks.pop(run_id, None))
     return {"runId": payload.run_id, "status": "running"}
+
+
+@app.post("/runs/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_run(
+    request: Request, x_julia_signature: str | None = Header(default=None)
+) -> dict[str, Any]:
+    """Cancel a running agent task by run_id.
+
+    Calls `.cancel()` on the asyncio task tracked in `_running_tasks`. The
+    cancellation propagates as `asyncio.CancelledError`; `run_live_turn` catches
+    it, persists a `run_status=canceled` event, and updates the run row.
+    """
+    body = await request.body()
+    config = WorkerConfig.from_env()
+    if not verify_signature(body, x_julia_signature, config.webhook_secret):
+        raise HTTPException(status_code=401, detail="Invalid Julia worker signature")
+
+    payload = WorkerCancelPayload.model_validate(await request.json())
+    task = _running_tasks.get(payload.run_id)
+    if task is None or task.done():
+        return {"runId": payload.run_id, "status": "not_running"}
+
+    task.cancel()
+    return {"runId": payload.run_id, "status": "canceling"}
 
 
 async def _run_agent_background(
@@ -75,6 +111,8 @@ async def _run_agent_background(
     """Wraps run_live_run with full error catching so the background task never crashes Modal."""
     try:
         await run_live_run(config, config.database_url or "", payload)
+    except asyncio.CancelledError:
+        logger.info("Julia run %s canceled", payload.run_id)
     except Exception:  # noqa: BLE001 — top-level guard for the background task
         logger.exception("Julia run %s failed", payload.run_id)
 

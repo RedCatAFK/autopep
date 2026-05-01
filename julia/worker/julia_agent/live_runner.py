@@ -154,6 +154,16 @@ async def run_live_turn(
         )
         db.mark_run_status(database_url, run_id, "completed")
         status = "completed"
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await _final_artifact_scan(state)
+        with contextlib.suppress(Exception):
+            _record_event(
+                state, normalize_run_status(run_id, "canceled"), message="canceled"
+            )
+        with contextlib.suppress(Exception):
+            db.mark_run_status(database_url, run_id, "canceled")
+        raise
     except Exception as error:  # noqa: BLE001 — record then re-raise
         with contextlib.suppress(Exception):
             await _final_artifact_scan(state)

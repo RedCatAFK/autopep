@@ -426,6 +426,19 @@ button:disabled {
 	height: 38px;
 }
 
+.primary-button.stop-button {
+	background: #dc2626;
+	border-color: #dc2626;
+}
+
+.primary-button.stop-button:hover {
+	background: #b91c1c;
+}
+
+.primary-button.stop-button:disabled {
+	opacity: 0.7;
+}
+
 .secondary-button {
 	min-height: 32px;
 	padding: 0 10px;

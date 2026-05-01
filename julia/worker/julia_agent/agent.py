@@ -118,7 +118,7 @@ def build_sandbox_run_config(
     return run_config_cls(sandbox=sandbox_config)
 
 
-def build_julia_agent_with_tools(workspace_dir: Path | str, *, model: str | None = None):
+def build_julia_agent_with_tools(workspace_dir: Path | str, *, model: Any = None):
     """Build a regular Agents-SDK Agent with all Julia tools bound to a per-run workspace.
 
     The live worker runs each request in its own temp workspace dir; the tools close
@@ -131,9 +131,36 @@ def build_julia_agent_with_tools(workspace_dir: Path | str, *, model: str | None
     return Agent(
         name="Julia",
         instructions=JULIA_AGENT_INSTRUCTIONS,
-        model=model or os.getenv("OPENAI_DEFAULT_MODEL"),
+        model=model if model is not None else _default_julia_model(),
         tools=build_julia_tools(workspace_dir),
     )
+
+
+def _default_julia_model():
+    """Pick the model the live worker should use.
+
+    Prefers Fireworks-hosted DeepSeek (OpenAI-compatible API) when both
+    FIREWORKS_API_KEY and FIREWORKS_DEEPSEEK_MODEL are set; falls back to the
+    OpenAI default model otherwise. Returning a string means the Agents SDK
+    uses its default OpenAI client; returning a Model instance routes through
+    the Fireworks endpoint with a custom AsyncOpenAI client.
+    """
+    fireworks_key = os.getenv("FIREWORKS_API_KEY")
+    fireworks_model = os.getenv("FIREWORKS_DEEPSEEK_MODEL")
+    if fireworks_key and fireworks_model:
+        from agents import OpenAIChatCompletionsModel
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=fireworks_key,
+            base_url=os.getenv("FIREWORKS_BASE_URL")
+            or "https://api.fireworks.ai/inference/v1",
+        )
+        return OpenAIChatCompletionsModel(
+            model=fireworks_model,
+            openai_client=client,
+        )
+    return os.getenv("OPENAI_DEFAULT_MODEL")
 
 
 async def run_julia_agent(

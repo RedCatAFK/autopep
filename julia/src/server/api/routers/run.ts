@@ -2,9 +2,18 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import { createTRPCRouter, protectedProcedure } from "@/server/api/trpc";
-import { createRunForPrompt } from "@/server/run-service";
+import { cancelRunForUser, createRunForPrompt } from "@/server/run-service";
 
 export const runRouter = createTRPCRouter({
+	cancel: protectedProcedure
+		.input(z.object({ runId: z.string().uuid() }))
+		.mutation(async ({ ctx, input }) => {
+			return cancelRunForUser({
+				db: ctx.db,
+				userId: ctx.session.user.id,
+				runId: input.runId,
+			});
+		}),
 	sendMessage: protectedProcedure
 		.input(
 			z.object({

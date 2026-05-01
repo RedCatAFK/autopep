@@ -1,6 +1,6 @@
 "use client";
 
-import { Send } from "lucide-react";
+import { Send, Square } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -50,6 +50,7 @@ export function ChatPanel({
 			if (source) onRunCreated(source);
 		},
 	});
+	const cancelRun = api.run.cancel.useMutation();
 
 	useEffect(() => {
 		setLocalMessages(messages);
@@ -84,6 +85,7 @@ export function ChatPanel({
 	const busy =
 		sendMessage.isPending ||
 		Boolean(runSource && !isTerminalEvent(latestEvent));
+	const canStop = busy && Boolean(runSource) && !cancelRun.isPending;
 
 	const submit = () => {
 		const content = prompt.trim();
@@ -107,6 +109,11 @@ export function ChatPanel({
 		});
 	};
 
+	const stop = () => {
+		if (!runSource || cancelRun.isPending) return;
+		cancelRun.mutate({ runId: runSource.runId });
+	};
+
 	return (
 		<aside aria-label="Julia chat" className="chat-panel">
 			<div className="panel-header">
@@ -122,7 +129,11 @@ export function ChatPanel({
 						<p>Ask Julia to design, inspect, or refine a protein workflow.</p>
 					</div>
 				) : (
-					visibleMessages.map((message) => (
+					visibleMessages
+						.filter(
+							(message) => message.role !== "assistant" || message.content !== "",
+						)
+						.map((message) => (
 						<article className={`message ${message.role}`} key={message.id}>
 							<span className="message-role">{message.role}</span>
 							<div className="message-body">
@@ -145,6 +156,11 @@ export function ChatPanel({
 						{sendMessage.error.message}
 					</div>
 				) : null}
+				{cancelRun.error ? (
+					<div className="run-error" role="alert">
+						{cancelRun.error.message}
+					</div>
+				) : null}
 			</div>
 			<div className="chat-composer">
 				<ContextPills
@@ -155,11 +171,13 @@ export function ChatPanel({
 				<div className="status-row">
 					<span className={`status-dot ${busy ? "running" : "completed"}`} />
 					<span>
-						{statusText(
-							latestEvent,
-							runEvents.connection,
-							sendMessage.isPending,
-						)}
+						{cancelRun.isPending
+							? "Stopping…"
+							: statusText(
+									latestEvent,
+									runEvents.connection,
+									sendMessage.isPending,
+								)}
 					</span>
 				</div>
 				<div className="prompt-row">
@@ -175,15 +193,28 @@ export function ChatPanel({
 						placeholder="Message Julia..."
 						value={prompt}
 					/>
-					<button
-						aria-label="Send message"
-						className="primary-button icon-only"
-						disabled={!prompt.trim() || sendMessage.isPending}
-						onClick={submit}
-						type="button"
-					>
-						<Send aria-hidden="true" size={17} />
-					</button>
+					{busy && runSource ? (
+						<button
+							aria-label="Stop agent"
+							className="primary-button icon-only stop-button"
+							disabled={!canStop}
+							onClick={stop}
+							title="Stop"
+							type="button"
+						>
+							<Square aria-hidden="true" fill="currentColor" size={13} />
+						</button>
+					) : (
+						<button
+							aria-label="Send message"
+							className="primary-button icon-only"
+							disabled={!prompt.trim() || sendMessage.isPending}
+							onClick={submit}
+							type="button"
+						>
+							<Send aria-hidden="true" size={17} />
+						</button>
+					)}
 				</div>
 			</div>
 		</aside>

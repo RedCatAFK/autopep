@@ -40,3 +40,10 @@ export function buildWorkerWebSocketUrl(
 	url.search = "";
 	return url.toString();
 }
+
+export function buildWorkerCancelUrl(startUrl: string): string {
+	const url = new URL(startUrl);
+	url.pathname = "/runs/cancel";
+	url.search = "";
+	return url.toString();
+}
