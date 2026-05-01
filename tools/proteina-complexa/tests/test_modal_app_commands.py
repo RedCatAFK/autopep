@@ -314,6 +314,20 @@ HETATM 2 O O  . HOH D 4 . ? 4.000 5.000 6.000 1.000 20.000 ? 1 HOH E O  1
         self.assertIn(" SER E   1", atom_lines[0])
         self.assertNotIn("HOH", pdb_text)
 
+    def test_target_input_normalization_splits_missing_residue_ranges(self) -> None:
+        normalized, guard = target_preprocessing.normalize_target_input_to_available_residues(
+            "A1-6",
+            {"A": [3, 4, 6]},
+        )
+
+        self.assertEqual(normalized, "A3-4,A6-6")
+        self.assertEqual(guard["status"], "corrected")
+        self.assertEqual(guard["missing_residues"], {"A": [1, 2, 5]})
+
+    def test_hotspot_validation_rejects_absent_target_residue(self) -> None:
+        with self.assertRaisesRegex(ValueError, "hotspot_residue 'A1' is not present"):
+            target_preprocessing.validate_hotspot_residues(["A1"], {"A": [3, 4, 6]})
+
     def test_run_output_overrides_keep_outputs_on_runs_volume(self) -> None:
         overrides = commands.run_output_overrides(
             task_name="target_102L",

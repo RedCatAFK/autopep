@@ -304,8 +304,33 @@ def infer_target_input(residues: Sequence[ResidueRecord]) -> str:
                 "Cannot infer target_input for insertion codes. "
                 "Pass target_input explicitly, for example 'A1-150'."
             )
-        ranges.append(f"{chain_id}{chain_residues[0].residue_number}-{chain_residues[-1].residue_number}")
+        ranges.extend(
+            format_target_input_ranges(
+                chain_id,
+                [residue.residue_number for residue in chain_residues],
+            )
+        )
     return ",".join(ranges)
+
+
+def format_target_input_ranges(chain_id: str, residue_numbers: Sequence[int]) -> list[str]:
+    numbers = sorted(set(residue_numbers))
+    if not numbers:
+        return []
+    ranges: list[str] = []
+    start = previous = numbers[0]
+    for number in numbers[1:]:
+        if number == previous + 1:
+            previous = number
+            continue
+        ranges.append(_format_target_input_range(chain_id, start, previous))
+        start = previous = number
+    ranges.append(_format_target_input_range(chain_id, start, previous))
+    return ranges
+
+
+def _format_target_input_range(chain_id: str, start: int, end: int) -> str:
+    return f"{chain_id}{start}-{end}"
 
 
 def write_preprocessed_outputs(result: StructurePreprocessResult, output_dir: Path | str) -> dict[str, str]:
